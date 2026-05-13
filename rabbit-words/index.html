@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>RabbitWords</title>
+    <script>
+      // Apply the host-passed colorScheme before the stylesheet loads so the
+      // first paint is already in the correct theme — no flash of the wrong
+      // colors. Falls back to prefers-color-scheme via CSS when this param is
+      // absent (e.g., standalone load during development).
+      (function () {
+        var v = new URLSearchParams(location.search).get('colorScheme');
+        if (v === 'light' || v === 'dark') {
+          document.documentElement.dataset.colorScheme = v;
+        }
+      })();
+    </script>
+    <link rel="stylesheet" href="./styles.css?v=__BUILD_ID__" />
+    <script src="../sdk-v1.js?v=__BUILD_ID__"></script>
+  </head>
+  <body>
+    <header>
+      <h1>RabbitWords</h1>
+      <p class="tagline">Guess the 5-letter word in 6 tries.</p>
+    </header>
+    <main id="root" aria-live="polite"></main>
+    <script type="module" src="./main.js?v=__BUILD_ID__"></script>
+  </body>
+</html>

@@ -1,0 +1,65 @@
+{
+  "name": "@oddsrabbit/apps-sdk",
+  "version": "0.1.0-alpha.0",
+  "description": "OddsRabbit Apps SDK — bridge contract for apps hosted on OddsRabbit (mobile + web).",
+  "license": "MIT",
+  "homepage": "https://github.com/oddsrabbit/apps-sdk",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/oddsrabbit/apps-sdk.git"
+  },
+  "bugs": {
+    "url": "https://github.com/oddsrabbit/apps-sdk/issues"
+  },
+  "type": "module",
+  "main": "./dist/sdk-v1.cjs",
+  "module": "./dist/sdk-v1.esm.js",
+  "types": "./dist/sdk-v1.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/sdk-v1.d.ts",
+      "import": "./dist/sdk-v1.esm.js",
+      "require": "./dist/sdk-v1.cjs"
+    },
+    "./schemas": {
+      "types": "./dist/schemas.d.ts",
+      "import": "./dist/schemas.esm.js",
+      "require": "./dist/schemas.cjs"
+    },
+    "./host": "./dist/host/index.html"
+  },
+  "files": [
+    "dist",
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node build.config.mjs",
+    "build:watch": "node build.config.mjs --watch",
+    "type-check": "tsc --noEmit",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "keywords": [
+    "oddsrabbit",
+    "apps",
+    "games",
+    "bridge",
+    "sdk"
+  ],
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.0",
+    "zod-to-json-schema": "^3.24.1"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

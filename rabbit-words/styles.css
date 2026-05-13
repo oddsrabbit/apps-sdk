@@ -1,0 +1,622 @@
+:root {
+  color-scheme: light;
+  --tile: 56px;
+  --gap: 6px;
+  --bg: #fff;
+  --fg: #111;
+  --muted: rgba(0, 0, 0, 0.6);
+  --border: #d0d0d0;
+  --key-bg: #d3d6da;
+  --key-gray: var(--gray);
+  --green: #6aaa64;
+  --yellow: #c9b458;
+  --gray: #787c7e;
+}
+
+/* Dark theme — host sets data-color-scheme via the URL param (see index.html
+   inline script) so the host site's chosen theme drives our colors. The values
+   below are the long-standing Wordle-style dark palette; preserved verbatim
+   from the prior @media (prefers-color-scheme: dark) block since the visual
+   was already tuned. The --key-gray override exists because the default
+   --gray (#787c7e) is too close to the dark --key-bg (#818384) and ruled-out
+   keys would visually merge with untouched ones. */
+:root[data-color-scheme='dark'] {
+  color-scheme: dark;
+  --bg: #121213;
+  --fg: #f5f5f5;
+  --muted: rgba(255, 255, 255, 0.6);
+  --border: #3a3a3c;
+  --key-bg: #818384;
+  --key-gray: #3a3a3c;
+}
+
+/* Standalone fallback: when no host has set data-color-scheme (loading the
+   game directly during dev, or via a host that predates the theme rollout),
+   honour the OS-level preference. Scoped to :not([data-color-scheme]) so it
+   never fights an explicit host signal. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-color-scheme]) {
+    color-scheme: dark;
+    --bg: #121213;
+    --fg: #f5f5f5;
+    --muted: rgba(255, 255, 255, 0.6);
+    --border: #3a3a3c;
+    --key-bg: #818384;
+    --key-gray: #3a3a3c;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.4 system-ui, -apple-system, Segoe UI, sans-serif;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px;
+  gap: 12px;
+}
+
+header {
+  text-align: center;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-weight: 800;
+}
+
+.tagline {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  max-width: 380px;
+}
+
+/* Puzzle header (above board) */
+.puzzle-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 12px;
+}
+
+.puzzle-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.puzzle-number {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.puzzle-date {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.help-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  font: 700 16px system-ui;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.help-btn:hover { background: var(--border); }
+
+/* Board */
+.board {
+  display: grid;
+  grid-template-rows: repeat(6, var(--tile));
+  gap: var(--gap);
+}
+
+.board-row {
+  display: grid;
+  grid-template-columns: repeat(5, var(--tile));
+  gap: var(--gap);
+}
+
+.tile {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--border);
+  font: 700 28px/1 system-ui, sans-serif;
+  text-transform: uppercase;
+  background: transparent;
+  color: var(--fg);
+  perspective: 600px;
+}
+
+.tile.tile-filled {
+  border-color: var(--fg);
+}
+
+/* Pop animation only on the freshly-typed tile (set by JS for one render). */
+.tile.tile-just-filled {
+  animation: tile-pop 0.1s ease;
+}
+
+.tile[data-color='green'] {
+  background: var(--green);
+  border-color: var(--green);
+  color: #fff;
+}
+
+.tile[data-color='yellow'] {
+  background: var(--yellow);
+  border-color: var(--yellow);
+  color: #fff;
+}
+
+.tile[data-color='gray'] {
+  background: var(--gray);
+  border-color: var(--gray);
+  color: #fff;
+}
+
+@keyframes tile-pop {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.06); }
+  100% { transform: scale(1); }
+}
+
+/* Reveal animation: only on the most recently submitted row. */
+.row-revealed .tile[data-color] {
+  animation: flip-reveal 0.55s ease both;
+  animation-delay: calc(var(--col, 0) * 0.1s);
+}
+
+@keyframes flip-reveal {
+  0%   { transform: rotateX(0deg); }
+  45%  { transform: rotateX(-90deg); }
+  55%  { transform: rotateX(-90deg); }
+  100% { transform: rotateX(0deg); }
+}
+
+/* Win bounce on the winning row. */
+.row-win .tile {
+  animation: tile-bounce 0.6s ease;
+  animation-delay: calc(var(--col, 0) * 0.1s + 0.6s);
+}
+
+@keyframes tile-bounce {
+  0%, 100% { transform: translateY(0); }
+  40%      { transform: translateY(-8px); }
+  60%      { transform: translateY(-4px); }
+}
+
+/* Shake on invalid submission. */
+.row-shake { animation: row-shake 0.4s ease; }
+
+@keyframes row-shake {
+  10%, 90%      { transform: translateX(-2px); }
+  20%, 80%      { transform: translateX(4px); }
+  30%, 50%, 70% { transform: translateX(-6px); }
+  40%, 60%      { transform: translateX(6px); }
+}
+
+/* Active row hint */
+.row-active .tile {
+  border-color: var(--border);
+}
+
+.row-active .tile.tile-filled {
+  border-color: var(--fg);
+}
+
+/* Keyboard */
+.keyboard {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  user-select: none;
+  margin-top: 4px;
+}
+
+.keyboard-row {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+}
+
+.keyboard-key {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 50px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--key-bg);
+  color: var(--fg);
+  font: 700 16px/1 system-ui, sans-serif;
+  text-transform: uppercase;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background 120ms ease;
+}
+
+.keyboard-key:active { transform: scale(0.96); }
+.keyboard-key:hover { filter: brightness(0.95); }
+
+.keyboard-key-wide {
+  flex: 1.6 1 0;
+  font-size: 12px;
+}
+
+.keyboard-key[data-color='green'] { background: var(--green); color: #fff; }
+.keyboard-key[data-color='yellow'] { background: var(--yellow); color: #fff; }
+.keyboard-key[data-color='gray']   { background: var(--key-gray); color: #fff; }
+
+@media (max-width: 380px) {
+  :root { --tile: 52px; }
+  .keyboard-key { height: 46px; font-size: 14px; }
+  .keyboard-key-wide { font-size: 11px; }
+}
+
+/* Reset-time footer */
+.reset-time {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* End-of-game stats panel */
+.end-game {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  align-items: stretch;
+  text-align: center;
+}
+
+.verdict {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.community-note {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.stat-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stat-value {
+  font-size: 22px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.hist-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.histogram {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hist-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hist-label {
+  width: 14px;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.hist-fill {
+  height: 20px;
+  background: var(--gray);
+  color: #fff;
+  border-radius: 2px;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  font: 700 12px system-ui;
+  min-width: 24px;
+  font-variant-numeric: tabular-nums;
+}
+
+.hist-bar-current .hist-fill { background: var(--green); }
+
+.share-btn {
+  margin-top: 4px;
+  padding: 12px 16px;
+  background: var(--green);
+  color: #fff;
+  border: 0;
+  border-radius: 6px;
+  font: 700 16px system-ui;
+  cursor: pointer;
+}
+
+.share-btn:hover { filter: brightness(1.05); }
+
+/* Toast */
+.toast {
+  position: fixed;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 10px 18px;
+  background: var(--fg);
+  color: var(--bg);
+  border-radius: 6px;
+  font: 700 14px system-ui;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  z-index: 100;
+  white-space: nowrap;
+}
+
+.toast.toast-show { opacity: 1; }
+
+/* Modal */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  padding: 16px;
+  animation: fade-in 0.15s ease;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.modal {
+  background: var(--bg);
+  color: var(--fg);
+  padding: 24px;
+  border-radius: 12px;
+  max-width: 380px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+}
+
+.modal h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.modal p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.legend {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.legend li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.legend-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 3px;
+  font-weight: 800;
+  font-size: 14px;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.legend-tile[data-color='green']  { background: var(--green); }
+.legend-tile[data-color='yellow'] { background: var(--yellow); }
+.legend-tile[data-color='gray']   { background: var(--gray); }
+
+.legend-note {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.modal-close {
+  margin-top: 4px;
+  padding: 12px 16px;
+  background: var(--fg);
+  color: var(--bg);
+  border: 0;
+  border-radius: 6px;
+  font: 700 15px system-ui;
+  cursor: pointer;
+}
+
+.modal-close:hover { filter: brightness(0.95); }
+
+/* Share modal — extends .modal with extra width and the close-X button. */
+.share-modal {
+  max-width: 420px;
+  position: relative;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.modal-x {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: 400 24px/1 system-ui;
+  cursor: pointer;
+  border-radius: 50%;
+}
+
+.modal-x:hover {
+  background: var(--border);
+  color: var(--fg);
+}
+
+.share-preview {
+  background: var(--border);
+  padding: 14px 16px;
+  border-radius: 8px;
+  margin: 6px 0 4px;
+}
+
+.share-preview-title {
+  font-weight: 700;
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+
+.share-preview-grid {
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 22px;
+  line-height: 1.15;
+  margin: 0;
+  white-space: pre;
+  letter-spacing: 0.04em;
+}
+
+.share-action {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  border-radius: 6px;
+  font: 600 14px system-ui;
+  cursor: pointer;
+  margin-top: 8px;
+}
+
+.share-action:hover { background: var(--border); }
+
+.share-action-primary {
+  background: var(--green);
+  color: #fff;
+  border-color: var(--green);
+}
+
+.share-action-primary:hover {
+  filter: brightness(1.05);
+  background: var(--green);
+}
+
+.share-section-label {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 16px 0 8px;
+  font-weight: 700;
+}
+
+.share-buttons {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.share-button {
+  padding: 12px 4px;
+  border: 0;
+  border-radius: 6px;
+  font: 700 12px system-ui;
+  color: #fff;
+  cursor: pointer;
+  text-align: center;
+}
+
+.share-button:hover { filter: brightness(1.1); }
+
+.share-button-x        { background: #000000; }
+.share-button-threads  { background: #000000; }
+.share-button-bluesky  { background: #1185fe; }
+.share-button-reddit   { background: #ff4500; }
+.share-button-whatsapp { background: #25d366; }
+.share-button-facebook { background: #1877f2; }

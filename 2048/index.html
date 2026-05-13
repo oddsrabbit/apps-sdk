@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <title>2048</title>
+    <link rel="stylesheet" href="./styles.css?v=__BUILD_ID__" />
+    <script src="../sdk-v1.js?v=__BUILD_ID__"></script>
+  </head>
+  <body>
+    <div class="container">
+      <div class="heading">
+        <h1 class="title">2048</h1>
+        <div class="scores-container">
+          <div class="score-container">0</div>
+          <div class="best-container">0</div>
+        </div>
+      </div>
+
+      <div class="above-game">
+        <p class="game-intro">Join the numbers and get to the <strong>2048 tile!</strong></p>
+        <button type="button" class="restart-button">New Game</button>
+      </div>
+
+      <div class="game-container">
+        <div class="game-message">
+          <p></p>
+          <div class="lower">
+            <button type="button" class="keep-playing-button">Keep going</button>
+            <button type="button" class="retry-button">Try again</button>
+          </div>
+        </div>
+
+        <div class="grid-container">
+          <div class="grid-row">
+            <div class="grid-cell"></div><div class="grid-cell"></div><div class="grid-cell"></div><div class="grid-cell"></div>
+          </div>
+          <div class="grid-row">
+            <div class="grid-cell"></div><div class="grid-cell"></div><div class="grid-cell"></div><div class="grid-cell"></div>
+          </div>
+          <div class="grid-row">
+            <div class="grid-cell"></div><div class="grid-cell"></div><div class="grid-cell"></div><div class="grid-cell"></div>
+          </div>
+          <div class="grid-row">
+            <div class="grid-cell"></div><div class="grid-cell"></div><div class="grid-cell"></div><div class="grid-cell"></div>
+          </div>
+        </div>
+
+        <div class="tile-container"></div>
+      </div>
+
+      <p class="game-explanation">
+        <strong class="important">How to play:</strong> Swipe or use your arrow keys to move the tiles. When two tiles with the same number touch, they merge into one.
+      </p>
+    </div>
+
+    <script src="./js/keyboard_input_manager.js?v=__BUILD_ID__"></script>
+    <script src="./js/html_actuator.js?v=__BUILD_ID__"></script>
+    <script src="./js/grid.js?v=__BUILD_ID__"></script>
+    <script src="./js/tile.js?v=__BUILD_ID__"></script>
+    <script src="./js/storage_manager.js?v=__BUILD_ID__"></script>
+    <script src="./js/game_manager.js?v=__BUILD_ID__"></script>
+    <script src="./js/application.js?v=__BUILD_ID__"></script>
+  </body>
+</html>

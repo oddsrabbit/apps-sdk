@@ -1,0 +1,431 @@
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #faf8ef;
+  color: #776e65;
+  font-family: "Clear Sans", "Helvetica Neue", Arial, sans-serif;
+  font-size: 18px; }
+
+body {
+  /* Canonical 2048 used 80px to center the game on a full-browser page; we
+     run inside the apps.oddsrabbit.com sandbox iframe where vertical real
+     estate is tighter, so we keep the gutter slim. */
+  margin: 16px 0; }
+
+/* Grid pitch (distance from one tile slot to the next). Used by the .tile
+   transform below — driving position via a single custom property replaces
+   the legacy approach of 32 hard-coded `.tile-position-X-Y` rules. The
+   compact media query at the bottom of the file overrides the value. */
+/* `color-scheme: light` keeps the browser from auto-applying any dark-mode
+   UA styling to form controls or scrollbars. 2048's cream/brown palette is
+   part of the game's visual identity, so we deliberately don't follow the
+   host theme the way rabbit-words does. */
+:root {
+  color-scheme: light;
+  --tile-pitch: 121px; }
+
+.heading:after {
+  content: "";
+  display: block;
+  clear: both; }
+
+h1.title {
+  font-size: 80px;
+  font-weight: bold;
+  margin: 0;
+  display: block;
+  float: left; }
+
+@keyframes move-up {
+  0% {
+    transform: translateY(0);
+    opacity: 1; }
+  100% {
+    transform: translateY(-75px);
+    opacity: 0; } }
+
+.scores-container {
+  float: right;
+  text-align: right; }
+
+.score-container, .best-container {
+  position: relative;
+  display: inline-block;
+  background: #bbada0;
+  padding: 15px 25px;
+  font-size: 25px;
+  height: 25px;
+  line-height: 47px;
+  font-weight: bold;
+  border-radius: 3px;
+  color: white;
+  margin-top: 8px;
+  text-align: center; }
+  .score-container:after, .best-container:after {
+    position: absolute;
+    width: 100%;
+    top: 10px;
+    left: 0;
+    text-transform: uppercase;
+    font-size: 13px;
+    line-height: 13px;
+    text-align: center;
+    color: #eee4da; }
+  .score-container .score-addition, .best-container .score-addition {
+    position: absolute;
+    top: 25px;
+    right: 30px;
+    color: rgba(119, 110, 101, 0.9);
+    font-size: 25px;
+    line-height: 25px;
+    font-weight: bold;
+    z-index: 100;
+    animation: move-up 600ms ease-in;
+    animation-fill-mode: both; }
+
+.score-container:after {
+  content: "Score"; }
+
+.best-container:after {
+  content: "Best"; }
+
+p {
+  margin-top: 0;
+  margin-bottom: 10px;
+  line-height: 1.65; }
+
+a {
+  color: #776e65;
+  font-weight: bold;
+  text-decoration: underline;
+  cursor: pointer; }
+
+strong.important {
+  text-transform: uppercase; }
+
+hr {
+  border: none;
+  border-bottom: 1px solid #d8d4d0;
+  margin-top: 20px;
+  margin-bottom: 30px; }
+
+.container {
+  width: 500px;
+  margin: 0 auto; }
+
+@keyframes fade-in {
+  0% { opacity: 0; }
+  100% { opacity: 1; } }
+
+.game-container {
+  margin-top: 40px;
+  position: relative;
+  padding: 15px;
+  cursor: default;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+  touch-action: none;
+  background: #bbada0;
+  border-radius: 6px;
+  width: 500px;
+  height: 500px;
+  box-sizing: border-box; }
+  .game-container .game-message {
+    /* `display` flips to `flex` when game-won/game-over is added. Flex
+       centering replaces the legacy `margin-top: 222px` (and its mobile
+       `margin-top: 90px` override) — the overlay's contents now center
+       themselves regardless of board size. */
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 24px;
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    background: rgba(238, 228, 218, 0.5);
+    z-index: 100;
+    text-align: center;
+    animation: fade-in 800ms ease 1200ms;
+    animation-fill-mode: both; }
+    .game-container .game-message p {
+      font-size: 60px;
+      font-weight: bold;
+      line-height: 60px;
+      margin: 0; }
+    .game-container .game-message .lower {
+      display: flex;
+      gap: 9px;
+      margin: 0; }
+    .game-container .game-message button {
+      background: #8f7a66;
+      border: 0;
+      border-radius: 3px;
+      padding: 0 20px;
+      color: #f9f6f2;
+      height: 40px;
+      line-height: 40px;
+      font: inherit;
+      font-weight: bold;
+      cursor: pointer; }
+      .game-container .game-message button.keep-playing-button {
+        display: none; }
+    .game-container .game-message.game-won {
+      background: rgba(237, 194, 46, 0.5);
+      color: #f9f6f2; }
+      .game-container .game-message.game-won button.keep-playing-button {
+        display: block; }
+    .game-container .game-message.game-won, .game-container .game-message.game-over {
+      display: flex; }
+
+.grid-container {
+  position: absolute;
+  z-index: 1; }
+
+.grid-row {
+  margin-bottom: 15px; }
+  .grid-row:last-child {
+    margin-bottom: 0; }
+  .grid-row:after {
+    content: "";
+    display: block;
+    clear: both; }
+
+.grid-cell {
+  width: 106.25px;
+  height: 106.25px;
+  margin-right: 15px;
+  float: left;
+  border-radius: 3px;
+  background: rgba(238, 228, 218, 0.35); }
+  .grid-cell:last-child {
+    margin-right: 0; }
+
+.tile-container {
+  position: absolute;
+  z-index: 2; }
+
+.tile, .tile .tile-inner {
+  width: 107px;
+  height: 107px;
+  line-height: 107px; }
+
+.tile {
+  position: absolute;
+  transition: transform 100ms ease-in-out;
+  /* Position is driven by the `--tile-col` and `--tile-row` inline custom
+     properties that html_actuator.js sets when adding or moving a tile.
+     Updating those properties triggers the same compositor-only transition
+     the legacy `.tile-position-X-Y` class swap used, and one rule replaces
+     the 32 hard-coded rules (16 default + 16 compact) the upstream had. */
+  transform: translate(
+    calc((var(--tile-col, 1) - 1) * var(--tile-pitch)),
+    calc((var(--tile-row, 1) - 1) * var(--tile-pitch))); }
+  .tile .tile-inner {
+    border-radius: 3px;
+    background: #eee4da;
+    text-align: center;
+    font-weight: bold;
+    z-index: 10;
+    font-size: 55px; }
+  .tile.tile-2 .tile-inner {
+    background: #eee4da;
+    box-shadow: 0 0 30px 10px rgba(243, 215, 116, 0), inset 0 0 0 1px rgba(255, 255, 255, 0); }
+  .tile.tile-4 .tile-inner {
+    background: #ede0c8;
+    box-shadow: 0 0 30px 10px rgba(243, 215, 116, 0), inset 0 0 0 1px rgba(255, 255, 255, 0); }
+  .tile.tile-8 .tile-inner {
+    color: #f9f6f2;
+    background: #f2b179; }
+  .tile.tile-16 .tile-inner {
+    color: #f9f6f2;
+    background: #f59563; }
+  .tile.tile-32 .tile-inner {
+    color: #f9f6f2;
+    background: #f67c5f; }
+  .tile.tile-64 .tile-inner {
+    color: #f9f6f2;
+    background: #f65e3b; }
+  .tile.tile-128 .tile-inner {
+    color: #f9f6f2;
+    background: #edcf72;
+    box-shadow: 0 0 30px 10px rgba(243, 215, 116, 0.2381), inset 0 0 0 1px rgba(255, 255, 255, 0.14286);
+    font-size: 45px; }
+    @media screen and (max-width: 520px), screen and (max-height: 720px) {
+      .tile.tile-128 .tile-inner {
+        font-size: 25px; } }
+  .tile.tile-256 .tile-inner {
+    color: #f9f6f2;
+    background: #edcc61;
+    box-shadow: 0 0 30px 10px rgba(243, 215, 116, 0.31746), inset 0 0 0 1px rgba(255, 255, 255, 0.19048);
+    font-size: 45px; }
+    @media screen and (max-width: 520px), screen and (max-height: 720px) {
+      .tile.tile-256 .tile-inner {
+        font-size: 25px; } }
+  .tile.tile-512 .tile-inner {
+    color: #f9f6f2;
+    background: #edc850;
+    box-shadow: 0 0 30px 10px rgba(243, 215, 116, 0.39683), inset 0 0 0 1px rgba(255, 255, 255, 0.2381);
+    font-size: 45px; }
+    @media screen and (max-width: 520px), screen and (max-height: 720px) {
+      .tile.tile-512 .tile-inner {
+        font-size: 25px; } }
+  .tile.tile-1024 .tile-inner {
+    color: #f9f6f2;
+    background: #edc53f;
+    box-shadow: 0 0 30px 10px rgba(243, 215, 116, 0.47619), inset 0 0 0 1px rgba(255, 255, 255, 0.28571);
+    font-size: 35px; }
+    @media screen and (max-width: 520px), screen and (max-height: 720px) {
+      .tile.tile-1024 .tile-inner {
+        font-size: 15px; } }
+  .tile.tile-2048 .tile-inner {
+    color: #f9f6f2;
+    background: #edc22e;
+    box-shadow: 0 0 30px 10px rgba(243, 215, 116, 0.55556), inset 0 0 0 1px rgba(255, 255, 255, 0.33333);
+    font-size: 35px; }
+    @media screen and (max-width: 520px), screen and (max-height: 720px) {
+      .tile.tile-2048 .tile-inner {
+        font-size: 15px; } }
+  .tile.tile-super .tile-inner {
+    color: #f9f6f2;
+    background: #3c3a32;
+    font-size: 30px; }
+    @media screen and (max-width: 520px), screen and (max-height: 720px) {
+      .tile.tile-super .tile-inner {
+        font-size: 10px; } }
+
+@keyframes appear {
+  0% {
+    opacity: 0;
+    transform: scale(0); }
+  100% {
+    opacity: 1;
+    transform: scale(1); } }
+
+.tile-new .tile-inner {
+  animation: appear 200ms ease 100ms;
+  animation-fill-mode: backwards; }
+
+@keyframes pop {
+  0% { transform: scale(0); }
+  50% { transform: scale(1.2); }
+  100% { transform: scale(1); } }
+
+.tile-merged .tile-inner {
+  z-index: 20;
+  animation: pop 200ms ease 100ms;
+  animation-fill-mode: backwards; }
+
+.above-game:after {
+  content: "";
+  display: block;
+  clear: both; }
+
+.game-intro {
+  float: left;
+  line-height: 42px;
+  margin-bottom: 0; }
+
+.restart-button {
+  background: #8f7a66;
+  border: 0;
+  border-radius: 3px;
+  padding: 0 20px;
+  color: #f9f6f2;
+  height: 40px;
+  line-height: 40px;
+  text-align: center;
+  font: inherit;
+  font-weight: bold;
+  cursor: pointer;
+  float: right; }
+
+.game-explanation {
+  margin-top: 50px; }
+
+@media screen and (max-width: 520px), screen and (max-height: 720px) {
+  :root {
+    --tile-pitch: 67px; }
+
+  html, body {
+    font-size: 15px; }
+
+  body {
+    margin: 20px 0;
+    padding: 0 20px; }
+
+  h1.title {
+    font-size: 27px;
+    margin-top: 15px; }
+
+  .container {
+    width: 280px;
+    margin: 0 auto; }
+
+  .score-container, .best-container {
+    margin-top: 0;
+    padding: 15px 10px;
+    min-width: 40px; }
+
+  .heading {
+    margin-bottom: 10px; }
+
+  .game-intro {
+    width: 55%;
+    display: block;
+    box-sizing: border-box;
+    line-height: 1.65; }
+
+  .restart-button {
+    width: 42%;
+    padding: 0;
+    box-sizing: border-box;
+    margin-top: 2px; }
+
+  .game-container {
+    margin-top: 17px;
+    padding: 10px;
+    width: 280px;
+    height: 280px; }
+    .game-container .game-message {
+      gap: 12px; }
+      .game-container .game-message p {
+        font-size: 30px;
+        line-height: 30px; }
+
+  .grid-row {
+    margin-bottom: 10px; }
+
+  .grid-cell {
+    width: 57.5px;
+    height: 57.5px;
+    margin-right: 10px; }
+
+  .tile, .tile .tile-inner {
+    width: 58px;
+    height: 58px;
+    line-height: 58px; }
+
+  .tile .tile-inner {
+    font-size: 35px; } }
+
+/* Bootstrap error fallback — surfaced to the user when the SDK bridge can't
+   be reached or hydrate fails irrecoverably. Mirrors rabbit-words' behavior
+   of writing the error to the DOM instead of leaving the user on a blank
+   game. */
+.bootstrap-error {
+  margin: 20px auto;
+  padding: 16px 20px;
+  max-width: 460px;
+  border-radius: 6px;
+  background: #f7e6e1;
+  color: #7a2e16;
+  font-size: 16px;
+  line-height: 1.5;
+  text-align: center; }
+
