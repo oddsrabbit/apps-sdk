@@ -5,7 +5,7 @@ The SDK for building games and apps on [OddsRabbit](https://www.oddsrabbit.com).
 > 🚧 **Alpha.** APIs subject to change.
 
 - **Full developer guide:** [oddsrabbit.com/developers/games](https://www.oddsrabbit.com/developers/games/)
-- **Reference games:** [`rabbit-words/`](./rabbit-words/), [`2048/`](./2048/), [`liquid/`](./liquid/)
+- **Reference games:** [`rabbit-words/`](./rabbit-words/), [`2048/`](./2048/), [`snake/`](./snake/), [`liquid/`](./liquid/)
 
 ## Hello world
 
@@ -84,6 +84,7 @@ src/host/       Sandbox host page that loads dev appUrls
 src/schemas/    Zod schemas — single source of truth for the bridge
 rabbit-words/   RabbitWords — reference game (Games surface, Phase 1)
 2048/           2048 port — reference game
+snake/          Snake — Game Boy-styled reference game
 liquid/         Liquid WebGL toy — reference app, no scopes
 ```
 

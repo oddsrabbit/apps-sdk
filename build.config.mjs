@@ -32,10 +32,23 @@ const GAME_2048_JS = [
   'application.js',
 ];
 
+// Game files for the vanilla-JS Snake game. Same shape as 2048 — vanilla JS
+// copied verbatim, only index.html carries the __BUILD_ID__ placeholder.
+const GAME_SNAKE_JS = [
+  'input_manager.js',
+  'storage_manager.js',
+  'game.js',
+  'renderer.js',
+  'application.js',
+];
+
 await rm('dist', { recursive: true, force: true });
 await mkdir('dist/host', { recursive: true });
 await mkdir('dist/rabbit-words', { recursive: true });
 await mkdir('dist/2048/js', { recursive: true });
+await mkdir('dist/snake/js', { recursive: true });
+await mkdir('dist/snake/fonts', { recursive: true });
+await mkdir('dist/snake/images', { recursive: true });
 await mkdir('dist/liquid/js', { recursive: true });
 
 const baseOpts = {
@@ -126,6 +139,20 @@ async function copyHostAssets() {
     ...GAME_2048_JS.map((name) =>
       copyFile(`2048/js/${name}`, `dist/2048/js/${name}`)
     ),
+    // Snake — original implementation, vanilla JS, no bundling needed.
+    copyHtmlWithBuildId('snake/index.html', 'dist/snake/index.html'),
+    copyFile('snake/styles.css', 'dist/snake/styles.css'),
+    ...GAME_SNAKE_JS.map((name) =>
+      copyFile(`snake/js/${name}`, `dist/snake/js/${name}`)
+    ),
+    // Press Start 2P (OFL 1.1, latin subset). OFL.txt ships alongside the
+    // woff2 so the redistributed font carries its license, as required.
+    copyFile('snake/fonts/press-start-2p-latin.woff2', 'dist/snake/fonts/press-start-2p-latin.woff2'),
+    copyFile('snake/fonts/OFL.txt', 'dist/snake/fonts/OFL.txt'),
+    // Snake-head sprite — the OddsRabbit "karat" rabbit icon (the in-app
+    // currency mark) reused as the snake's face. 32x32 PNG with palette
+    // transparency so the green body shows through around the rabbit shape.
+    copyFile('snake/images/head.png', 'dist/snake/images/head.png'),
     // Liquid — WebGL fluid simulation. Vendored vanilla JS, no bundling needed.
     copyHtmlWithBuildId('liquid/index.html', 'dist/liquid/index.html'),
     copyFile('liquid/js/script.js', 'dist/liquid/js/script.js'),
