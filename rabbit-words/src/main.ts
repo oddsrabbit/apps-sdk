@@ -1,4 +1,4 @@
-import type { OddsRabbitGlobal } from '../../src/sdk/sdk';
+import type { FriendScore, OddsRabbitGlobal } from '../../src/sdk/sdk';
 import { ANSWERS, isValidGuess } from './words';
 
 declare global {
@@ -37,12 +37,26 @@ interface Streak {
 const DEFAULT_STATS: Stats = { played: 0, wins: 0, distribution: [0, 0, 0, 0, 0, 0] };
 const DEFAULT_STREAK: Streak = { current: 0, max: 0, lastPlayedPuzzleIndex: null };
 
+// Bucket keys submitted to / read from aggregate.count. Order matters for the
+// distribution chart — labels under each bar follow this sequence.
+const DISTRIBUTION_BUCKETS = [
+  'won-1', 'won-2', 'won-3', 'won-4', 'won-5', 'won-6', 'lost',
+] as const;
+type DistributionBucket = typeof DISTRIBUTION_BUCKETS[number];
+
+// `null` per bucket = below the k=5 anonymity floor on the aggregate API.
+// We render those as zero-width bars without leaking the "1..4 players" range.
+type CommunityData = {
+  buckets: Record<DistributionBucket, number | null>;
+};
+
 // ---------- Module-level UI state ----------
 
 let currentState: State;
 let currentStats: Stats = DEFAULT_STATS;
 let currentStreak: Streak = DEFAULT_STREAK;
-let currentNote: string | undefined;
+let currentCommunity: CommunityData | undefined;
+let currentFriends: FriendScore[] | undefined;
 let currentInput = '';
 
 // One-shot animation flags. Set when an event happens (submit, keystroke);
@@ -200,7 +214,15 @@ function render(): void {
   if (currentState.status === 'in_progress') {
     root.appendChild(renderKeyboard(currentState));
   } else {
-    root.appendChild(renderEndGame(currentState, currentStats, currentStreak, currentNote));
+    root.appendChild(
+      renderEndGame(
+        currentState,
+        currentStats,
+        currentStreak,
+        currentCommunity,
+        currentFriends
+      )
+    );
   }
   root.appendChild(renderResetTime());
 
@@ -368,7 +390,8 @@ function renderEndGame(
   state: State,
   stats: Stats,
   streak: Streak,
-  note?: string
+  community?: CommunityData,
+  friends?: FriendScore[]
 ): HTMLElement {
   const wrap = document.createElement('div');
   wrap.className = 'end-game';
@@ -383,14 +406,18 @@ function renderEndGame(
   }
   wrap.appendChild(verdict);
 
-  if (note) {
-    const noteEl = document.createElement('p');
-    noteEl.className = 'community-note';
-    noteEl.textContent = note;
-    wrap.appendChild(noteEl);
+  // Today's distribution (community) — puzzle-specific stats first since
+  // they're the most time-sensitive context for the result.
+  if (community) {
+    wrap.appendChild(renderCommunityDistribution(state, community));
   }
 
-  // Stat counters
+  // Friends panel — the social heart. Always render (handles anon + empty
+  // states internally) so signed-out users still see the sign-in CTA.
+  wrap.appendChild(renderFriendsPanel(friends));
+
+  // Personal lifetime stats below — less urgent than the round-specific
+  // community + friends data above.
   const statsRow = document.createElement('div');
   statsRow.className = 'stats-row';
   const winPct = stats.played > 0 ? Math.round((stats.wins / stats.played) * 100) : 0;
@@ -408,10 +435,10 @@ function renderEndGame(
   }
   wrap.appendChild(statsRow);
 
-  // Guess distribution
+  // Personal lifetime guess distribution
   const histTitle = document.createElement('h3');
   histTitle.className = 'hist-title';
-  histTitle.textContent = 'Guess Distribution';
+  histTitle.textContent = 'Your Distribution';
   wrap.appendChild(histTitle);
 
   const hist = document.createElement('div');
@@ -445,6 +472,145 @@ function renderEndGame(
   share.textContent = 'Share result';
   share.addEventListener('click', () => void shareResult(state));
   wrap.appendChild(share);
+
+  return wrap;
+}
+
+function renderCommunityDistribution(
+  state: State,
+  community: CommunityData
+): HTMLElement {
+  const wrap = document.createElement('section');
+  wrap.className = 'community-distribution';
+
+  const title = document.createElement('h3');
+  title.className = 'hist-title';
+  title.textContent = "Today's Distribution";
+  wrap.appendChild(title);
+
+  // Treat below-k=5-floor buckets as 0 for display — they render as empty
+  // bars without revealing the 1..4-player range. Distinct from "literally
+  // zero players got 1-guess" only in semantics, not pixels.
+  const counts = DISTRIBUTION_BUCKETS.map((b) => community.buckets[b] ?? 0);
+  const total = counts.reduce((a, b) => a + b, 0);
+
+  if (total === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'community-empty';
+    empty.textContent = 'Stats unlock once a few more players finish today.';
+    wrap.appendChild(empty);
+    return wrap;
+  }
+
+  const userBucket = bucketForState(state);
+  const max = Math.max(1, ...counts);
+
+  const hist = document.createElement('div');
+  hist.className = 'histogram community-hist';
+  DISTRIBUTION_BUCKETS.forEach((bucket, i) => {
+    const count = counts[i] ?? 0;
+    const pct = Math.round((count / total) * 100);
+
+    const bar = document.createElement('div');
+    bar.className = 'hist-bar';
+    if (bucket === userBucket) bar.classList.add('hist-bar-current');
+
+    const label = document.createElement('span');
+    label.className = 'hist-label';
+    // Display label: 1..6 for won-N, "X" for lost — matches the share-grid
+    // convention ("X/6").
+    label.textContent = bucket === 'lost' ? 'X' : bucket.slice(-1);
+
+    const fill = document.createElement('div');
+    fill.className = 'hist-fill';
+    fill.style.width = `${Math.max(8, (count / max) * 100)}%`;
+    fill.textContent = `${pct}%`;
+
+    bar.appendChild(label);
+    bar.appendChild(fill);
+    hist.appendChild(bar);
+  });
+  wrap.appendChild(hist);
+
+  return wrap;
+}
+
+function renderFriendsPanel(friends?: FriendScore[]): HTMLElement {
+  const wrap = document.createElement('section');
+  wrap.className = 'friends-panel';
+
+  const title = document.createElement('h3');
+  title.className = 'hist-title';
+  title.textContent = 'Friends';
+  wrap.appendChild(title);
+
+  // Anonymous: sign-in CTA. Use requestSignIn — the host shows the prompt at
+  // a natural friction moment (end-of-round), per the SDK guidance.
+  if (!window.OddsRabbit.user) {
+    const cta = document.createElement('div');
+    cta.className = 'friends-cta';
+
+    const blurb = document.createElement('p');
+    blurb.className = 'friends-cta-blurb';
+    blurb.textContent = 'Sign in to see how people you follow are doing today.';
+    cta.appendChild(blurb);
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'friends-cta-btn';
+    btn.textContent = 'Sign in';
+    btn.addEventListener('click', () => {
+      void window.OddsRabbit.actions.requestSignIn(
+        'See how your friends did today'
+      );
+    });
+    cta.appendChild(btn);
+    wrap.appendChild(cta);
+    return wrap;
+  }
+
+  if (!friends || friends.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'friends-empty';
+    empty.textContent = "None of the people you follow have played today.";
+    wrap.appendChild(empty);
+    return wrap;
+  }
+
+  const list = document.createElement('ul');
+  list.className = 'friends-list';
+  for (const friend of friends) {
+    const li = document.createElement('li');
+    li.className = 'friends-row';
+
+    // App-specific metadata shape — rabbit-words submits `{ won, guessCount }`.
+    // Falling back to score-based inference keeps this resilient if a future
+    // migration drops the metadata.
+    const meta = friend.metadata as
+      | { won?: boolean; guessCount?: number }
+      | null;
+    const won = meta?.won ?? friend.score > 0;
+    const guessCount = meta?.guessCount;
+
+    const name = document.createElement('span');
+    name.className = 'friends-name';
+    name.textContent = `@${friend.username}`;
+    li.appendChild(name);
+
+    const result = document.createElement('span');
+    result.className = 'friends-result';
+    if (won && typeof guessCount === 'number') {
+      result.textContent = `Solved in ${guessCount}`;
+    } else if (won) {
+      result.textContent = 'Solved';
+    } else {
+      result.textContent = "Didn't solve";
+      result.classList.add('friends-result-lost');
+    }
+    li.appendChild(result);
+    list.appendChild(li);
+  }
+  wrap.appendChild(list);
 
   return wrap;
 }
@@ -632,15 +798,24 @@ async function submitGuess(state: State, raw: string): Promise<void> {
   await writeJson('today', state);
 
   if (state.status !== 'in_progress') {
-    const [updatedStats, updatedStreak, _] = await Promise.all([
+    // Writes first so the subsequent reads see this player's contribution
+    // (the player's own bucket appears in their distribution; scores.friends
+    // doesn't include the viewer, but other clients reading the leaderboard
+    // expect the score to be present).
+    const [updatedStats, updatedStreak] = await Promise.all([
       finalizeStats(state),
       finalizeStreak(state),
       updateAggregate(state),
+      submitScoreToServer(state),
     ]);
     currentStats = updatedStats;
     currentStreak = updatedStreak;
     void window.OddsRabbit.actions.haptic(state.status === 'won' ? 'success' : 'error');
-    currentNote = await communityNote(state);
+
+    [currentCommunity, currentFriends] = await Promise.all([
+      loadCommunityData(state),
+      loadFriends(state),
+    ]);
   }
 
   render();
@@ -661,7 +836,7 @@ async function finalizeStreak(state: State): Promise<Streak> {
 }
 
 async function updateAggregate(state: State): Promise<void> {
-  const bucket = state.status === 'won' ? `won-${state.guesses.length}` : 'lost';
+  const bucket = bucketForState(state);
   try {
     await window.OddsRabbit.aggregate.count(`result-${state.puzzleIndex}`, bucket);
   } catch {
@@ -669,20 +844,77 @@ async function updateAggregate(state: State): Promise<void> {
   }
 }
 
-async function communityNote(state: State): Promise<string> {
-  if (state.status !== 'won') return '';
-  const bucket = `won-${state.guesses.length}`;
-  let count: number | null = null;
-  try {
-    count = await window.OddsRabbit.aggregate.count(
-      `result-${state.puzzleIndex}`,
-      bucket
-    );
-  } catch {
-    return '';
+function bucketForState(state: State): DistributionBucket {
+  if (state.status !== 'won') return 'lost';
+  switch (state.guesses.length) {
+    case 1: return 'won-1';
+    case 2: return 'won-2';
+    case 3: return 'won-3';
+    case 4: return 'won-4';
+    case 5: return 'won-5';
+    case 6: return 'won-6';
+    default: return 'lost';
   }
-  if (count === null) return 'Community stats unlock once a few more players finish.';
-  return `${count.toLocaleString()} players solved in ${state.guesses.length} guesses.`;
+}
+
+/**
+ * Submit this user's result to the platform scores table for the friends
+ * panel + future leaderboard. Score formula: `ROW_COUNT + 1 - guessCount`
+ * for wins (1-guess win = 6 pts, 6-guess win = 1 pt), 0 for losses. Ties on
+ * guess count are broken by submission time server-side.
+ *
+ * Best-effort:
+ *  - 409 (already submitted) is expected on rerenders / replays — silent.
+ *  - Network / 5xx errors leave the friends panel empty; the local game
+ *    state is unaffected.
+ *  - Skipped entirely for anonymous users (the bridge would 401 anyway).
+ */
+async function submitScoreToServer(state: State): Promise<void> {
+  if (!window.OddsRabbit.user) return;
+  if (state.status === 'in_progress') return;
+  const won = state.status === 'won';
+  const guessCount = state.guesses.length;
+  try {
+    await window.OddsRabbit.scores.submit({
+      roundKey: `puzzle-${state.puzzleIndex}`,
+      score: won ? ROW_COUNT + 1 - guessCount : 0,
+      metadata: { won, guessCount },
+    });
+  } catch {
+    /* best-effort — see jsdoc above */
+  }
+}
+
+/**
+ * Fetch all 7 distribution buckets in parallel for today's puzzle. Uses
+ * aggregate.read (not .count) — .count would register the viewer into every
+ * bucket and corrupt the distribution. Each call can return null independently
+ * (per-bucket k=5 floor), which the renderer treats as "below floor, show
+ * empty bar."
+ */
+async function loadCommunityData(state: State): Promise<CommunityData> {
+  const key = `result-${state.puzzleIndex}`;
+  const counts = await Promise.all(
+    DISTRIBUTION_BUCKETS.map((bucket) =>
+      window.OddsRabbit.aggregate.read(key, bucket).catch(() => null)
+    )
+  );
+  const buckets = {} as Record<DistributionBucket, number | null>;
+  DISTRIBUTION_BUCKETS.forEach((bucket, i) => {
+    buckets[bucket] = counts[i] ?? null;
+  });
+  return { buckets };
+}
+
+async function loadFriends(state: State): Promise<FriendScore[]> {
+  if (!window.OddsRabbit.user) return [];
+  try {
+    return await window.OddsRabbit.scores.friends({
+      roundKey: `puzzle-${state.puzzleIndex}`,
+    });
+  } catch {
+    return [];
+  }
 }
 
 async function shareResult(state: State): Promise<void> {
@@ -978,7 +1210,15 @@ async function bootstrap(): Promise<void> {
   currentStreak = streak;
 
   if (state.status !== 'in_progress') {
-    currentNote = await communityNote(state);
+    // Retry score submission in case the original game-over submit failed
+    // silently (network blip, 5xx). 409s for already-submitted rounds are
+    // expected here and ignored inside submitScoreToServer.
+    await submitScoreToServer(state);
+
+    [currentCommunity, currentFriends] = await Promise.all([
+      loadCommunityData(state),
+      loadFriends(state),
+    ]);
   }
 
   window.OddsRabbit.lifecycle.on('pause', () => {

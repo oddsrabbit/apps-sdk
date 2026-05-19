@@ -1,10 +1,22 @@
 import {
+  FriendScoreSchema,
   type BridgeUser,
   type AppColorScheme,
   type AppHapticType,
   type AppLifecycleEvent,
+  type FriendScore,
 } from '../schemas/messages';
 import { BridgeTransport, type LifecycleHandler } from './transport';
+
+export type { FriendScore } from '../schemas/messages';
+
+export interface ScoreSubmitPayload {
+  roundKey: string;
+  score: number;
+  metadata?: Record<string, unknown>;
+}
+
+const FriendScoresArraySchema = FriendScoreSchema.array();
 
 export interface OddsRabbitGlobal {
   readonly user: BridgeUser | null;
@@ -25,7 +37,38 @@ export interface OddsRabbitGlobal {
   };
 
   readonly aggregate: {
+    /**
+     * Register the calling user into `value` for `key` and return the
+     * post-write count of distinct users in that bucket. Returns `null`
+     * below the k=5 anonymity floor. Use this exactly once per round for
+     * the bucket the player landed in — calling it across neighboring
+     * buckets to "fetch the distribution" registers the user into all of
+     * them. For read-only access to other buckets, use `read`.
+     */
     count(key: string, value: string): Promise<number | null>;
+    /**
+     * Read-only counterpart to `count`. Same k=5 anonymity floor; does
+     * not modify the caller's bucket membership. Safe to call across all
+     * buckets to render a community distribution.
+     */
+    read(key: string, value: string): Promise<number | null>;
+  };
+
+  readonly scores: {
+    /**
+     * Submit this user's score for a round. One submission per
+     * (app, roundKey, user) — second attempts reject with code
+     * `scores/already-submitted`. Pick a `roundKey` that's stable across
+     * the round (e.g. a UTC day index, a week number).
+     */
+    submit(payload: ScoreSubmitPayload): Promise<void>;
+    /**
+     * Fetch scores for the people the current user follows, for a given
+     * round. Returns an empty array when the user follows nobody or
+     * nobody they follow has played. Server-side sort: score DESC, then
+     * earliest submission. Does not include the viewer's own score.
+     */
+    friends(payload: { roundKey: string }): Promise<FriendScore[]>;
   };
 
   readonly actions: {
@@ -92,6 +135,25 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
       this.transport
         .request<number | null>('aggregate.count', { key, value })
         .then((count) => (count as number | null) ?? null),
+    read: (key: string, value: string): Promise<number | null> =>
+      this.transport
+        .request<number | null>('aggregate.read', { key, value })
+        .then((count) => (count as number | null) ?? null),
+  };
+
+  readonly scores = {
+    submit: (payload: ScoreSubmitPayload): Promise<void> =>
+      this.transport.request<void>('scores.submit', payload),
+    // Validate inbound entries — a malformed server response (missing
+    // username, wrong types) would otherwise crash the renderer. Drops
+    // bad rows silently rather than failing the whole list.
+    friends: (payload: { roundKey: string }): Promise<FriendScore[]> =>
+      this.transport
+        .request<unknown>('scores.friends', payload)
+        .then((result) => {
+          const parsed = FriendScoresArraySchema.safeParse(result);
+          return parsed.success ? parsed.data : [];
+        }),
   };
 
   readonly actions = {

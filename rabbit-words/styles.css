@@ -309,13 +309,6 @@ header h1 {
   font-weight: 700;
 }
 
-.community-note {
-  margin: 0;
-  font-size: 13px;
-  color: var(--muted);
-  text-align: center;
-}
-
 .stats-row {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -385,6 +378,85 @@ header h1 {
 }
 
 .hist-bar-current .hist-fill { background: var(--green); }
+
+/* Community / friends panels — share the .hist-* primitives so labels and
+   bar geometry stay consistent with the personal distribution. */
+.community-distribution,
+.friends-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.community-empty,
+.friends-empty {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.friends-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.friends-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.friends-name {
+  font-weight: 700;
+}
+
+.friends-result {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.friends-result-lost {
+  color: var(--gray);
+}
+
+.friends-cta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+}
+
+.friends-cta-blurb {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.friends-cta-btn {
+  padding: 8px 14px;
+  background: var(--green);
+  color: #fff;
+  border: 0;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.friends-cta-btn:hover { filter: brightness(1.05); }
 
 .share-btn {
   margin-top: 4px;

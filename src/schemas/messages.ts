@@ -18,6 +18,9 @@ export type AppColorScheme = z.infer<typeof AppColorSchemeSchema>;
 const StorageKey = z.string().min(1).max(STORAGE_KEY_MAX_LENGTH);
 const StorageValue = z.string().max(STORAGE_VALUE_MAX_BYTES);
 const CorrelationId = z.string().min(1).max(128);
+const RoundKey = z.string().min(1).max(128);
+
+export const SCORE_METADATA_MAX_BYTES = 2 * 1024;
 
 export const BridgeRequestSchema = z.discriminatedUnion('type', [
   z.object({
@@ -39,6 +42,43 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
     type: z.literal('aggregate.count'),
     correlationId: CorrelationId,
     payload: z.object({ key: StorageKey, value: StorageKey }),
+  }),
+  // Read-only counterpart to aggregate.count. Same k=5 anonymity floor
+  // (returns null below it), but does NOT register the caller into the
+  // bucket — use this when fetching neighboring buckets to render a
+  // distribution, where calling .count would corrupt the data.
+  z.object({
+    type: z.literal('aggregate.read'),
+    correlationId: CorrelationId,
+    payload: z.object({ key: StorageKey, value: StorageKey }),
+  }),
+  z.object({
+    type: z.literal('scores.submit'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      roundKey: RoundKey,
+      // Integer only — bridge contract matches the server's signed INT
+      // column. Per-app min/max belongs to app logic; the platform stays
+      // generic (golf-style negative scores work too).
+      score: z.number().int().min(-2147483648).max(2147483647),
+      // App-specific shape (e.g. { won, guessCount } for rabbit-words).
+      // Server enforces the same cap, but failing here avoids a wasted
+      // bridge round-trip.
+      metadata: z
+        .record(z.unknown())
+        .refine(
+          (m) => JSON.stringify(m).length <= SCORE_METADATA_MAX_BYTES,
+          { message: `metadata exceeds ${SCORE_METADATA_MAX_BYTES}-byte cap` }
+        )
+        .optional(),
+    }),
+  }),
+  z.object({
+    type: z.literal('scores.friends'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      roundKey: RoundKey,
+    }),
   }),
   z.object({
     type: z.literal('actions.share'),
@@ -107,6 +147,16 @@ export const BridgeUserSchema = z.object({
 });
 
 export type BridgeUser = z.infer<typeof BridgeUserSchema>;
+
+export const FriendScoreSchema = z.object({
+  uuid: z.string().uuid(),
+  username: z.string().min(1).max(64),
+  score: z.number().int(),
+  metadata: z.record(z.unknown()).nullable(),
+  createdAt: z.string(),
+});
+
+export type FriendScore = z.infer<typeof FriendScoreSchema>;
 
 export const BridgeInitSchema = z.object({
   type: z.literal('init'),
