@@ -29,6 +29,21 @@ export interface OddsRabbitGlobal {
    * full reload (and a fresh init).
    */
   readonly colorScheme: AppColorScheme | null;
+  /**
+   * Optional deep-link hint passed by the outer launcher (e.g. a push-
+   * notification tap on mobile). Shape is mini-app-specific; the SDK
+   * forwards it verbatim. `null` when the app was opened normally (games
+   * list, deep link with no hint).
+   *
+   * Static for the iframe lifetime — set once on init, never updated. If the
+   * outer wants to express a new intent (e.g. user taps another notification),
+   * it tears down and remounts the iframe with a fresh init.
+   *
+   * Convention: read it inside the `whenReady()` continuation so it's safe
+   * to call as soon as the SDK is ready. Validate the shape defensively;
+   * untrusted callers can put any JSON object here.
+   */
+  readonly initialState: Record<string, unknown> | null;
 
   readonly storage: {
     get(key: string): Promise<string | null>;
@@ -100,6 +115,7 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
   sessionToken: string | null = null;
   expiresAt: string | null = null;
   colorScheme: AppColorScheme | null = null;
+  initialState: Record<string, unknown> | null = null;
 
   private readonly transport: BridgeTransport;
   private readonly initPromise: Promise<void>;
@@ -115,6 +131,7 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
       this.sessionToken = init.sessionToken;
       this.expiresAt = init.expiresAt;
       this.colorScheme = init.colorScheme ?? null;
+      this.initialState = init.initialState ?? null;
       this.resolveInit?.();
     });
   }

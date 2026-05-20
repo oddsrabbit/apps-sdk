@@ -144,6 +144,16 @@ export type BridgeLifecycleMessage = z.infer<
 export const BridgeUserSchema = z.object({
   uuid: z.string().uuid(),
   username: z.string().min(1).max(64),
+  // Avatar URL. `.nullable()` covers users with no avatar set (mini-apps fall
+  // back to initials), and `.default(null)` makes the field optional on the
+  // wire (older outer hosts that predate this addition simply don't send it →
+  // parses to null). The combined output type is `string | null` — no
+  // `undefined` to handle on the consumer side.
+  avatar: z.string().url().nullable().default(null),
+  // ISO datetime the account was created. Same nullable + default-null pattern
+  // as `avatar`: nullable so an outer host can explicitly disclaim the value,
+  // default-null so older outer hosts that don't populate it still parse.
+  createdAt: z.string().datetime().nullable().default(null),
 });
 
 export type BridgeUser = z.infer<typeof BridgeUserSchema>;
@@ -167,6 +177,11 @@ export const BridgeInitSchema = z.object({
   // consumers should treat missing as "unknown" and default their styling to
   // light. The host falls back to its own URL param when init omits it.
   colorScheme: AppColorSchemeSchema.optional(),
+  // Optional deep-link hint forwarded verbatim from the outer launcher (e.g.
+  // a push-notification tap). Shape is mini-app-specific — the SDK does not
+  // interpret it. Zod default-strips unknown keys, so this field MUST be
+  // declared here for it to survive validation and reach the mini-app.
+  initialState: z.record(z.unknown()).optional(),
 });
 
 export type BridgeInit = z.infer<typeof BridgeInitSchema>;

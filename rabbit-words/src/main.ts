@@ -409,7 +409,7 @@ function renderEndGame(
   // Today's distribution (community) — puzzle-specific stats first since
   // they're the most time-sensitive context for the result.
   if (community) {
-    wrap.appendChild(renderCommunityDistribution(state, community));
+    wrap.appendChild(renderCommunityDistribution(community, bucketForState(state)));
   }
 
   // Friends panel — the social heart. Always render (handles anon + empty
@@ -477,16 +477,17 @@ function renderEndGame(
 }
 
 function renderCommunityDistribution(
-  state: State,
-  community: CommunityData
+  community: CommunityData,
+  userBucket: DistributionBucket | null,
+  title = "Today's Distribution"
 ): HTMLElement {
   const wrap = document.createElement('section');
   wrap.className = 'community-distribution';
 
-  const title = document.createElement('h3');
-  title.className = 'hist-title';
-  title.textContent = "Today's Distribution";
-  wrap.appendChild(title);
+  const titleEl = document.createElement('h3');
+  titleEl.className = 'hist-title';
+  titleEl.textContent = title;
+  wrap.appendChild(titleEl);
 
   // Treat below-k=5-floor buckets as 0 for display — they render as empty
   // bars without revealing the 1..4-player range. Distinct from "literally
@@ -497,12 +498,11 @@ function renderCommunityDistribution(
   if (total === 0) {
     const empty = document.createElement('p');
     empty.className = 'community-empty';
-    empty.textContent = 'Stats unlock once a few more players finish today.';
+    empty.textContent = 'Not enough players finished this round.';
     wrap.appendChild(empty);
     return wrap;
   }
 
-  const userBucket = bucketForState(state);
   const max = Math.max(1, ...counts);
 
   const hist = document.createElement('div');
@@ -513,7 +513,7 @@ function renderCommunityDistribution(
 
     const bar = document.createElement('div');
     bar.className = 'hist-bar';
-    if (bucket === userBucket) bar.classList.add('hist-bar-current');
+    if (userBucket && bucket === userBucket) bar.classList.add('hist-bar-current');
 
     const label = document.createElement('span');
     label.className = 'hist-label';
@@ -813,8 +813,8 @@ async function submitGuess(state: State, raw: string): Promise<void> {
     void window.OddsRabbit.actions.haptic(state.status === 'won' ? 'success' : 'error');
 
     [currentCommunity, currentFriends] = await Promise.all([
-      loadCommunityData(state),
-      loadFriends(state),
+      loadCommunityData(state.puzzleIndex),
+      loadFriends(state.puzzleIndex),
     ]);
   }
 
@@ -886,14 +886,17 @@ async function submitScoreToServer(state: State): Promise<void> {
 }
 
 /**
- * Fetch all 7 distribution buckets in parallel for today's puzzle. Uses
+ * Fetch all 7 distribution buckets in parallel for a given puzzle. Uses
  * aggregate.read (not .count) — .count would register the viewer into every
  * bucket and corrupt the distribution. Each call can return null independently
  * (per-bucket k=5 floor), which the renderer treats as "below floor, show
  * empty bar."
+ *
+ * Parameterized by puzzleIndex so callers can fetch past rounds (e.g. a
+ * deep-link from a push notification's leaderboard CTA), not just today.
  */
-async function loadCommunityData(state: State): Promise<CommunityData> {
-  const key = `result-${state.puzzleIndex}`;
+async function loadCommunityData(puzzleIndex: number): Promise<CommunityData> {
+  const key = `result-${puzzleIndex}`;
   const counts = await Promise.all(
     DISTRIBUTION_BUCKETS.map((bucket) =>
       window.OddsRabbit.aggregate.read(key, bucket).catch(() => null)
@@ -906,11 +909,11 @@ async function loadCommunityData(state: State): Promise<CommunityData> {
   return { buckets };
 }
 
-async function loadFriends(state: State): Promise<FriendScore[]> {
+async function loadFriends(puzzleIndex: number): Promise<FriendScore[]> {
   if (!window.OddsRabbit.user) return [];
   try {
     return await window.OddsRabbit.scores.friends({
-      roundKey: `puzzle-${state.puzzleIndex}`,
+      roundKey: `puzzle-${puzzleIndex}`,
     });
   } catch {
     return [];
@@ -1193,6 +1196,122 @@ function drawRoundedRect(
   ctx.closePath();
 }
 
+// ---------- Deep-link from initialState ----------
+
+/**
+ * Parse an opaque initialState payload into a leaderboard intent. Returns
+ * the puzzle index if the payload asks for a leaderboard view, or null
+ * otherwise. The shell forwards initialState verbatim (push-notification
+ * tap, etc.) so the shape is whatever the cron / launcher chose — validate
+ * defensively, don't trust types.
+ *
+ * Expected shape: `{ target: 'leaderboard', roundKey: 'puzzle-N' }`.
+ */
+function parseLeaderboardIntent(
+  initialState: Record<string, unknown> | null
+): number | null {
+  if (!initialState) return null;
+  if (initialState.target !== 'leaderboard') return null;
+  const roundKey = initialState.roundKey;
+  if (typeof roundKey !== 'string') return null;
+  const match = /^puzzle-(\d+)$/.exec(roundKey);
+  if (!match) return null;
+  // parseInt on a regex-matched \d+ is always a non-negative finite integer,
+  // so no range guard is needed.
+  return parseInt(match[1]!, 10);
+}
+
+/**
+ * Show a results-modal overlay for a past puzzle, opened in response to a
+ * push-notification tap. Loads the community distribution + friends list
+ * for that specific round and renders them on top of today's game. Closing
+ * the modal drops the user into today's puzzle, which is already rendered
+ * underneath.
+ *
+ * Quirk: we don't know the viewer's bucket for a past round on the client
+ * (we don't archive prior states locally), so the community distribution
+ * renders without a current-bucket highlight. The percentile in the push
+ * notification body already told the user how they ranked, so the modal's
+ * job is the social context (friends + distribution shape).
+ */
+async function showLeaderboardModal(puzzleIndex: number): Promise<void> {
+  // Don't stack — if a previous tap already opened a leaderboard modal,
+  // tear it down before opening a fresh one.
+  document.querySelector('.leaderboard-modal-backdrop')?.remove();
+
+  const [friends, community] = await Promise.all([
+    loadFriends(puzzleIndex),
+    loadCommunityData(puzzleIndex),
+  ]);
+
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop leaderboard-modal-backdrop';
+  backdrop.setAttribute('role', 'dialog');
+  backdrop.setAttribute('aria-modal', 'true');
+  backdrop.setAttribute('aria-labelledby', 'leaderboard-modal-title');
+
+  const modal = document.createElement('div');
+  modal.className = 'modal leaderboard-modal';
+
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'modal-x';
+  closeBtn.setAttribute('aria-label', 'Close');
+  closeBtn.dataset.action = 'close';
+  closeBtn.innerHTML = '&times;';
+  modal.appendChild(closeBtn);
+
+  const title = document.createElement('h2');
+  title.id = 'leaderboard-modal-title';
+  title.textContent = `Puzzle #${puzzleIndex + 1} results`;
+  modal.appendChild(title);
+
+  const subtitle = document.createElement('p');
+  subtitle.className = 'leaderboard-modal-subtitle';
+  subtitle.textContent = formatPuzzleDate(puzzleIndex);
+  modal.appendChild(subtitle);
+
+  modal.appendChild(
+    renderCommunityDistribution(community, null, "How everyone did")
+  );
+  modal.appendChild(renderFriendsPanel(friends));
+
+  const playBtn = document.createElement('button');
+  playBtn.type = 'button';
+  playBtn.className = 'share-action share-action-primary';
+  playBtn.dataset.action = 'play';
+  playBtn.textContent = "Play today's puzzle";
+  modal.appendChild(playBtn);
+
+  backdrop.appendChild(modal);
+  document.body.appendChild(backdrop);
+
+  const close = (): void => {
+    backdrop.remove();
+    document.removeEventListener('keydown', onKey);
+  };
+  const onKey = (e: KeyboardEvent): void => {
+    if (e.key === 'Escape') close();
+  };
+  document.addEventListener('keydown', onKey);
+
+  backdrop.addEventListener('click', (e) => {
+    if (e.target === backdrop) {
+      close();
+      return;
+    }
+    const target = (e.target as HTMLElement).closest(
+      '[data-action]'
+    ) as HTMLButtonElement | null;
+    if (!target) return;
+    // Both 'close' and 'play' just dismiss — today's puzzle is already
+    // rendered underneath the modal, so there's nothing to navigate.
+    if (target.dataset.action === 'close' || target.dataset.action === 'play') {
+      close();
+    }
+  });
+}
+
 // ---------- Bootstrap ----------
 
 async function bootstrap(): Promise<void> {
@@ -1216,8 +1335,8 @@ async function bootstrap(): Promise<void> {
     await submitScoreToServer(state);
 
     [currentCommunity, currentFriends] = await Promise.all([
-      loadCommunityData(state),
-      loadFriends(state),
+      loadCommunityData(state.puzzleIndex),
+      loadFriends(state.puzzleIndex),
     ]);
   }
 
@@ -1229,8 +1348,33 @@ async function bootstrap(): Promise<void> {
 
   render();
 
+  // Deep-link from a push-notification tap: if the launcher passed a
+  // leaderboard intent, overlay the past-round results modal on top of
+  // today's game. Skipped when the intent doesn't parse, when it points to
+  // today's puzzle (the user can already see the results), or when there's
+  // no intent at all (normal open from the games list).
+  const leaderboardPuzzleIndex = parseLeaderboardIntent(
+    window.OddsRabbit.initialState
+  );
+  const shouldShowLeaderboard =
+    leaderboardPuzzleIndex !== null &&
+    leaderboardPuzzleIndex !== state.puzzleIndex;
+
+  // First-time users (no seenIntro) get the how-to-play modal. If a
+  // leaderboard intent is also present, chain them — instructions first,
+  // then the leaderboard on dismissal — so the user isn't dropped into a
+  // results screen for a game they've never played. In practice this combo
+  // is rare: push notifications only target users who've played recently,
+  // so seenIntro will already be true.
   if (!seenIntro) {
-    showInstructions(() => void writeJson('seen_intro', true));
+    showInstructions(() => {
+      void writeJson('seen_intro', true);
+      if (shouldShowLeaderboard) {
+        void showLeaderboardModal(leaderboardPuzzleIndex);
+      }
+    });
+  } else if (shouldShowLeaderboard) {
+    void showLeaderboardModal(leaderboardPuzzleIndex);
   }
 
   window.OddsRabbit.ready();

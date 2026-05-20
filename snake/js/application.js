@@ -168,6 +168,13 @@
             // present but not buzzy enough to fatigue on a long run.
             try { OR.actions.haptic("light").catch(noop); } catch (_) {}
           },
+          onAteBonus: function () {
+            // Medium haptic distinguishes a bonus carrot from a regular one
+            // — same level used elsewhere for "got something good" feedback,
+            // a step up from the per-food light tap without claiming the
+            // success haptic reserved for personal bests.
+            try { OR.actions.haptic("medium").catch(noop); } catch (_) {}
+          },
           onGameOver: function (info) {
             try { OR.actions.haptic("error").catch(noop); } catch (_) {}
             if (info.isNewBest && info.score >= SHARE_MIN_SCORE && !sharedThisLoad) {

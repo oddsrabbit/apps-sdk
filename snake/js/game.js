@@ -4,16 +4,39 @@
 // without scrolling past styling concerns.
 
 (function () {
-  var COLS = 24;
-  var ROWS = 16;
+  var INITIAL_COLS = 24;
+  var INITIAL_ROWS = 16;
+  // World grows in fixed increments so cells stay on the grid and the aspect
+  // ratio drifts predictably (24×16 = 3:2 → 40×32 ≈ 5:4). +2 each axis lets us
+  // translate the snake +1,+1 on grow and keep it roughly centered.
+  var GROW_COLS_PER_STEP = 2;
+  var GROW_ROWS_PER_STEP = 2;
+  var MAX_COLS = 40;
+  var MAX_ROWS = 32;
+  var FOODS_PER_GROW = 3;
   var INITIAL_LENGTH = 3;
   var SCORE_PER_FOOD = 10;
+  // Bonus carrot. Worth 5× a regular carrot, appears probabilistically after
+  // the player has eaten BONUS_MIN_INTERVAL regular carrots since the last
+  // bonus, and vanishes after BONUS_LIFETIME_TICKS ticks if not eaten. The
+  // tick-based lifetime makes it harder to grab as the game speeds up
+  // (lifetime stays 40 ticks but each tick is shorter → less wall-clock
+  // time) — a nice difficulty escalation that piggybacks on the existing
+  // speed ramp. Eating a bonus grows the snake (same as a regular carrot)
+  // and adds SCORE_PER_BONUS to the score, but does NOT increment
+  // foodsEaten — so bonuses don't accelerate the speed-up or world-grow
+  // cadence. The growth and points are the reward; the difficulty curve
+  // stays anchored to regular-carrot count.
+  var SCORE_PER_BONUS = 50;
+  var BONUS_LIFETIME_TICKS = 40;
+  var BONUS_MIN_INTERVAL = 3;
+  var BONUS_SPAWN_CHANCE = 0.35;
   var TICK_START_MS = 180;
-  var TICK_FLOOR_MS = 70;
-  // Per-food speed-up. 4ms × 27 foods to reach the floor — gentler curve than
-  // ramazancetinkaya's 5ms (which hits the floor in 20 foods and gets twitchy
-  // for casual play). Tuned so a reasonable score takes ~2 minutes.
-  var TICK_DECREMENT_MS = 4;
+  // Floor lowered alongside a steeper decrement so the speed ramp is clearly
+  // felt per carrot, and so max speed in the larger expanded world still feels
+  // brisk (each cell is smaller on screen as the world grows).
+  var TICK_FLOOR_MS = 60;
+  var TICK_DECREMENT_MS = 6;
 
   // States: 'idle' (pre-game, awaiting first input), 'playing', 'paused', 'over'.
   function SnakeGame(opts) {
@@ -43,11 +66,17 @@
   };
 
   SnakeGame.prototype._setup = function () {
-    // Start centered, length 3, facing right. Tail at (cx-2, cy), head at
-    // (cx, cy). Player has ~10 ticks at the starting speed (1.8s) before
-    // the wall arrives — enough breathing room to register the first input.
-    var cy = Math.floor(ROWS / 2);
-    var cx = Math.floor(COLS / 2);
+    // Start centered, length 3, facing right. World dimensions live on the
+    // instance now (not module constants) because they grow as the player
+    // eats — see _maybeGrowWorld. Resetting to INITIAL_* here means restart
+    // shrinks the arena back to the starting size.
+    this.cols = INITIAL_COLS;
+    this.rows = INITIAL_ROWS;
+    if (this.renderer && this.renderer.resize) {
+      this.renderer.resize(this.cols, this.rows);
+    }
+    var cy = Math.floor(this.rows / 2);
+    var cx = Math.floor(this.cols / 2);
     this.snake = [];
     for (var i = 0; i < INITIAL_LENGTH; i++) {
       this.snake.push({ x: cx - i, y: cy });
@@ -55,8 +84,11 @@
     this.direction = { x: 1, y: 0 };
     this.pendingDirection = null;
     this.score = 0;
+    this.foodsEaten = 0;
     this.tickMs = TICK_START_MS;
     this.food = this._spawnFood();
+    this.bonusFood = null;
+    this.foodsSinceBonus = 0;
     this._notifyScore();
   };
 
@@ -143,18 +175,34 @@
       this.direction = this.pendingDirection;
       this.pendingDirection = null;
     }
+
+    // Bonus food expires by tick, not wall-clock — paused games freeze the
+    // countdown naturally (setTimeout is cleared on pause). Decrement before
+    // the collision check, but only despawn once ticksLeft has gone *below*
+    // zero, so the bonus is still on the board for the tick where ticksLeft
+    // lands on 0 — giving the player exactly BONUS_LIFETIME_TICKS eat
+    // opportunities (off-by-one trap: removing at `<= 0` would silently drop
+    // the final tick).
+    if (this.bonusFood) {
+      this.bonusFood.ticksLeft -= 1;
+      if (this.bonusFood.ticksLeft < 0) this.bonusFood = null;
+    }
+
     var head = this.snake[0];
     var nx = head.x + this.direction.x;
     var ny = head.y + this.direction.y;
 
-    // Wall collision: the playable area is the inside of the 1-cell-thick
-    // border. Hitting a wall cell ends the run.
-    if (nx <= 0 || nx >= COLS - 1 || ny <= 0 || ny >= ROWS - 1) {
+    // Wall collision: the playable area is the full canvas now (the in-canvas
+    // wall cells were removed so the .board-frame embossed CSS border isn't
+    // doubled). Crossing the canvas edge ends the run.
+    if (nx < 0 || nx >= this.cols || ny < 0 || ny >= this.rows) {
       this._gameOver();
       return;
     }
 
-    var ate = (nx === this.food.x && ny === this.food.y);
+    var ateRegular = (nx === this.food.x && ny === this.food.y);
+    var ateBonus = !!(this.bonusFood && nx === this.bonusFood.x && ny === this.bonusFood.y);
+    var ate = ateRegular || ateBonus;
 
     // Self-collision: scan all body cells *except* the tail, which is about
     // to move out of the way this tick — unless we ate (snake grows; tail
@@ -170,19 +218,101 @@
     }
 
     this.snake.unshift({ x: nx, y: ny });
-    if (ate) {
+
+    if (ateBonus) {
+      this.score += SCORE_PER_BONUS;
+      this.bonusFood = null;
+      // Reset cooldown so two bonuses can't appear back-to-back; the player
+      // has to eat at least MIN_INTERVAL more regular carrots before another
+      // bonus can roll.
+      this.foodsSinceBonus = 0;
+      if (this.listener.onAteBonus) this.listener.onAteBonus(this.score);
+    }
+
+    if (ateRegular) {
       this.score += SCORE_PER_FOOD;
+      this.foodsEaten += 1;
+      this.foodsSinceBonus += 1;
       if (this.tickMs > TICK_FLOOR_MS) {
         this.tickMs = Math.max(TICK_FLOOR_MS, this.tickMs - TICK_DECREMENT_MS);
       }
+      // Grow world before spawning the next carrot so the spawn picks from
+      // the expanded cell range.
+      this._maybeGrowWorld();
       this.food = this._spawnFood();
-      this._notifyScore();
+      this._maybeSpawnBonusFood();
       if (this.listener.onAte) this.listener.onAte(this.score);
-    } else {
+    }
+
+    if (!ate) {
       this.snake.pop();
     }
 
+    if (ate) this._notifyScore();
     this._render();
+  };
+
+  // Every FOODS_PER_GROW carrots, expand the playfield by GROW_*_PER_STEP
+  // along each axis (capped at MAX_*). Snake and food are translated by half
+  // the step so the existing layout stays roughly centered in the new arena
+  // rather than getting pinned to the top-left corner. The renderer is
+  // resized via its own `resize` hook so the canvas's internal pixel
+  // dimensions track the cell grid (CSS keeps the displayed width fixed, so
+  // adding cells visually zooms the playfield out).
+  SnakeGame.prototype._maybeGrowWorld = function () {
+    if (this.foodsEaten === 0 || this.foodsEaten % FOODS_PER_GROW !== 0) return;
+    var nextCols = Math.min(MAX_COLS, this.cols + GROW_COLS_PER_STEP);
+    var nextRows = Math.min(MAX_ROWS, this.rows + GROW_ROWS_PER_STEP);
+    if (nextCols === this.cols && nextRows === this.rows) return;
+    var dx = Math.floor((nextCols - this.cols) / 2);
+    var dy = Math.floor((nextRows - this.rows) / 2);
+    this.cols = nextCols;
+    this.rows = nextRows;
+    for (var i = 0; i < this.snake.length; i++) {
+      this.snake[i].x += dx;
+      this.snake[i].y += dy;
+    }
+    if (this.food) {
+      this.food.x += dx;
+      this.food.y += dy;
+    }
+    if (this.bonusFood) {
+      this.bonusFood.x += dx;
+      this.bonusFood.y += dy;
+    }
+    if (this.renderer && this.renderer.resize) {
+      this.renderer.resize(this.cols, this.rows);
+    }
+  };
+
+  // Probabilistic bonus carrot spawn. Called only after a regular eat, so
+  // the cadence is naturally driven by player success rather than wall-clock
+  // time. Skips if a bonus is already on the board (no stacking) or if the
+  // post-bonus cooldown hasn't elapsed (MIN_INTERVAL regular carrots since
+  // the last bonus disappeared, eaten or expired).
+  SnakeGame.prototype._maybeSpawnBonusFood = function () {
+    if (this.bonusFood) return;
+    if (this.foodsSinceBonus < BONUS_MIN_INTERVAL) return;
+    if (Math.random() >= BONUS_SPAWN_CHANCE) return;
+    var spawn = this._spawnBonusFood();
+    if (spawn) this.bonusFood = spawn;
+  };
+
+  // Pick an unoccupied cell that's also not the current regular food. Capped
+  // attempts so a near-full board can't deadlock — bonus food is optional,
+  // so giving up silently is fine.
+  SnakeGame.prototype._spawnBonusFood = function () {
+    for (var attempts = 0; attempts < 200; attempts++) {
+      var x = Math.floor(Math.random() * this.cols);
+      var y = Math.floor(Math.random() * this.rows);
+      if (this.food && this.food.x === x && this.food.y === y) continue;
+      var clash = false;
+      for (var i = 0; i < this.snake.length; i++) {
+        if (this.snake[i].x === x && this.snake[i].y === y) { clash = true; break; }
+      }
+      if (!clash) return { x: x, y: y, ticksLeft: BONUS_LIFETIME_TICKS };
+    }
+    return null;
   };
 
   SnakeGame.prototype._gameOver = function () {
@@ -204,8 +334,9 @@
   // the speed cap allows, so a simple retry loop is fine.
   SnakeGame.prototype._spawnFood = function () {
     while (true) {
-      var x = 1 + Math.floor(Math.random() * (COLS - 2));
-      var y = 1 + Math.floor(Math.random() * (ROWS - 2));
+      var x = Math.floor(Math.random() * this.cols);
+      var y = Math.floor(Math.random() * this.rows);
+      if (this.bonusFood && this.bonusFood.x === x && this.bonusFood.y === y) continue;
       var clash = false;
       for (var i = 0; i < this.snake.length; i++) {
         if (this.snake[i].x === x && this.snake[i].y === y) { clash = true; break; }
@@ -215,7 +346,7 @@
   };
 
   SnakeGame.prototype._render = function () {
-    this.renderer.draw({ snake: this.snake, food: this.food });
+    this.renderer.draw({ snake: this.snake, food: this.food, bonusFood: this.bonusFood });
   };
 
   SnakeGame.prototype._setState = function (next) {

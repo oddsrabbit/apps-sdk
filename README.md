@@ -45,7 +45,11 @@ import { OddsRabbit } from '@oddsrabbit/apps-sdk';
 
 Everything available on `window.OddsRabbit` once `await OR.whenReady()` resolves:
 
-- **`OR.user`** — the signed-in user's `{ uuid, username }`, or `null` for guests.
+- **`OR.user`** — the signed-in user's profile, or `null` for guests:
+  - `uuid` — stable platform UUID. Treat as opaque.
+  - `username` — display handle (1–64 chars).
+  - `avatar` — absolute avatar URL, or `null` if the user has no avatar set or the host doesn't populate it. Fall back to initials from `username` when null.
+  - `createdAt` — ISO datetime the account was created, or `null` if the host doesn't expose it. Useful for "OG player" badges and onboarding branches.
 - **`OR.sessionToken`** — short-lived JWT for verifying the user on your backend.
 - **`OR.colorScheme`** — the host's `'light'` or `'dark'` theme.
 - **`OR.storage.get/set/delete`** — per-user key/value store. Syncs across the user's mobile and web sessions; falls back to local browser storage for guests.
