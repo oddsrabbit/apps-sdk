@@ -13,7 +13,7 @@
   var GROW_ROWS_PER_STEP = 2;
   var MAX_COLS = 40;
   var MAX_ROWS = 32;
-  var FOODS_PER_GROW = 3;
+  var FOODS_PER_GROW = 8;
   var INITIAL_LENGTH = 3;
   var SCORE_PER_FOOD = 10;
   // Bonus carrot. Worth 5× a regular carrot, appears probabilistically after
@@ -32,11 +32,8 @@
   var BONUS_MIN_INTERVAL = 3;
   var BONUS_SPAWN_CHANCE = 0.35;
   var TICK_START_MS = 180;
-  // Floor lowered alongside a steeper decrement so the speed ramp is clearly
-  // felt per carrot, and so max speed in the larger expanded world still feels
-  // brisk (each cell is smaller on screen as the world grows).
-  var TICK_FLOOR_MS = 60;
-  var TICK_DECREMENT_MS = 6;
+  var TICK_FLOOR_MS = 70;
+  var TICK_DECREMENT_MS = 3;
 
   // States: 'idle' (pre-game, awaiting first input), 'playing', 'paused', 'over'.
   function SnakeGame(opts) {
