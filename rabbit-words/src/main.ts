@@ -55,7 +55,6 @@ type CommunityData = {
 let currentState: State;
 let currentStats: Stats = DEFAULT_STATS;
 let currentStreak: Streak = DEFAULT_STREAK;
-let currentCommunity: CommunityData | undefined;
 let currentFriends: FriendScore[] | undefined;
 let currentInput = '';
 
@@ -215,13 +214,7 @@ function render(): void {
     root.appendChild(renderKeyboard(currentState));
   } else {
     root.appendChild(
-      renderEndGame(
-        currentState,
-        currentStats,
-        currentStreak,
-        currentCommunity,
-        currentFriends
-      )
+      renderEndGame(currentState, currentStats, currentStreak, currentFriends)
     );
   }
   root.appendChild(renderResetTime());
@@ -243,15 +236,35 @@ function renderPuzzleHeader(state: State): HTMLElement {
     <span class="puzzle-date">${escapeHtml(formatPuzzleDate(state.puzzleIndex))}</span>
   `;
 
+  const actions = document.createElement('div');
+  actions.className = 'puzzle-header-actions';
+
+  // Yesterday's leaderboard — hidden on day 0 since there's nothing to show.
+  // Today's results are intentionally NOT exposed here: mid-day distribution
+  // is noisy (k=5 floors leave most buckets empty, percentages swing) and
+  // would invite "wait, that doesn't match my push notification" confusion.
+  if (state.puzzleIndex > 0) {
+    const leaderboard = document.createElement('button');
+    leaderboard.type = 'button';
+    leaderboard.className = 'header-icon-btn leaderboard-btn';
+    leaderboard.setAttribute('aria-label', "Yesterday's leaderboard");
+    leaderboard.textContent = '🏆';
+    leaderboard.addEventListener('click', () => {
+      void showLeaderboardModal(state.puzzleIndex - 1);
+    });
+    actions.appendChild(leaderboard);
+  }
+
   const help = document.createElement('button');
   help.type = 'button';
-  help.className = 'help-btn';
+  help.className = 'header-icon-btn help-btn';
   help.setAttribute('aria-label', 'How to play');
   help.textContent = '?';
   help.addEventListener('click', () => showInstructions());
+  actions.appendChild(help);
 
   wrap.appendChild(meta);
-  wrap.appendChild(help);
+  wrap.appendChild(actions);
   return wrap;
 }
 
@@ -390,7 +403,6 @@ function renderEndGame(
   state: State,
   stats: Stats,
   streak: Streak,
-  community?: CommunityData,
   friends?: FriendScore[]
 ): HTMLElement {
   const wrap = document.createElement('div');
@@ -406,14 +418,10 @@ function renderEndGame(
   }
   wrap.appendChild(verdict);
 
-  // Today's distribution (community) — puzzle-specific stats first since
-  // they're the most time-sensitive context for the result.
-  if (community) {
-    wrap.appendChild(renderCommunityDistribution(community, bucketForState(state)));
-  }
-
   // Friends panel — the social heart. Always render (handles anon + empty
   // states internally) so signed-out users still see the sign-in CTA.
+  // Today's community distribution lives in the leaderboard modal for past
+  // rounds only; mid-day shape is too noisy to show inline.
   wrap.appendChild(renderFriendsPanel(friends));
 
   // Personal lifetime stats below — less urgent than the round-specific
@@ -570,10 +578,27 @@ function renderFriendsPanel(friends?: FriendScore[]): HTMLElement {
   }
 
   if (!friends || friends.length === 0) {
-    const empty = document.createElement('p');
-    empty.className = 'friends-empty';
-    empty.textContent = "None of the people you follow have played today.";
-    wrap.appendChild(empty);
+    // Single empty state for both "you follow nobody" and "follows but nobody
+    // played today" — we can't distinguish them client-side (scores.friends
+    // returns [] in both cases), so the copy covers both paths.
+    const cta = document.createElement('div');
+    cta.className = 'friends-cta';
+
+    const blurb = document.createElement('p');
+    blurb.className = 'friends-cta-blurb';
+    blurb.textContent =
+      'Invite friends or follow other players on OddsRabbit to see how they did here.';
+    cta.appendChild(blurb);
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'friends-cta-btn';
+    btn.textContent = 'Invite a friend';
+    btn.addEventListener('click', () => {
+      void runInviteShare();
+    });
+    cta.appendChild(btn);
+    wrap.appendChild(cta);
     return wrap;
   }
 
@@ -812,10 +837,7 @@ async function submitGuess(state: State, raw: string): Promise<void> {
     currentStreak = updatedStreak;
     void window.OddsRabbit.actions.haptic(state.status === 'won' ? 'success' : 'error');
 
-    [currentCommunity, currentFriends] = await Promise.all([
-      loadCommunityData(state.puzzleIndex),
-      loadFriends(state.puzzleIndex),
-    ]);
+    currentFriends = await loadFriends(state.puzzleIndex);
   }
 
   render();
@@ -925,6 +947,31 @@ async function shareResult(state: State): Promise<void> {
 }
 
 const SHARE_LANDING_URL = 'https://www.oddsrabbit.com/games/rabbit-words/';
+
+const INVITE_TEXT = `Play RabbitWords with me — a daily 5-letter word puzzle. ${SHARE_LANDING_URL}`;
+
+/**
+ * Invite CTA from the friends panel empty state. Tries the native share sheet
+ * via the SDK first; falls back to clipboard so even hosts without
+ * actions.share leave the user with something they can paste into a chat.
+ */
+async function runInviteShare(): Promise<void> {
+  try {
+    await window.OddsRabbit.actions.share({
+      title: 'RabbitWords',
+      text: INVITE_TEXT,
+    });
+    return;
+  } catch {
+    /* fall through to clipboard */
+  }
+  try {
+    await navigator.clipboard.writeText(INVITE_TEXT);
+    showToast('Invite copied to clipboard');
+  } catch {
+    showToast('Could not share');
+  }
+}
 
 function buildShareTitle(state: State): string {
   const score = state.status === 'won' ? `${state.guesses.length}/6` : 'X/6';
@@ -1222,11 +1269,14 @@ function parseLeaderboardIntent(
 }
 
 /**
- * Show a results-modal overlay for a past puzzle, opened in response to a
- * push-notification tap. Loads the community distribution + friends list
- * for that specific round and renders them on top of today's game. Closing
- * the modal drops the user into today's puzzle, which is already rendered
- * underneath.
+ * Show a results-modal overlay for a past puzzle. Entry points:
+ *  - Header 🏆 button (defaults to yesterday).
+ *  - Push-notification deep-link (specific past round via initialState).
+ *
+ * Renders community distribution + friends for the viewed round on top of
+ * today's game. Internally navigable: prev/next arrows let the user scrub
+ * back up to 7 days (no further; never forward to today since today's data
+ * is still in-progress).
  *
  * Quirk: we don't know the viewer's bucket for a past round on the client
  * (we don't archive prior states locally), so the community distribution
@@ -1239,10 +1289,18 @@ async function showLeaderboardModal(puzzleIndex: number): Promise<void> {
   // tear it down before opening a fresh one.
   document.querySelector('.leaderboard-modal-backdrop')?.remove();
 
-  const [friends, community] = await Promise.all([
-    loadFriends(puzzleIndex),
-    loadCommunityData(puzzleIndex),
-  ]);
+  const today = todayPuzzleIndex();
+  // 7-day window relative to today. A deep-link entry below this cap (e.g. a
+  // late-opened push from 10 days ago) lands the user below lowerBound; we
+  // disable prev in that case so the window expresses itself naturally as a
+  // floor on backward navigation.
+  const lowerBound = Math.max(0, today - 7);
+  const upperBound = today - 1;
+
+  let viewIndex = puzzleIndex;
+  // Request token for stale-response guard. If the user clicks prev then next
+  // rapidly, the older fetch must not overwrite the newer render.
+  let requestToken = 0;
 
   const backdrop = document.createElement('div');
   backdrop.className = 'modal-backdrop leaderboard-modal-backdrop';
@@ -1261,20 +1319,39 @@ async function showLeaderboardModal(puzzleIndex: number): Promise<void> {
   closeBtn.innerHTML = '&times;';
   modal.appendChild(closeBtn);
 
+  const titleRow = document.createElement('div');
+  titleRow.className = 'leaderboard-title-row';
+
+  const prevBtn = document.createElement('button');
+  prevBtn.type = 'button';
+  prevBtn.className = 'leaderboard-nav-btn';
+  prevBtn.setAttribute('aria-label', 'Previous day');
+  prevBtn.textContent = '‹';
+
   const title = document.createElement('h2');
   title.id = 'leaderboard-modal-title';
-  title.textContent = `Puzzle #${puzzleIndex + 1} results`;
-  modal.appendChild(title);
+  title.className = 'leaderboard-title';
+
+  const nextBtn = document.createElement('button');
+  nextBtn.type = 'button';
+  nextBtn.className = 'leaderboard-nav-btn';
+  nextBtn.setAttribute('aria-label', 'Next day');
+  nextBtn.textContent = '›';
+
+  titleRow.appendChild(prevBtn);
+  titleRow.appendChild(title);
+  titleRow.appendChild(nextBtn);
+  modal.appendChild(titleRow);
 
   const subtitle = document.createElement('p');
   subtitle.className = 'leaderboard-modal-subtitle';
-  subtitle.textContent = formatPuzzleDate(puzzleIndex);
   modal.appendChild(subtitle);
 
-  modal.appendChild(
-    renderCommunityDistribution(community, null, "How everyone did")
-  );
-  modal.appendChild(renderFriendsPanel(friends));
+  // Body container — replaced on navigation. Keeps the modal shell stable so
+  // the chrome (close, nav, footer) doesn't flicker between days.
+  const body = document.createElement('div');
+  body.className = 'leaderboard-modal-body';
+  modal.appendChild(body);
 
   const playBtn = document.createElement('button');
   playBtn.type = 'button';
@@ -1285,6 +1362,40 @@ async function showLeaderboardModal(puzzleIndex: number): Promise<void> {
 
   backdrop.appendChild(modal);
   document.body.appendChild(backdrop);
+
+  const load = async (): Promise<void> => {
+    const myToken = ++requestToken;
+    title.textContent = `Puzzle #${viewIndex + 1} results`;
+    subtitle.textContent = formatPuzzleDate(viewIndex);
+    prevBtn.disabled = viewIndex <= lowerBound;
+    nextBtn.disabled = viewIndex >= upperBound;
+
+    body.innerHTML = '<p class="leaderboard-loading">Loading…</p>';
+
+    const [friends, community] = await Promise.all([
+      loadFriends(viewIndex),
+      loadCommunityData(viewIndex),
+    ]);
+
+    if (myToken !== requestToken) return;
+
+    body.innerHTML = '';
+    body.appendChild(
+      renderCommunityDistribution(community, null, 'How everyone did')
+    );
+    body.appendChild(renderFriendsPanel(friends));
+  };
+
+  prevBtn.addEventListener('click', () => {
+    if (viewIndex <= lowerBound) return;
+    viewIndex -= 1;
+    void load();
+  });
+  nextBtn.addEventListener('click', () => {
+    if (viewIndex >= upperBound) return;
+    viewIndex += 1;
+    void load();
+  });
 
   const close = (): void => {
     backdrop.remove();
@@ -1310,6 +1421,8 @@ async function showLeaderboardModal(puzzleIndex: number): Promise<void> {
       close();
     }
   });
+
+  await load();
 }
 
 // ---------- Bootstrap ----------
@@ -1334,10 +1447,7 @@ async function bootstrap(): Promise<void> {
     // expected here and ignored inside submitScoreToServer.
     await submitScoreToServer(state);
 
-    [currentCommunity, currentFriends] = await Promise.all([
-      loadCommunityData(state.puzzleIndex),
-      loadFriends(state.puzzleIndex),
-    ]);
+    currentFriends = await loadFriends(state.puzzleIndex);
   }
 
   window.OddsRabbit.lifecycle.on('pause', () => {

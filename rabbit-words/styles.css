@@ -119,7 +119,14 @@ header h1 {
   color: var(--muted);
 }
 
-.help-btn {
+.puzzle-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.header-icon-btn {
   width: 32px;
   height: 32px;
   border-radius: 50%;
@@ -129,9 +136,16 @@ header h1 {
   font: 700 16px system-ui;
   cursor: pointer;
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  padding: 0;
 }
 
-.help-btn:hover { background: var(--border); }
+.header-icon-btn:hover { background: var(--border); }
+
+.leaderboard-btn { font-size: 15px; }
 
 /* Board */
 .board {
@@ -584,6 +598,73 @@ header h1 {
 }
 
 .modal-close:hover { filter: brightness(0.95); }
+
+/* Leaderboard modal — past-day results with prev/next day navigation. */
+.leaderboard-modal {
+  max-width: 420px;
+  position: relative;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.leaderboard-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.leaderboard-title {
+  flex: 1;
+  text-align: center;
+  margin: 0;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.leaderboard-nav-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  font: 700 20px/1 system-ui;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.leaderboard-nav-btn:not([disabled]):hover { background: var(--border); }
+
+.leaderboard-nav-btn[disabled] {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.leaderboard-modal-subtitle {
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0 0 4px;
+}
+
+.leaderboard-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 120px;
+}
+
+.leaderboard-loading {
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  margin: 24px 0;
+}
 
 /* Share modal — extends .modal with extra width and the close-X button. */
 .share-modal {
