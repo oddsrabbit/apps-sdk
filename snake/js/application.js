@@ -4,15 +4,9 @@
 
 (function () {
   var LANDING_URL = "https://www.oddsrabbit.com/games/snake/";
-  // Threshold for the milestone share. A first-ever run usually scores under
-  // 100 (just learning controls), so this filters out the noisy "you set a
-  // new best of 30!" share on the very first game. Same idea as 2048 only
-  // sharing once you reach the canonical 2048 tile.
-  var SHARE_MIN_SCORE = 100;
   // Floor below which the community note is suppressed — at sub-50 scores
   // the player is still learning the controls and "you reached the 0-49
-  // range" reads as a sneer, not a leaderboard. Same intent as SHARE_MIN_SCORE
-  // but a lower bar (any score worth comparing, not just brag-worthy ones).
+  // range" reads as a sneer, not a leaderboard.
   var COMMUNITY_MIN_SCORE = 50;
   var WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -100,12 +94,17 @@
   var overlayEl = document.querySelector(".game-message");
   var overlayTextEl = document.querySelector(".game-message-text");
   var communityNoteEl = document.querySelector(".community-note");
+  var newBestNoteEl = document.querySelector(".new-best-note");
+  var shareButtonEl = document.querySelector(".share-button");
   function setOverlay(state) {
     overlayEl.setAttribute("data-state", state);
-    // Community note only applies to game-over; clear when leaving that
-    // state so a restarted game doesn't carry stale text into the next
-    // idle/over cycle.
-    if (state !== "over") communityNoteEl.textContent = "";
+    // Community note + new-best banner only apply to game-over; clear both
+    // when leaving that state so a restarted game doesn't carry stale text
+    // into the next idle/over cycle.
+    if (state !== "over") {
+      communityNoteEl.textContent = "";
+      newBestNoteEl.textContent = "";
+    }
     if (state === "playing") {
       overlayEl.classList.remove("visible");
       return;
@@ -143,13 +142,181 @@
     } catch (_) {}
   }
 
+  // -------- Share modal --------
+  // User-initiated only. Opened from the Share button on the game-over
+  // overlay; never auto-fires. Mirrors rabbit-words' modal shape: a text
+  // preview, primary actions (copy + native on touch), then a row of
+  // social-intent links. Native share is gated to touch devices since the
+  // desktop OS share sheet is anemic (Mail/AirDrop only) and the value of
+  // a native picker — one-tap to a specific contact — only exists on phones.
+  var IS_TOUCH_DEVICE = IS_TOUCH;
+
+  function buildShareTitle(result) {
+    return result.isNewBest
+      ? "Snake — new high score: " + result.score
+      : "Snake — score: " + result.score;
+  }
+
+  function buildShareText(result) {
+    return buildShareTitle(result) + "\n\nPlay at " + LANDING_URL;
+  }
+
+  function showShareModal(result) {
+    var title = buildShareTitle(result);
+    var text = buildShareText(result);
+    var supportsNativeShare = IS_TOUCH_DEVICE && typeof navigator.share === "function";
+
+    var backdrop = document.createElement("div");
+    backdrop.className = "share-modal-backdrop";
+    backdrop.setAttribute("role", "dialog");
+    backdrop.setAttribute("aria-modal", "true");
+    backdrop.setAttribute("aria-labelledby", "share-modal-title");
+
+    var nativeBtn = supportsNativeShare
+      ? '<button type="button" class="share-action" data-action="native">Share via apps…</button>'
+      : "";
+
+    backdrop.innerHTML =
+      '<div class="share-modal">' +
+        '<h2 id="share-modal-title">Share your result</h2>' +
+        '<div class="share-preview">' + escapeHtml(text) + '</div>' +
+        '<button type="button" class="share-action" data-action="copy">Copy result</button>' +
+        nativeBtn +
+        '<div class="share-section-label">Share to social</div>' +
+        '<div class="share-buttons">' +
+          '<button type="button" class="share-button-social" data-action="twitter" aria-label="Share to X">X</button>' +
+          '<button type="button" class="share-button-social" data-action="threads" aria-label="Share to Threads">Threads</button>' +
+          '<button type="button" class="share-button-social" data-action="bluesky" aria-label="Share to Bluesky">Bluesky</button>' +
+          '<button type="button" class="share-button-social" data-action="reddit" aria-label="Share to Reddit">Reddit</button>' +
+          '<button type="button" class="share-button-social" data-action="whatsapp" aria-label="Share to WhatsApp">WhatsApp</button>' +
+          '<button type="button" class="share-button-social" data-action="facebook" aria-label="Share to Facebook">Facebook</button>' +
+        '</div>' +
+        '<button type="button" class="share-action" data-action="close">Close</button>' +
+      '</div>';
+
+    document.body.appendChild(backdrop);
+
+    function close() {
+      if (backdrop.parentNode) backdrop.parentNode.removeChild(backdrop);
+      document.removeEventListener("keydown", onKey);
+    }
+    function onKey(e) { if (e.key === "Escape") close(); }
+    document.addEventListener("keydown", onKey);
+
+    // Backdrop click (but not modal-body click) closes.
+    backdrop.addEventListener("click", function (e) {
+      if (e.target === backdrop) close();
+    });
+
+    backdrop.addEventListener("click", function (e) {
+      var target = e.target;
+      if (!target || !target.dataset || !target.dataset.action) return;
+      runShareAction(target.dataset.action, title, text, close);
+    });
+  }
+
+  function runShareAction(action, title, text, close) {
+    switch (action) {
+      case "close":
+        close();
+        return;
+      case "copy":
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(
+            function () { showToast("Copied to clipboard"); },
+            function () { showToast("Could not copy"); }
+          );
+        } else {
+          showToast("Could not copy");
+        }
+        return;
+      case "native":
+        // Route through the SDK so the call runs in the outer host's context
+        // (WP page on web, RN host on mobile) where Permissions Policy
+        // doesn't gate navigator.share.
+        try {
+          OR.actions
+            .share({ title: "Snake", text: text })
+            .catch(function () { showToast("Could not share"); });
+        } catch (_) {
+          showToast("Could not share");
+        }
+        return;
+      case "twitter":
+        openShareUrl("https://x.com/intent/post?text=" + encodeURIComponent(text));
+        return;
+      case "threads":
+        openShareUrl("https://www.threads.net/intent/post?text=" + encodeURIComponent(text));
+        return;
+      case "bluesky":
+        openShareUrl("https://bsky.app/intent/compose?text=" + encodeURIComponent(text));
+        return;
+      case "reddit":
+        openShareUrl(
+          "https://www.reddit.com/submit?url=" + encodeURIComponent(LANDING_URL) +
+          "&title=" + encodeURIComponent(title)
+        );
+        return;
+      case "whatsapp":
+        openShareUrl("https://wa.me/?text=" + encodeURIComponent(text));
+        return;
+      case "facebook":
+        // Facebook strips text from share intents — URL-only is what lands.
+        // The og:image / og:title on the landing page produces the card.
+        openShareUrl(
+          "https://www.facebook.com/sharer/sharer.php?u=" + encodeURIComponent(LANDING_URL)
+        );
+        return;
+    }
+  }
+
+  function openShareUrl(url) {
+    // noopener so the destination tab can't reach back into our window.
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function showToast(message) {
+    var existing = document.querySelector(".toast");
+    if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+
+    var toast = document.createElement("div");
+    toast.className = "toast";
+    toast.setAttribute("role", "alert");
+    toast.textContent = message;
+    document.body.appendChild(toast);
+
+    window.requestAnimationFrame(function () { toast.classList.add("toast-show"); });
+
+    window.setTimeout(function () {
+      toast.classList.remove("toast-show");
+      window.setTimeout(function () {
+        if (toast.parentNode) toast.parentNode.removeChild(toast);
+      }, 300);
+    }, 1500);
+  }
+
   OR.whenReady()
     .then(function () { return storage.hydrate(); })
     .then(function () {
-      // The share-once flag is page-load scoped: even if the player beats
-      // their best three times in one session, only the first new-best fires
-      // a share to avoid spamming the share sheet. Resets on reload.
-      var sharedThisLoad = false;
+      // Last finished run's score, populated on each game-over and read by
+      // the share button. Null before the first game-over so a stray tap on
+      // the button (shouldn't be possible, since CSS hides it off-state) is
+      // a no-op rather than sharing "Score: undefined".
+      var lastResult = null;
+
+      shareButtonEl.addEventListener("click", function () {
+        if (!lastResult) return;
+        showShareModal(lastResult);
+      });
 
       var canvas = document.querySelector(".game-canvas");
       var renderer = new SnakeRenderer(canvas);
@@ -177,14 +344,9 @@
           },
           onGameOver: function (info) {
             try { OR.actions.haptic("error").catch(noop); } catch (_) {}
-            if (info.isNewBest && info.score >= SHARE_MIN_SCORE && !sharedThisLoad) {
-              sharedThisLoad = true;
-              try {
-                OR.actions.share({
-                  title: "Snake",
-                  text: "New high score: " + info.score + "!\n\nPlay at " + LANDING_URL,
-                }).catch(noop);
-              } catch (_) {}
+            lastResult = { score: info.score, isNewBest: info.isNewBest };
+            if (info.isNewBest) {
+              newBestNoteEl.textContent = "NEW BEST!";
               // success haptic is reserved for genuine personal-best moments
               // — distinct from the per-food light haptic so the player
               // *feels* the achievement.

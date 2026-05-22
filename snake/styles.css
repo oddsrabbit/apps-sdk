@@ -228,7 +228,22 @@ h1.title {
 .game-message .lower button { display: none; }
 .game-message[data-state="idle"] .start-button { display: inline-block; }
 .game-message[data-state="paused"] .resume-button { display: inline-block; }
-.game-message[data-state="over"] .retry-button { display: inline-block; }
+.game-message[data-state="over"] .retry-button,
+.game-message[data-state="over"] .share-button { display: inline-block; }
+
+/* New-best banner. Empty by default and only meaningful on game-over —
+   application.js writes "NEW BEST!" when info.isNewBest is true and clears
+   it on any state transition out of `over`. */
+.new-best-note {
+  font-size: 12px;
+  letter-spacing: 2px;
+  color: var(--gb-pale);
+  margin: 0;
+  text-shadow: 1px 1px 0 var(--gb-darkest);
+}
+.new-best-note:empty { display: none; }
+.game-message[data-state="idle"] .new-best-note,
+.game-message[data-state="paused"] .new-best-note { display: none; }
 
 .game-explanation {
   margin-top: 24px;
@@ -255,6 +270,124 @@ strong.important {
   border: 2px solid var(--gb-dark);
 }
 
+/* Share modal. Opened from the Share button on the game-over overlay. Same
+   visual language as the rest of the game (DMG palette, embossed buttons) so
+   it doesn't look like a stock browser dialog. */
+.share-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 56, 15, 0.78);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  box-sizing: border-box;
+}
+.share-modal {
+  background: var(--gb-mint);
+  color: var(--gb-darkest);
+  border: 2px solid var(--gb-darkest);
+  box-shadow: 6px 6px 0 var(--gb-darkest);
+  padding: 20px;
+  width: 100%;
+  max-width: 380px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  text-align: center;
+}
+.share-modal h2 {
+  margin: 0;
+  font-size: 14px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+.share-preview {
+  background: var(--gb-darkest);
+  color: var(--gb-pale);
+  padding: 14px;
+  font-size: 11px;
+  line-height: 1.6;
+  letter-spacing: 1px;
+  border: 2px solid var(--gb-dark);
+  word-break: break-word;
+  white-space: pre-line;
+}
+.share-action {
+  background: var(--gb-darkest);
+  color: var(--gb-pale);
+  border: 2px solid var(--gb-dark);
+  border-bottom-width: 4px;
+  border-right-width: 4px;
+  padding: 10px 16px;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+.share-action:active {
+  border-bottom-width: 2px;
+  border-right-width: 2px;
+  transform: translate(2px, 2px);
+}
+.share-section-label {
+  font-size: 9px;
+  letter-spacing: 1px;
+  color: var(--gb-dark);
+  text-transform: uppercase;
+  margin-top: 4px;
+}
+.share-buttons {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.share-button-social {
+  background: var(--gb-darkest);
+  color: var(--gb-pale);
+  border: 2px solid var(--gb-dark);
+  border-bottom-width: 4px;
+  border-right-width: 4px;
+  padding: 10px 4px;
+  font: inherit;
+  font-size: 9px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+.share-button-social:active {
+  border-bottom-width: 2px;
+  border-right-width: 2px;
+  transform: translate(2px, 2px);
+}
+
+/* Toast. Bottom-centered slide-up; auto-dismissed by application.js. */
+.toast {
+  position: fixed;
+  bottom: 32px;
+  left: 50%;
+  transform: translate(-50%, 20px);
+  background: var(--gb-darkest);
+  color: var(--gb-mint);
+  padding: 10px 16px;
+  font-size: 10px;
+  letter-spacing: 1px;
+  border: 2px solid var(--gb-dark);
+  opacity: 0;
+  transition: opacity 200ms ease, transform 200ms ease;
+  z-index: 300;
+  pointer-events: none;
+}
+.toast.toast-show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
 @media screen and (max-width: 540px), screen and (max-height: 720px) {
   body { margin: 12px 0; }
   .container { width: auto; padding: 0 16px; }
@@ -266,5 +399,6 @@ strong.important {
   .board-frame { padding: 16px; }
   .game-message { top: 16px; right: 16px; bottom: 16px; left: 16px; gap: 14px; }
   .game-message-text { font-size: 16px; }
+  .new-best-note { font-size: 10px; }
   .game-explanation { font-size: 9px; }
 }
