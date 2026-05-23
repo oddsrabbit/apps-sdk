@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <title>Fruit Match</title>
+    <link rel="stylesheet" href="./styles.css?v=__BUILD_ID__" />
+    <script src="../sdk-v1.js?v=__BUILD_ID__"></script>
+  </head>
+  <body>
+    <div class="container">
+      <div class="heading">
+        <h1 class="title">FRUIT MATCH</h1>
+        <div class="scores-container">
+          <div class="score-container" aria-label="Score 0">0</div>
+          <div class="best-container" aria-label="Best 0">0</div>
+        </div>
+      </div>
+
+      <div class="above-game">
+        <p class="game-intro">Swap fruits to line up 3 or more.</p>
+        <button type="button" class="restart-button">New Game</button>
+      </div>
+
+      <div class="timer">
+        <div class="timer-fill"></div>
+      </div>
+
+      <div class="game-container">
+        <div class="board-frame">
+          <canvas class="game-canvas" aria-label="Fruit match board"></canvas>
+        </div>
+
+        <!-- Cascade combo banner. Pops up on combo ≥2; hidden by default. -->
+        <div class="combo-banner" aria-live="polite"></div>
+
+        <div class="game-message" data-state="idle">
+          <p class="game-message-text"></p>
+          <p class="final-score"></p>
+          <p class="new-best-note"></p>
+          <p class="community-note"></p>
+          <div class="lower">
+            <button type="button" class="start-button">Start</button>
+            <button type="button" class="resume-button">Resume</button>
+            <button type="button" class="retry-button">Try again</button>
+            <button type="button" class="share-button">Share</button>
+          </div>
+        </div>
+      </div>
+
+      <p class="game-explanation">
+        <strong class="important">How to play:</strong> Tap or swipe a fruit toward a neighbour to swap. Match 3+ in a row to score. Longer matches score more and add seconds to the clock.
+      </p>
+    </div>
+
+    <script src="./js/input_manager.js?v=__BUILD_ID__"></script>
+    <script src="./js/storage_manager.js?v=__BUILD_ID__"></script>
+    <script src="./js/game.js?v=__BUILD_ID__"></script>
+    <script src="./js/renderer.js?v=__BUILD_ID__"></script>
+    <script src="./js/application.js?v=__BUILD_ID__"></script>
+  </body>
+</html>

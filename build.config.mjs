@@ -42,6 +42,16 @@ const GAME_SNAKE_JS = [
   'application.js',
 ];
 
+// Match-3 (Fruit Match). Same drop-in pattern as snake: vanilla JS copied
+// verbatim, only index.html carries the __BUILD_ID__ placeholder.
+const GAME_MATCH3_JS = [
+  'input_manager.js',
+  'storage_manager.js',
+  'game.js',
+  'renderer.js',
+  'application.js',
+];
+
 await rm('dist', { recursive: true, force: true });
 await mkdir('dist/host', { recursive: true });
 await mkdir('dist/rabbit-words', { recursive: true });
@@ -49,6 +59,7 @@ await mkdir('dist/2048/js', { recursive: true });
 await mkdir('dist/snake/js', { recursive: true });
 await mkdir('dist/snake/fonts', { recursive: true });
 await mkdir('dist/snake/images', { recursive: true });
+await mkdir('dist/match3/js', { recursive: true });
 await mkdir('dist/liquid/js', { recursive: true });
 
 const baseOpts = {
@@ -153,6 +164,12 @@ async function copyHostAssets() {
     // currency mark) reused as the snake's face. 32x32 PNG with palette
     // transparency so the green body shows through around the rabbit shape.
     copyFile('snake/images/head.png', 'dist/snake/images/head.png'),
+    // Match-3 (Fruit Match). Same drop-in pattern as snake.
+    copyHtmlWithBuildId('match3/index.html', 'dist/match3/index.html'),
+    copyFile('match3/styles.css', 'dist/match3/styles.css'),
+    ...GAME_MATCH3_JS.map((name) =>
+      copyFile(`match3/js/${name}`, `dist/match3/js/${name}`)
+    ),
     // Liquid — WebGL fluid simulation. Vendored vanilla JS, no bundling needed.
     copyHtmlWithBuildId('liquid/index.html', 'dist/liquid/index.html'),
     copyFile('liquid/js/script.js', 'dist/liquid/js/script.js'),

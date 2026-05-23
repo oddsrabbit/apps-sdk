@@ -422,7 +422,7 @@ function renderEndGame(
   // states internally) so signed-out users still see the sign-in CTA.
   // Today's community distribution lives in the leaderboard modal for past
   // rounds only; mid-day shape is too noisy to show inline.
-  wrap.appendChild(renderFriendsPanel(friends));
+  wrap.appendChild(renderFriendsPanel(friends, viewerResultFromState(state)));
 
   // Personal lifetime stats below — less urgent than the round-specific
   // community + friends data above.
@@ -502,22 +502,13 @@ function renderCommunityDistribution(
   // zero players got 1-guess" only in semantics, not pixels.
   const counts = DISTRIBUTION_BUCKETS.map((b) => community.buckets[b] ?? 0);
   const total = counts.reduce((a, b) => a + b, 0);
-
-  if (total === 0) {
-    const empty = document.createElement('p');
-    empty.className = 'community-empty';
-    empty.textContent = 'Not enough players finished this round.';
-    wrap.appendChild(empty);
-    return wrap;
-  }
-
   const max = Math.max(1, ...counts);
 
   const hist = document.createElement('div');
   hist.className = 'histogram community-hist';
   DISTRIBUTION_BUCKETS.forEach((bucket, i) => {
     const count = counts[i] ?? 0;
-    const pct = Math.round((count / total) * 100);
+    const pct = total > 0 ? Math.round((count / total) * 100) : 0;
 
     const bar = document.createElement('div');
     bar.className = 'hist-bar';
@@ -543,7 +534,47 @@ function renderCommunityDistribution(
   return wrap;
 }
 
-function renderFriendsPanel(friends?: FriendScore[]): HTMLElement {
+type ViewerResult = { won: boolean; guessCount?: number };
+
+function viewerResultFromState(state: State): ViewerResult | null {
+  if (state.status === 'won') return { won: true, guessCount: state.guesses.length };
+  if (state.status === 'lost') return { won: false };
+  return null;
+}
+
+function appendResultRow(
+  list: HTMLElement,
+  name: string,
+  won: boolean,
+  guessCount: number | undefined,
+  isViewer: boolean
+): void {
+  const li = document.createElement('li');
+  li.className = isViewer ? 'friends-row friends-row-you' : 'friends-row';
+
+  const nameEl = document.createElement('span');
+  nameEl.className = 'friends-name';
+  nameEl.textContent = isViewer ? `${name} (you)` : name;
+  li.appendChild(nameEl);
+
+  const result = document.createElement('span');
+  result.className = 'friends-result';
+  if (won && typeof guessCount === 'number') {
+    result.textContent = `Solved in ${guessCount}`;
+  } else if (won) {
+    result.textContent = 'Solved';
+  } else {
+    result.textContent = "Didn't solve";
+    result.classList.add('friends-result-lost');
+  }
+  li.appendChild(result);
+  list.appendChild(li);
+}
+
+function renderFriendsPanel(
+  friends?: FriendScore[],
+  viewerResult?: ViewerResult | null
+): HTMLElement {
   const wrap = document.createElement('section');
   wrap.className = 'friends-panel';
 
@@ -604,10 +635,25 @@ function renderFriendsPanel(friends?: FriendScore[]): HTMLElement {
 
   const list = document.createElement('ul');
   list.className = 'friends-list';
-  for (const friend of friends) {
-    const li = document.createElement('li');
-    li.className = 'friends-row';
 
+  // Viewer's own row at the top, so the friends list reads as a comparison
+  // rather than an out-group leaderboard. Only when we actually have their
+  // result for the displayed round (end-of-game flow) — the past-day modal
+  // doesn't archive viewer state locally, so it omits this row.
+  if (viewerResult) {
+    const viewerName = window.OddsRabbit.user
+      ? `@${window.OddsRabbit.user.username}`
+      : 'You';
+    appendResultRow(
+      list,
+      viewerName,
+      viewerResult.won,
+      viewerResult.guessCount,
+      true
+    );
+  }
+
+  for (const friend of friends) {
     // App-specific metadata shape — rabbit-words submits `{ won, guessCount }`.
     // Falling back to score-based inference keeps this resilient if a future
     // migration drops the metadata.
@@ -615,25 +661,7 @@ function renderFriendsPanel(friends?: FriendScore[]): HTMLElement {
       | { won?: boolean; guessCount?: number }
       | null;
     const won = meta?.won ?? friend.score > 0;
-    const guessCount = meta?.guessCount;
-
-    const name = document.createElement('span');
-    name.className = 'friends-name';
-    name.textContent = `@${friend.username}`;
-    li.appendChild(name);
-
-    const result = document.createElement('span');
-    result.className = 'friends-result';
-    if (won && typeof guessCount === 'number') {
-      result.textContent = `Solved in ${guessCount}`;
-    } else if (won) {
-      result.textContent = 'Solved';
-    } else {
-      result.textContent = "Didn't solve";
-      result.classList.add('friends-result-lost');
-    }
-    li.appendChild(result);
-    list.appendChild(li);
+    appendResultRow(list, `@${friend.username}`, won, meta?.guessCount, false);
   }
   wrap.appendChild(list);
 
@@ -1322,11 +1350,16 @@ async function showLeaderboardModal(puzzleIndex: number): Promise<void> {
   const titleRow = document.createElement('div');
   titleRow.className = 'leaderboard-title-row';
 
+  const chevronSvg = (direction: 'left' | 'right'): string => {
+    const points = direction === 'left' ? '15 6 9 12 15 18' : '9 6 15 12 9 18';
+    return `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="${points}"/></svg>`;
+  };
+
   const prevBtn = document.createElement('button');
   prevBtn.type = 'button';
   prevBtn.className = 'leaderboard-nav-btn';
   prevBtn.setAttribute('aria-label', 'Previous day');
-  prevBtn.textContent = '‹';
+  prevBtn.innerHTML = chevronSvg('left');
 
   const title = document.createElement('h2');
   title.id = 'leaderboard-modal-title';
@@ -1336,7 +1369,7 @@ async function showLeaderboardModal(puzzleIndex: number): Promise<void> {
   nextBtn.type = 'button';
   nextBtn.className = 'leaderboard-nav-btn';
   nextBtn.setAttribute('aria-label', 'Next day');
-  nextBtn.textContent = '›';
+  nextBtn.innerHTML = chevronSvg('right');
 
   titleRow.appendChild(prevBtn);
   titleRow.appendChild(title);

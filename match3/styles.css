@@ -1,0 +1,441 @@
+/* Fruit Match — clean modern look, sister to snake's retro feel. Cream
+   background + a deep berry frame; the vivid fruit cards on the canvas do
+   all the colour work, so the chrome stays neutral and the board pops. */
+
+:root {
+  color-scheme: light;
+  --bg: #FAF6EC;          /* page bg */
+  --board-bg: #F4EFE3;    /* canvas bg (in sync with renderer.js) */
+  --frame: #2B1F3E;       /* deep purple-black, all chrome */
+  --frame-soft: #3D2E5A;  /* lighter chrome accent */
+  --accent: #FFF5C7;      /* chip text — warm cream */
+  --ink: #1A1326;         /* primary text on cream */
+  --muted: #6B5E80;       /* secondary text */
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
+}
+
+body { margin: 16px 0; }
+
+.container {
+  width: 520px;
+  max-width: calc(100vw - 32px);
+  margin: 0 auto;
+}
+
+.heading::after {
+  content: "";
+  display: block;
+  clear: both;
+}
+
+h1.title {
+  font-size: 32px;
+  font-weight: 800;
+  margin: 0;
+  display: block;
+  float: left;
+  letter-spacing: 1px;
+  color: var(--ink);
+}
+
+.scores-container {
+  float: right;
+  text-align: right;
+  /* Inline "0" placeholders preserve the layout but stay invisible until
+     application.js hydrates the values, then toggles `.ready`. Avoids the
+     "0 → 1240" flash on returning visits. */
+  visibility: hidden;
+}
+.scores-container.ready { visibility: visible; }
+
+.score-container, .best-container {
+  position: relative;
+  display: inline-block;
+  background: var(--frame);
+  padding: 18px 18px 8px;
+  font-size: 18px;
+  min-width: 36px;
+  font-weight: 700;
+  color: var(--accent);
+  margin-top: 4px;
+  margin-left: 6px;
+  text-align: center;
+  border-radius: 8px;
+}
+.score-container::after, .best-container::after {
+  position: absolute;
+  width: 100%;
+  top: 5px;
+  left: 0;
+  font-size: 9px;
+  line-height: 9px;
+  text-align: center;
+  color: var(--frame-soft);
+  letter-spacing: 1.5px;
+  font-weight: 700;
+}
+.score-container::after { content: "SCORE"; }
+.best-container::after { content: "BEST"; }
+
+.above-game {
+  margin-top: 20px;
+}
+.above-game::after {
+  content: "";
+  display: block;
+  clear: both;
+}
+
+.game-intro {
+  float: left;
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 8px 0 0;
+  max-width: 60%;
+  color: var(--muted);
+}
+
+.restart-button, .game-message button {
+  background: var(--frame);
+  color: var(--accent);
+  border: none;
+  padding: 11px 18px;
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  font-weight: 700;
+  text-transform: uppercase;
+  border-radius: 8px;
+  transition: transform 0.1s ease, background 0.15s ease;
+}
+.restart-button { float: right; }
+.restart-button:active, .game-message button:active {
+  transform: translateY(1px);
+  background: var(--frame-soft);
+}
+
+/* Timer bar — between header and board. Width drains; colour cycles
+   green→red via inline style from application.js. */
+.timer {
+  margin-top: 14px;
+  height: 8px;
+  background: rgba(43, 31, 62, 0.12);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.timer-fill {
+  width: 100%;
+  height: 100%;
+  background: hsl(120, 70%, 48%);
+  transition: width 1s linear, background 1s linear;
+  border-radius: 8px;
+}
+
+.game-container {
+  margin-top: 12px;
+  position: relative;
+  cursor: default;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: none;
+}
+
+/* The board frame. Deep purple-black border so the cream board background
+   plus vivid fruit cards inside read as the focal element. */
+.board-frame {
+  background: var(--frame);
+  padding: 10px;
+  border-radius: 14px;
+  box-shadow: 0 4px 14px rgba(43, 31, 62, 0.15);
+}
+
+.game-canvas {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  background: var(--board-bg);
+  border-radius: 8px;
+  box-sizing: border-box;
+}
+
+/* Combo banner — overlays the top-center of the board on cascade ≥2. The
+   .bump class restarts the punch-in keyframe on each new combo step so a
+   chain visibly escalates (×2 → ×3 → ×4) without restacking. */
+.combo-banner {
+  position: absolute;
+  top: 14%;
+  left: 50%;
+  transform: translate(-50%, 0) scale(0.5);
+  background: linear-gradient(135deg, #FFE07A 0%, #FF9800 100%);
+  color: #1A1326;
+  font-weight: 900;
+  font-size: 22px;
+  letter-spacing: 1.5px;
+  padding: 10px 22px;
+  border-radius: 999px;
+  box-shadow: 0 6px 18px rgba(43, 31, 62, 0.35);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 50;
+  transition: opacity 250ms ease;
+  white-space: nowrap;
+}
+.combo-banner.visible {
+  opacity: 1;
+}
+.combo-banner.bump {
+  animation: combo-bump 350ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes combo-bump {
+  0%   { transform: translate(-50%, 0) scale(0.4) rotate(-6deg); }
+  60%  { transform: translate(-50%, 0) scale(1.15) rotate(2deg); }
+  100% { transform: translate(-50%, 0) scale(1) rotate(0deg); }
+}
+
+.game-message {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  bottom: 10px;
+  left: 10px;
+  background: rgba(43, 31, 62, 0.86);
+  z-index: 100;
+  text-align: center;
+  border-radius: 8px;
+  padding: 16px;
+  box-sizing: border-box;
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+.game-message.visible { display: flex; }
+
+.game-message-text {
+  font-size: 22px;
+  letter-spacing: 1.5px;
+  font-weight: 800;
+  color: var(--accent);
+  margin: 0;
+}
+
+.final-score {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--accent);
+  margin: 0;
+}
+.final-score:empty { display: none; }
+.game-message[data-state="idle"] .final-score,
+.game-message[data-state="paused"] .final-score { display: none; }
+
+/* Community note (e.g. "12 players reached the 200-499 range this week").
+   Empty by default; populated on game-over once the aggregate call lands. */
+.community-note {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--accent);
+  opacity: 0.82;
+  margin: 0;
+  max-width: 90%;
+}
+.community-note:empty { display: none; }
+.game-message[data-state="idle"] .community-note,
+.game-message[data-state="paused"] .community-note { display: none; }
+
+.game-message .lower {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* Per-state button visibility. Defaults to hidden, each state opts the
+   right buttons back in. */
+.game-message .lower button { display: none; }
+.game-message[data-state="idle"] .start-button { display: inline-block; }
+.game-message[data-state="paused"] .resume-button { display: inline-block; }
+.game-message[data-state="over"] .retry-button,
+.game-message[data-state="over"] .share-button { display: inline-block; }
+
+.new-best-note {
+  font-size: 14px;
+  letter-spacing: 2px;
+  color: #FFE07A;
+  font-weight: 800;
+  margin: 0;
+  text-shadow: 1px 1px 0 rgba(0,0,0,0.25);
+}
+.new-best-note:empty { display: none; }
+.game-message[data-state="idle"] .new-best-note,
+.game-message[data-state="paused"] .new-best-note { display: none; }
+
+.game-explanation {
+  margin-top: 22px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+strong.important {
+  color: var(--ink);
+}
+
+.bootstrap-error {
+  margin: 20px auto;
+  padding: 16px 20px;
+  max-width: 460px;
+  background: var(--frame);
+  color: var(--accent);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+  border-radius: 8px;
+}
+
+/* Share modal — same visual family as the rest of the game. */
+.share-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(43, 31, 62, 0.78);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  box-sizing: border-box;
+}
+.share-modal {
+  background: var(--bg);
+  color: var(--ink);
+  border-radius: 14px;
+  box-shadow: 0 8px 32px rgba(43, 31, 62, 0.3);
+  padding: 22px;
+  width: 100%;
+  max-width: 380px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: center;
+}
+.share-modal h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.share-preview {
+  background: var(--frame);
+  color: var(--accent);
+  padding: 14px;
+  font-size: 12px;
+  line-height: 1.5;
+  border-radius: 8px;
+  word-break: break-word;
+  white-space: pre-line;
+}
+.share-action {
+  background: var(--frame);
+  color: var(--accent);
+  border: none;
+  padding: 11px 18px;
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  font-weight: 700;
+  text-transform: uppercase;
+  border-radius: 8px;
+  transition: transform 0.1s ease, background 0.15s ease;
+}
+.share-action:active {
+  transform: translateY(1px);
+  background: var(--frame-soft);
+}
+.share-section-label {
+  font-size: 10px;
+  letter-spacing: 1px;
+  color: var(--muted);
+  text-transform: uppercase;
+  margin-top: 4px;
+  font-weight: 700;
+}
+.share-buttons {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.share-button-social {
+  background: var(--frame);
+  color: var(--accent);
+  border: none;
+  padding: 11px 4px;
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  font-weight: 700;
+  text-transform: uppercase;
+  border-radius: 8px;
+  transition: transform 0.1s ease, background 0.15s ease;
+}
+.share-button-social:active {
+  transform: translateY(1px);
+  background: var(--frame-soft);
+}
+
+/* Toast. Bottom-centered slide-up; auto-dismissed by application.js. */
+.toast {
+  position: fixed;
+  bottom: 32px;
+  left: 50%;
+  transform: translate(-50%, 20px);
+  background: var(--frame);
+  color: var(--accent);
+  padding: 11px 18px;
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  border-radius: 8px;
+  opacity: 0;
+  transition: opacity 200ms ease, transform 200ms ease;
+  z-index: 300;
+  pointer-events: none;
+}
+.toast.toast-show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* Mobile tuning. Below ~540px the floated header crowds, and the board
+   needs to use most of the viewport. */
+@media screen and (max-width: 540px), screen and (max-height: 720px) {
+  body { margin: 10px 0; }
+  .container { width: auto; padding: 0 12px; }
+  h1.title { font-size: 22px; margin-top: 4px; }
+  .score-container, .best-container { font-size: 15px; padding: 16px 12px 6px; min-width: 32px; }
+  .score-container::after, .best-container::after { font-size: 8px; top: 4px; }
+  .game-intro { font-size: 11px; max-width: 58%; }
+  .restart-button { font-size: 10px; padding: 9px 12px; }
+  .board-frame { padding: 8px; }
+  .game-message { top: 8px; right: 8px; bottom: 8px; left: 8px; gap: 12px; padding: 14px; }
+  .game-message-text { font-size: 18px; }
+  .final-score { font-size: 14px; }
+  .new-best-note { font-size: 12px; }
+  .game-explanation { font-size: 11px; margin-top: 16px; }
+  .combo-banner { font-size: 16px; padding: 8px 16px; }
+}

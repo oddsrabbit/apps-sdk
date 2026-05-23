@@ -429,6 +429,11 @@ header h1 {
   font-size: 13px;
 }
 
+.friends-row-you {
+  border-color: var(--accent, var(--fg));
+  background: color-mix(in srgb, var(--accent, var(--fg)) 8%, transparent);
+}
+
 .friends-name {
   font-weight: 700;
 }
