@@ -54,17 +54,20 @@ export interface OddsRabbitGlobal {
   readonly aggregate: {
     /**
      * Register the calling user into `value` for `key` and return the
-     * post-write count of distinct users in that bucket. Returns `null`
-     * below the k=5 anonymity floor. Use this exactly once per round for
-     * the bucket the player landed in — calling it across neighboring
-     * buckets to "fetch the distribution" registers the user into all of
-     * them. For read-only access to other buckets, use `read`.
+     * post-write count of distinct users in that bucket. Use this exactly
+     * once per round for the bucket the player landed in — calling it
+     * across neighboring buckets to "fetch the distribution" would
+     * register the user into all of them. For read-only access to other
+     * buckets, use `read`. Returns `null` on transport / authorization
+     * failure; the count itself is never `null` for a successful write.
      */
     count(key: string, value: string): Promise<number | null>;
     /**
-     * Read-only counterpart to `count`. Same k=5 anonymity floor; does
-     * not modify the caller's bucket membership. Safe to call across all
-     * buckets to render a community distribution.
+     * Read-only counterpart to `count` — does not modify the caller's
+     * bucket membership, so it's safe to call across all buckets to
+     * render a community distribution. Returns `null` when the bucket
+     * has no recorded value yet (e.g. an unplayed puzzle), or on
+     * transport failure.
      */
     read(key: string, value: string): Promise<number | null>;
   };

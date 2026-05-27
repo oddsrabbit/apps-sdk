@@ -23,6 +23,9 @@
     // Currently selected tile, or null. Mirrored to listeners via 'select'
     // events so the renderer can highlight it.
     this.selected = null;
+    // Keyboard cursor cell, or null until the user presses an arrow key.
+    // Mirrored via 'focus' events; the renderer paints a dashed ring on it.
+    this._focused = null;
     this._tracking = false;
     this._startX = 0;
     this._startY = 0;
@@ -94,6 +97,14 @@
       self._startX = clientX;
       self._startY = clientY;
       self._startTile = tile;
+      // Pointer interaction supersedes keyboard mode. Without this, a
+      // keyboard user who pressed arrow once and then switched to touch
+      // would see the dashed focus ring stuck on their last keyboard
+      // cursor position alongside every new tap's selection ring.
+      if (self._focused) {
+        self._focused = null;
+        self.emit("focus", null);
+      }
     }
 
     // Released without enough movement → treat as a tap. Either select the
@@ -188,6 +199,61 @@
     this.canvas.addEventListener("touchcancel", function () {
       self._tracking = false;
       self._startTile = null;
+    });
+
+    // Keyboard: arrows move a focus cursor, Enter/Space taps (select or
+    // swap, same flow as a touch tap), Shift+Arrow performs a direct swap
+    // (skips the two-step pick-then-swap). Escape toggles pause/resume.
+    // Bound to the canvas (which is tabindex="0") rather than the document
+    // so arrow keys still scroll the page when the canvas isn't focused.
+    function clampFocus() {
+      if (!self._focused) {
+        self._focused = { c: Math.floor(self.cols / 2), r: Math.floor(self.rows / 2) };
+        self.emit("focus", self._focused);
+        return true; // initialised this press; don't move further
+      }
+      return false;
+    }
+    function moveFocus(dc, dr) {
+      if (clampFocus()) return;
+      var nc = Math.max(0, Math.min(self.cols - 1, self._focused.c + dc));
+      var nr = Math.max(0, Math.min(self.rows - 1, self._focused.r + dr));
+      if (nc === self._focused.c && nr === self._focused.r) return;
+      self._focused = { c: nc, r: nr };
+      self.emit("focus", self._focused);
+    }
+    function swapFocus(dc, dr) {
+      if (clampFocus()) return;
+      var nc = self._focused.c + dc;
+      var nr = self._focused.r + dr;
+      if (nc < 0 || nc >= self.cols || nr < 0 || nr >= self.rows) return;
+      self.clearSelection();
+      self.emit("swap", { c1: self._focused.c, r1: self._focused.r, c2: nc, r2: nr });
+      // Move the cursor onto the destination so subsequent moves continue
+      // from where the player was just looking.
+      self._focused = { c: nc, r: nr };
+      self.emit("focus", self._focused);
+    }
+    function activate() {
+      if (clampFocus()) return;
+      onTap(self._focused);
+    }
+    this.canvas.addEventListener("keydown", function (e) {
+      switch (e.key) {
+        case "ArrowLeft":  e.preventDefault();
+          if (e.shiftKey) swapFocus(-1, 0); else moveFocus(-1, 0); return;
+        case "ArrowRight": e.preventDefault();
+          if (e.shiftKey) swapFocus(1, 0); else moveFocus(1, 0); return;
+        case "ArrowUp":    e.preventDefault();
+          if (e.shiftKey) swapFocus(0, -1); else moveFocus(0, -1); return;
+        case "ArrowDown":  e.preventDefault();
+          if (e.shiftKey) swapFocus(0, 1); else moveFocus(0, 1); return;
+        case "Enter":
+        case " ":
+          e.preventDefault(); activate(); return;
+        case "Escape":
+          e.preventDefault(); self.emit("toggle"); return;
+      }
     });
 
     this._bindButton(".restart-button", "restart");

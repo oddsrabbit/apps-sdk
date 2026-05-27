@@ -4,7 +4,14 @@ html, body {
   background: #faf8ef;
   color: #776e65;
   font-family: "Clear Sans", "Helvetica Neue", Arial, sans-serif;
-  font-size: 18px; }
+  font-size: 18px;
+  /* Tell the browser we own all touch gestures. Without this, Android Chrome's
+     compositor can kick off a scroll/zoom on the first touchmove before the
+     JS listener gets to call preventDefault(), leaving swipes that only
+     register intermittently. `overscroll-behavior: none` blocks the parent
+     WebView's pull-to-refresh and edge-bounce from claiming the gesture. */
+  touch-action: none;
+  overscroll-behavior: none; }
 
 body {
   /* Canonical 2048 used 80px to center the game on a full-browser page; we

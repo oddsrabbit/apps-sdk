@@ -44,8 +44,10 @@ const DISTRIBUTION_BUCKETS = [
 ] as const;
 type DistributionBucket = typeof DISTRIBUTION_BUCKETS[number];
 
-// `null` per bucket = below the k=5 anonymity floor on the aggregate API.
-// We render those as zero-width bars without leaking the "1..4 players" range.
+// `null` per bucket = the aggregate API returned no recorded value for it
+// (unplayed puzzle, network failure, etc.). Render as zero so the histogram
+// has a stable visual; the "Not enough plays yet" empty state handles the
+// case where every bucket comes back null.
 type CommunityData = {
   buckets: Record<DistributionBucket, number | null>;
 };
@@ -241,8 +243,9 @@ function renderPuzzleHeader(state: State): HTMLElement {
 
   // Yesterday's leaderboard — hidden on day 0 since there's nothing to show.
   // Today's results are intentionally NOT exposed here: mid-day distribution
-  // is noisy (k=5 floors leave most buckets empty, percentages swing) and
-  // would invite "wait, that doesn't match my push notification" confusion.
+  // shifts as the day's plays roll in, and a user checking twice would see
+  // different numbers — which invites "wait, that doesn't match my push
+  // notification" confusion. The end-of-round screen shows the final shape.
   if (state.puzzleIndex > 0) {
     const leaderboard = document.createElement('button');
     leaderboard.type = 'button';
@@ -497,12 +500,25 @@ function renderCommunityDistribution(
   titleEl.textContent = title;
   wrap.appendChild(titleEl);
 
-  // Treat below-k=5-floor buckets as 0 for display — they render as empty
-  // bars without revealing the 1..4-player range. Distinct from "literally
-  // zero players got 1-guess" only in semantics, not pixels.
+  // Coerce any null buckets to 0 for math — null usually means "no plays
+  // in this bucket yet" (e.g. nobody solved in 1 guess on a quiet day).
+  // The total === 0 check below handles the all-empty case separately.
   const counts = DISTRIBUTION_BUCKETS.map((b) => community.buckets[b] ?? 0);
   const total = counts.reduce((a, b) => a + b, 0);
   const max = Math.max(1, ...counts);
+
+  // Empty state. Without this, a puzzle with <5 plays per bucket renders as
+  // 7 bars labelled "0%" each, which reads as "literally nobody scored" —
+  // misleading. Most early-puzzle / dev-environment / quiet-day cases fall
+  // here; the message tells the player it's a data-volume issue, not a
+  // play-pattern observation.
+  if (total === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'community-empty';
+    empty.textContent = 'Not enough plays yet to show the distribution.';
+    wrap.appendChild(empty);
+    return wrap;
+  }
 
   const hist = document.createElement('div');
   hist.className = 'histogram community-hist';
@@ -939,8 +955,9 @@ async function submitScoreToServer(state: State): Promise<void> {
  * Fetch all 7 distribution buckets in parallel for a given puzzle. Uses
  * aggregate.read (not .count) — .count would register the viewer into every
  * bucket and corrupt the distribution. Each call can return null independently
- * (per-bucket k=5 floor), which the renderer treats as "below floor, show
- * empty bar."
+ * (no recorded value for that bucket on this puzzle, or a transport failure);
+ * the renderer treats those as 0 and shows an empty-state message if every
+ * bucket comes back null.
  *
  * Parameterized by puzzleIndex so callers can fetch past rounds (e.g. a
  * deep-link from a push notification's leaderboard CTA), not just today.
@@ -1339,12 +1356,22 @@ async function showLeaderboardModal(puzzleIndex: number): Promise<void> {
   const modal = document.createElement('div');
   modal.className = 'modal leaderboard-modal';
 
+  // Close X in the top-right corner (standard modal placement). Absolute
+  // position relative to .leaderboard-modal; the title row below has a
+  // margin-top that clears the X's vertical band so the next-day chevron
+  // doesn't collide with it. SVG glyph (same style as the chevrons) instead
+  // of the &times; entity — system-ui renders × visually off-centre inside
+  // a fixed-height circle.
   const closeBtn = document.createElement('button');
   closeBtn.type = 'button';
-  closeBtn.className = 'modal-x';
+  closeBtn.className = 'modal-x leaderboard-modal-x';
   closeBtn.setAttribute('aria-label', 'Close');
   closeBtn.dataset.action = 'close';
-  closeBtn.innerHTML = '&times;';
+  closeBtn.innerHTML =
+    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<line x1="6" y1="6" x2="18" y2="18"/>' +
+    '<line x1="18" y1="6" x2="6" y2="18"/>' +
+    '</svg>';
   modal.appendChild(closeBtn);
 
   const titleRow = document.createElement('div');

@@ -204,8 +204,8 @@ function setupBridge(iframe: HTMLIFrameElement, appSlug: string): void {
   // origin instead of being forwarded to the WP REST API. Lets games run
   // end-to-end for unauthenticated visitors so they can play first and convert
   // later, instead of gating signup before play. Aggregate, share, haptic, and
-  // lifecycle keep flowing through the outer host — aggregate reads are
-  // anonymous already (k=5 floor); the rest don't need a user identity.
+  // lifecycle keep flowing through the outer host — none of those need a
+  // persistent user identity for the guest path to work.
   let currentUser: BridgeUser | null = null;
 
   // Game (child iframe) → host

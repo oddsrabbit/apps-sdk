@@ -81,6 +81,12 @@ KeyboardInputManager.prototype.listen = function () {
   // Safe because nothing inside the body is scrollable (the iframe itself
   // owns any scroll), so the touchmove preventDefault doesn't block
   // legitimate scrolling.
+  //
+  // `{ passive: false }` is required on Android Chrome / WebView — listeners
+  // attached to body/document/window are passive-by-default since Chrome 56,
+  // and a passive listener's preventDefault() is silently ignored. Without
+  // this, the WebView's scroll/pan heuristic steals the gesture mid-swipe
+  // and swipes only register in narrow areas where the heuristic doesn't fire.
   var touchStartClientX, touchStartClientY;
   var gameContainer = document.body;
 
@@ -99,11 +105,11 @@ KeyboardInputManager.prototype.listen = function () {
     }
 
     event.preventDefault();
-  });
+  }, { passive: false });
 
   gameContainer.addEventListener(this.eventTouchmove, function (event) {
     event.preventDefault();
-  });
+  }, { passive: false });
 
   gameContainer.addEventListener(this.eventTouchend, function (event) {
     if ((!window.navigator.msPointerEnabled && event.touches.length > 0) ||

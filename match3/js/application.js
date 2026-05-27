@@ -27,8 +27,8 @@
   function noop() {}
 
   // Coarse score bands. Same shape as snake's, scaled for the much larger
-  // match-3 score range. Bands stay coarse enough to keep each bucket above
-  // the k=5 anonymity floor on the aggregate count.
+  // match-3 score range. Coarse bands keep each bucket densely populated
+  // so the weekly community readout has meaningful counts to compare.
   function scoreBand(score) {
     if (score < 200) return "0-199";
     if (score < 500) return "200-499";
@@ -78,6 +78,65 @@
     bestEl.setAttribute("aria-label", "Best " + text);
   }
 
+  // Stage banner ------------------------------------------------------
+  // Fires once per stage transition (2→3, 3→4, etc.) and also re-used
+  // for the SHUFFLE notice when the engine recovers from a no-moves
+  // deadlock. Bigger + more central than the combo banner because both
+  // events are rare and carry information the player needs to read.
+  //
+  // When a stage banner fires we also (a) flash the board (parallel
+  // radial-glow element) and (b) immediately hide the combo banner —
+  // a long cascade can naturally trigger a stage-up, and we don't want
+  // the combo banner sitting at top:14% drawing the eye away from the
+  // centered stage banner.
+  var stageBannerEl = document.querySelector(".stage-banner");
+  var stageFlashEl = document.querySelector(".stage-flash");
+  var stageHideHandle = null;
+  function showStageBanner(text) {
+    if (!stageBannerEl) return;
+    stageBannerEl.textContent = text;
+    stageBannerEl.classList.add("visible");
+    stageBannerEl.classList.remove("bump");
+    void stageBannerEl.offsetWidth;
+    stageBannerEl.classList.add("bump");
+
+    // Parallel flash. Restart the keyframe by toggling the class to
+    // handle back-to-back banners (rare, but possible if a shuffle
+    // happens right after a stage-up).
+    if (stageFlashEl) {
+      stageFlashEl.classList.remove("flash");
+      void stageFlashEl.offsetWidth;
+      stageFlashEl.classList.add("flash");
+    }
+
+    // Push the combo banner out of the way so the stage banner owns
+    // the visual moment.
+    if (comboBannerEl) {
+      comboBannerEl.classList.remove("visible");
+      comboBannerEl.classList.remove("bump");
+      if (comboHideHandle) window.clearTimeout(comboHideHandle);
+    }
+
+    if (stageHideHandle) window.clearTimeout(stageHideHandle);
+    stageHideHandle = window.setTimeout(function () {
+      stageBannerEl.classList.remove("visible");
+      stageBannerEl.classList.remove("bump");
+    }, 2000);
+  }
+  function showStage(info) {
+    var text = "STAGE " + info.id;
+    if (info.label) text += " — " + info.label;
+    showStageBanner(text);
+  }
+  function showShuffle() {
+    // Reuses the stage banner's visual treatment — same scale, same
+    // attention-grabbing flash — so the player understands "something
+    // important just happened to the board" without a new mental
+    // category to learn. Names the cause ("no moves") so the rearranging
+    // board doesn't read as a glitch — the player sees why it happened.
+    showStageBanner("NO MOVES — SHUFFLING");
+  }
+
   // Combo banner ------------------------------------------------------
   // Shows "COMBO ×N!" briefly on each cascade ≥2. Reuses the same element
   // so a rapid chain visually escalates (×2 → ×3 → ×4) rather than
@@ -104,15 +163,29 @@
 
   // Timer bar ---------------------------------------------------------
   // Width tracks remaining time; hue drifts from green → red as the bar
-  // empties so the urgency cue is colour + width, not width alone.
+  // empties so the urgency cue is colour + width, not width alone. The
+  // speed indicator surfaces the score-driven drain multiplier — without
+  // it, bonus seconds at high scores feel mysteriously short ("I bought
+  // +5s but only got ~1.5s back" at score 9000, drain ×4).
   var timerFillEl = document.querySelector(".timer-fill");
-  function setTimer(remaining, total) {
+  var timerSpeedEl = document.querySelector(".timer-speed");
+  function setTimer(remaining, total, drainRate) {
     if (!timerFillEl) return;
     var ratio = total > 0 ? Math.max(0, Math.min(1, remaining / total)) : 0;
     timerFillEl.style.width = (ratio * 100).toFixed(1) + "%";
     // HSL 120 (green) → 0 (red). Saturation/lightness fixed.
     var hue = Math.round(120 * ratio);
     timerFillEl.style.background = "hsl(" + hue + ", 70%, 48%)";
+    if (timerSpeedEl) {
+      // Threshold at 1.1× — below that the speed-up is imperceptible and
+      // the badge would just be visual noise from the moment scoring starts.
+      if (drainRate && drainRate >= 1.1) {
+        timerSpeedEl.textContent = "×" + drainRate.toFixed(1);
+        timerSpeedEl.classList.add("visible");
+      } else {
+        timerSpeedEl.classList.remove("visible");
+      }
+    }
   }
 
   // Overlay -----------------------------------------------------------
@@ -122,6 +195,7 @@
   var newBestNoteEl = document.querySelector(".new-best-note");
   var finalScoreEl = document.querySelector(".final-score");
   var shareButtonEl = document.querySelector(".share-button");
+  var restartButtonEl = document.querySelector(".restart-button");
   function setOverlay(state) {
     overlayEl.setAttribute("data-state", state);
     if (state !== "over") {
@@ -129,6 +203,10 @@
       newBestNoteEl.textContent = "";
       finalScoreEl.textContent = "";
     }
+    // Hide the top-right "New Game" button while actively playing — too
+    // easy to thumb-graze on mobile and instantly nuke a good run with no
+    // confirm. Players who want a fresh board mid-run can pause first.
+    if (restartButtonEl) restartButtonEl.hidden = (state === "playing");
     if (state === "playing") {
       overlayEl.classList.remove("visible");
       return;
@@ -140,26 +218,61 @@
   }
 
   // Community note ----------------------------------------------------
+  // High-water-mark dedup: each band counts at most once per player per
+  // week. A player who hits "200-499" then later "1000-1999" registers in
+  // both (matches the "reached the X range" wording — they did reach both).
+  // A player who replays in the same band doesn't double-count. We store
+  // the set of already-counted bands as a CSV under "counted-bands-<W>"
+  // because there's no decrement on the aggregate API and band names
+  // happen to contain no commas.
+  function renderCommunityCount(count, band) {
+    if (overlayEl.getAttribute("data-state") !== "over") return;
+    if (count == null) {
+      communityNoteEl.textContent =
+        "Community stats unlock once a few more players finish a run.";
+    } else {
+      communityNoteEl.textContent =
+        count.toLocaleString() + " players reached the " + band + " range this week.";
+    }
+  }
+
   function fetchCommunityNote(score) {
     if (score < COMMUNITY_MIN_SCORE) return;
     if (!OR.aggregate || !OR.aggregate.count) return;
     var band = scoreBand(score);
-    var key = "weekly-score-" + currentWeek();
-    try {
-      OR.aggregate
-        .count(key, "band-" + band)
-        .then(function (count) {
-          if (overlayEl.getAttribute("data-state") !== "over") return;
-          if (count == null) {
-            communityNoteEl.textContent =
-              "Community stats unlock once a few more players finish a run.";
-          } else {
-            communityNoteEl.textContent =
-              count.toLocaleString() + " players reached the " + band + " range this week.";
-          }
-        })
-        .catch(noop);
-    } catch (_) {}
+    var week = currentWeek();
+    var aggregateKey = "weekly-score-" + week;
+    var bucket = "band-" + band;
+    var dedupKey = "counted-bands-" + week;
+
+    var storageGet = OR.storage && OR.storage.get
+      ? OR.storage.get(dedupKey).catch(function () { return null; })
+      : Promise.resolve(null);
+
+    storageGet.then(function (raw) {
+      var counted = raw ? String(raw).split(",") : [];
+      var already = counted.indexOf(band) >= 0;
+
+      if (already) {
+        // Already in this band this week — read without bumping. If the
+        // host doesn't expose .read, fall through to a null count (renders
+        // the "unlock once more players finish" copy, which is the safer
+        // failure than re-counting).
+        if (OR.aggregate.read) {
+          return OR.aggregate.read(aggregateKey, bucket).catch(function () { return null; });
+        }
+        return null;
+      }
+
+      // First finish in this band this week: count + persist the new band.
+      counted.push(band);
+      if (OR.storage && OR.storage.set) {
+        OR.storage.set(dedupKey, counted.join(",")).catch(noop);
+      }
+      return OR.aggregate.count(aggregateKey, bucket).catch(function () { return null; });
+    }).then(function (count) {
+      renderCommunityCount(count, band);
+    }).catch(noop);
   }
 
   // -------- Share modal --------
@@ -338,7 +451,7 @@
           onState: function (state) { setOverlay(state); },
           onScore: function (score) { setScore(score); },
           onBest: function (best) { setBest(best); },
-          onTimer: function (remaining, total) { setTimer(remaining, total); },
+          onTimer: function (remaining, total, drainRate) { setTimer(remaining, total, drainRate); },
           onMatch: function (clusters) {
             // Light haptic per match. A long cascade fires once per resolve
             // step rather than once per cluster — feels like a chain rather
@@ -359,10 +472,31 @@
             // bigger screen shake (handled in game.js).
             try { OR.actions.haptic("medium").catch(noop); } catch (_) {}
           },
+          onStage: function (info) {
+            showStage(info);
+            // Success haptic on stage-up — reused from new-best because
+            // both events are "you cleared a milestone" moments. Higher
+            // intensity than combos so the player feels the difference
+            // between "good chain" and "you advanced".
+            try { OR.actions.haptic("success").catch(noop); } catch (_) {}
+          },
+          onShuffle: function () {
+            showShuffle();
+            // Medium haptic — same "something rearranged on the board"
+            // weight as a combo, lower than stage-up because shuffle is
+            // a rescue rather than an achievement.
+            try { OR.actions.haptic("medium").catch(noop); } catch (_) {}
+          },
           onGameOver: function (info) {
             try { OR.actions.haptic("error").catch(noop); } catch (_) {}
             lastResult = { score: info.score, isNewBest: info.isNewBest };
             finalScoreEl.textContent = "Score: " + info.score;
+            // setOverlay("over") already painted "TIME'S UP"; override
+            // when the end was actually a deadlocked board so the player
+            // doesn't wonder why TIME'S UP appeared with seconds on the bar.
+            if (info.reason === "noMoves") {
+              overlayTextEl.textContent = "NO MOVES LEFT";
+            }
             if (info.isNewBest) {
               newBestNoteEl.textContent = "NEW BEST!";
               try { OR.actions.haptic("success").catch(noop); } catch (_) {}
@@ -389,7 +523,8 @@
       window.addEventListener("orientationchange", syncCanvas);
 
       setBest(storage.getBest());
-      setTimer(120, 120);
+      var initialTimer = (window.Match3Game && window.Match3Game.TIMER_START) || 120;
+      setTimer(initialTimer, initialTimer, 1);
       scoresContainerEl.classList.add("ready");
 
       window.requestAnimationFrame(function () {

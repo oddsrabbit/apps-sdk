@@ -33,11 +33,29 @@
   var SCORE_TO_TIME = 3;     // pts per second of timer bonus
   var TIMER_DRAIN_SCALE = 3000;
 
-  // Idle hint kicks in after this many ms of no input while ready to play.
-  // Long enough that a player taking a careful look doesn't get the hint
-  // popping over their board on every move, short enough that a confused
-  // player gets help.
-  var IDLE_HINT_MS = 8000;
+  // Stage definitions — endless mode with escalating rules. Advancing
+  // through stages is score-gated (not time-gated), so a careful low-score
+  // player still progresses if they survive long enough. Stage 5 is the
+  // endurance ceiling; we don't keep escalating past it because punishing-
+  // forever curves stop feeling like progress and start feeling like a
+  // wall. lockRate / lockDoubleRate are probabilities applied per refilled
+  // tile in _shiftAndRefill; drainMult stacks on top of the score-based
+  // drain in _currentDrainRate. Order in the array matches stage IDs (1-5)
+  // so the index→id mapping is just +1.
+  var STAGES = [
+    { id: 1, minScore: 0,    drainMult: 1.0,  lockRate: 0.0,  lockDoubleRate: 0.0,  label: "" },
+    { id: 2, minScore: 200,  drainMult: 1.0,  lockRate: 0.08, lockDoubleRate: 0.0,  label: "LOCKED TILES" },
+    { id: 3, minScore: 500,  drainMult: 1.15, lockRate: 0.12, lockDoubleRate: 0.0,  label: "FASTER" },
+    { id: 4, minScore: 1000, drainMult: 1.25, lockRate: 0.18, lockDoubleRate: 0.03, label: "REINFORCED" },
+    { id: 5, minScore: 2000, drainMult: 1.4,  lockRate: 0.25, lockDoubleRate: 0.05, label: "ENDURANCE" },
+  ];
+
+  function stageFor(score) {
+    for (var i = STAGES.length - 1; i >= 0; i--) {
+      if (score >= STAGES[i].minScore) return STAGES[i];
+    }
+    return STAGES[0];
+  }
 
   // Fruit hex colours mirror renderer.js's FRUITS palette — duplicated here
   // so the engine can colour popup text per fruit without an upward import.
@@ -56,13 +74,13 @@
 
     this._rafHandle = null;
     this._lastFrame = 0;
-    this._timerHandle = null;
   }
 
   Game.prototype._wireInput = function () {
     var self = this;
     this.input.on("swap", function (move) { self._onSwap(move); });
     this.input.on("select", function (tile) { self._onSelect(tile); });
+    this.input.on("focus", function (tile) { self._onFocus(tile); });
     this.input.on("toggle", function () { self._onToggle(); });
     this.input.on("restart", function () { self.restart(); });
   };
@@ -86,13 +104,16 @@
     //   shift    — per-resolve fall distance (cells) for the renderer
     //   fallFrom — per-refill drop-in distance (cells) for the renderer
     //   special  — null | 'h-striped' | 'v-striped' | 'bomb'
-    // shift/fallFrom are renderer hints, reset each phase. special survives
-    // until the tile is matched, then triggers its chain effect on removal.
+    //   locked   — 0 (normal) | 1 (locked once) | 2 (double-locked)
+    // shift/fallFrom are renderer hints, reset each phase. special and
+    // locked persist until the tile is cleared. locked tiles are excluded
+    // from cluster matching (effectiveType returns -1) and unlock by being
+    // adjacent to a cleared cluster cell — see _removeClusters.
     this.tiles = new Array(COLS);
     for (var i = 0; i < COLS; i++) {
       this.tiles[i] = new Array(ROWS);
       for (var j = 0; j < ROWS; j++) {
-        this.tiles[i][j] = { type: 0, shift: 0, fallFrom: 0, special: null };
+        this.tiles[i][j] = { type: 0, shift: 0, fallFrom: 0, special: null, locked: 0 };
       }
     }
 
@@ -125,8 +146,20 @@
     this.comboCount = 0;      // per-turn cascade depth; resets on player swap
     this.shakeT = 0;          // remaining shake duration, seconds
     this.shakeAmp = 0;        // current peak shake amplitude, CSS px
-    this.idleSince = (typeof performance !== "undefined" ? performance.now() : Date.now());
-    this.hintMove = null;     // suggested move when idle threshold reached
+    this.focused = null;      // keyboard cursor cell (null until first key press)
+
+    // Stage state — STAGES[0] is the silent warm-up (no banner emitted on
+    // entry). _stage is the full config object kept on the instance so the
+    // drain rate + refill spawn rate can read it without a lookup; this.stage
+    // is the public id duplicated for renderer/listener use.
+    this._stage = STAGES[0];
+    this.stage = this._stage.id;
+
+    // Memoised _findMoves(). Holds the result for the current phase so the
+    // per-frame no-moves check + idle-hint pick share one scan instead of
+    // re-running it 60×/sec. Invalidated on every phase change in _setPhase
+    // (the only points where the board can mutate).
+    this._movesCache = null;
   };
 
   Game.prototype.restart = function () {
@@ -135,7 +168,7 @@
     if (this.input && this.input.clearSelection) this.input.clearSelection();
     this._setState("idle");
     this._notifyScore();
-    if (this.listener.onTimer) this.listener.onTimer(this.timer, this.timerMax);
+    this._notifyTimer();
   };
 
   // Toggle: idle → playing (start the timer), playing ↔ paused, over → no-op.
@@ -159,13 +192,22 @@
   };
 
   Game.prototype._onSelect = function (tile) {
+    // The renderer only draws the selection ring when phase === 'ready', so
+    // latching a selection during an animation would invisibly queue it and
+    // then "magically" appear when phase returns to ready, swapping a tile
+    // the player no longer intended. Drop it instead. tile===null comes
+    // from clearSelection echoing back; suppress to avoid a reentrant loop.
+    if (this.phase !== "ready") {
+      if (tile && this.input && this.input.clearSelection) {
+        this.input.clearSelection();
+      }
+      return;
+    }
     this.selected = tile;
-    this._resetIdle();
   };
 
-  Game.prototype._resetIdle = function () {
-    this.idleSince = (typeof performance !== "undefined" ? performance.now() : Date.now());
-    this.hintMove = null;
+  Game.prototype._onFocus = function (tile) {
+    this.focused = tile;
   };
 
   // Player-initiated swap. Gated to playing + ready (or idle, in which case
@@ -179,10 +221,14 @@
     if (this.state !== "playing") return;
     if (this.phase !== "ready") return;
 
-    this._resetIdle();
-
     var tileA = this.tiles[move.c1][move.r1];
     var tileB = this.tiles[move.c2][move.r2];
+
+    // Locked tiles can't be moved — the gesture is silently dropped.
+    // No swap-back animation because no swap happened: this avoids the
+    // confusing "I tapped a fruit and it shook" experience when the
+    // player tries to swap an iced tile they don't yet know is inert.
+    if (tileA.locked > 0 || tileB.locked > 0) return;
 
     // Bomb activation: swap a rainbow bomb with a regular tile → clear all
     // tiles of the regular tile's colour (plus the bomb itself). Skips the
@@ -227,23 +273,41 @@
     this._updateConfetti(dt);
     this._updateShake(dt);
 
+    // Timer drain — rAF-driven (was setInterval @1Hz, which let game-over
+    // fire while the CSS-transitioned bar still visually showed time at
+    // high drain rates: a 3.5→0 tick at ×4 drain would trigger TIME'S UP
+    // while the bar was still mid-transition between the previous tick's
+    // and the new value). Per-frame updates keep the bar truthful and let
+    // us check timeOut at the same resolution.
+    if (this.state === "playing") {
+      var prev = this.timer;
+      this.timer = Math.max(0, this.timer - this._currentDrainRate() * dt);
+      if (prev !== this.timer) this._notifyTimer();
+      if (this.timer === 0) {
+        this._gameOver("timeOut");
+        return;
+      }
+    }
+
     // Paused/over: freeze the phase machine and skip no-moves/idle logic.
     if (this.state === "paused" || this.state === "over") return;
 
     if (this.phase === "ready") {
       // No-moves and idle-hint detection only apply while actively playing.
       if (this.state !== "playing") return;
-      if (this._findMoves().length === 0) {
-        this._gameOver("noMoves");
+      // Single _getMoves() call shared by both checks — the result is
+      // memoised for the rest of this ready phase, so the per-frame cost
+      // drops from "scan 112 swaps × find clusters" to "look up a cached array".
+      var moves = this._getMoves();
+      if (moves.length === 0) {
+        // Deadlock recovery — instead of ending the run, shuffle the
+        // unlocked tiles into a configuration with at least one valid
+        // move. The game now only ends on the timer. (Locks stay in
+        // place because they're a board-state mechanic, not a fruit
+        // mechanic; shuffling them would feel like cheating to the
+        // player who'd been "earning" their unlock by adjacency.)
+        this._shuffleBoard();
         return;
-      }
-      // Idle hint: surface a valid move if the player's stalled.
-      var now = (typeof performance !== "undefined" ? performance.now() : Date.now());
-      if (!this.hintMove && now - this.idleSince > IDLE_HINT_MS) {
-        var moves = this._findMoves();
-        if (moves.length > 0) {
-          this.hintMove = moves[Math.floor(Math.random() * moves.length)];
-        }
       }
       return;
     }
@@ -301,10 +365,10 @@
       currentMove: this.currentMove,
       clusters: this.clusters,
       selected: this.selected,
+      focused: this.focused,
       particles: this.particles,
       popups: this.popups,
       confetti: this.confetti,
-      hintMove: this.hintMove,
       shakeAmp: this.shakeAmp,
       shakeT: this.shakeT,
       now: (typeof performance !== "undefined" ? performance.now() : Date.now()),
@@ -327,6 +391,12 @@
       this._resolveStartingClusters();
       if (this._findMoves().length > 0) done = true;
     }
+    if (!done && typeof console !== "undefined" && console.warn) {
+      // Effectively unreachable with 6 fruit types on an 8x8 grid, but a
+      // future tweak (more types, smaller board, special seeding) could trip
+      // it. Loud > silent.
+      console.warn("match3: _generateValidBoard exhausted retries; board may have no valid moves");
+    }
   };
 
   Game.prototype._randomTile = function () {
@@ -347,16 +417,21 @@
         }
       }
     }
+    if (typeof console !== "undefined" && console.warn) {
+      console.warn("match3: _resolveStartingClusters exhausted retries; board may still contain pre-formed clusters");
+    }
   };
 
   // --- Cluster + move detection -------------------------------------
 
   // Bombs are wildcards in matching theory, but to keep the cluster finder
   // simple we exclude them from runs entirely — bombs only activate via
-  // swap, not by being part of an incidental 3-match. effectiveType returns
-  // -1 for bomb tiles so they don't match anything in the run-based scan.
+  // swap, not by being part of an incidental 3-match. Locked tiles are
+  // similarly excluded: they're inert until adjacency clears their lock.
+  // Both cases return -1 so the run-based scan never extends through them.
   function effectiveType(tile) {
     if (tile.special === "bomb") return -1;
+    if (tile.locked > 0) return -1;
     return tile.type;
   }
 
@@ -398,32 +473,108 @@
     return clusters;
   };
 
+  // Memoised wrapper around _findMoves. Cleared in _setPhase on every phase
+  // transition (the only times the board can mutate), so the cache covers an
+  // entire ready phase without ever returning stale data.
+  Game.prototype._getMoves = function () {
+    if (!this._movesCache) {
+      this._movesCache = this._findMoves();
+    }
+    return this._movesCache;
+  };
+
+  // Non-mutating predicate: would swapping the two cells produce any 3+ run?
+  // Avoids the swap-in-place trick the original _findMoves used — that was
+  // fast in steady state but corrupted live state if anything between the
+  // two swaps ever threw, and required us to scan every cell each call.
+  // Bomb swaps short-circuit to true (they activate on any neighbour, the
+  // cluster machinery is bypassed in _onSwap).
+  Game.prototype._swapWouldMatch = function (c1, r1, c2, r2) {
+    var self = this;
+    var tileA = this.tiles[c1][r1];
+    var tileB = this.tiles[c2][r2];
+    // Locked check FIRST — _onSwap rejects locked partners, so any swap
+    // involving one is not a valid move even if the other side is a bomb
+    // (a bomb-vs-locked false positive would otherwise hide a real
+    // no-moves state and keep the game running with no playable swaps).
+    if (tileA.locked > 0 || tileB.locked > 0) return false;
+    // Bomb-vs-bomb is also rejected by _onSwap (the inner partner.type<0
+    // early return), so it isn't a valid move either.
+    if (tileA.special === "bomb" && tileB.special === "bomb") return false;
+    if (tileA.special === "bomb" || tileB.special === "bomb") return true;
+
+    var typeA = tileA.type;
+    var typeB = tileB.type;
+
+    function typeAt(c, r) {
+      // Virtual swap: the two source cells report their swapped types;
+      // every other cell reports its real (bomb/locked-excluded) type so
+      // existing bombs and locked tiles can't extend runs through them.
+      // Without the locked exclusion, a virtual swap that places an
+      // apple beside a locked apple would falsely register as a 3-match
+      // (since locked tiles don't participate in real cluster scans).
+      if (c === c1 && r === r1) return typeB;
+      if (c === c2 && r === r2) return typeA;
+      var t = self.tiles[c][r];
+      if (t.special === "bomb") return -1;
+      if (t.locked > 0) return -1;
+      return t.type;
+    }
+
+    function hasRunAt(c, r) {
+      var t = typeAt(c, r);
+      if (t < 0) return false;
+      var h = 1;
+      for (var x = c - 1; x >= 0 && typeAt(x, r) === t; x--) h++;
+      for (var x2 = c + 1; x2 < self.cols && typeAt(x2, r) === t; x2++) h++;
+      if (h >= 3) return true;
+      var v = 1;
+      for (var y = r - 1; y >= 0 && typeAt(c, y) === t; y--) v++;
+      for (var y2 = r + 1; y2 < self.rows && typeAt(c, y2) === t; y2++) v++;
+      return v >= 3;
+    }
+
+    return hasRunAt(c1, r1) || hasRunAt(c2, r2);
+  };
+
   Game.prototype._findMoves = function () {
     var moves = [];
+    var seen = Object.create(null);
+    function add(c1, r1, c2, r2) {
+      var key = c1 + "," + r1 + "->" + c2 + "," + r2;
+      if (seen[key]) return;
+      seen[key] = true;
+      moves.push({ c1: c1, r1: r1, c2: c2, r2: r2 });
+    }
+
     for (var j = 0; j < this.rows; j++) {
       for (var i = 0; i < this.cols - 1; i++) {
-        this._swap(i, j, i + 1, j);
-        if (this._findClusters().length > 0) {
-          moves.push({ c1: i, r1: j, c2: i + 1, r2: j });
-        }
-        this._swap(i, j, i + 1, j);
+        if (this._swapWouldMatch(i, j, i + 1, j)) add(i, j, i + 1, j);
       }
     }
     for (var c = 0; c < this.cols; c++) {
       for (var r = 0; r < this.rows - 1; r++) {
-        this._swap(c, r, c, r + 1);
-        if (this._findClusters().length > 0) {
-          moves.push({ c1: c, r1: r, c2: c, r2: r + 1 });
-        }
-        this._swap(c, r, c, r + 1);
+        if (this._swapWouldMatch(c, r, c, r + 1)) add(c, r, c, r + 1);
       }
     }
-    // Bomb swaps are always valid (bomb activates on any neighbour).
+    // Bomb swaps activate unconditionally. Dedup against moves we already
+    // added (a bomb adjacent to a real match still gets a single entry) and
+    // skip bomb↔bomb pairs entirely — _onSwap rejects them, so listing them
+    // would bias the random idle-hint pick toward dead moves.
     for (var cc = 0; cc < this.cols; cc++) {
       for (var rr = 0; rr < this.rows; rr++) {
-        if (this.tiles[cc][rr].special === "bomb") {
-          if (cc + 1 < this.cols) moves.push({ c1: cc, r1: rr, c2: cc + 1, r2: rr });
-          if (rr + 1 < this.rows) moves.push({ c1: cc, r1: rr, c2: cc, r2: rr + 1 });
+        if (this.tiles[cc][rr].special !== "bomb") continue;
+        var deltas = [[1, 0], [0, 1], [-1, 0], [0, -1]];
+        for (var d = 0; d < 4; d++) {
+          var nc = cc + deltas[d][0];
+          var nr = rr + deltas[d][1];
+          if (nc < 0 || nc >= this.cols || nr < 0 || nr >= this.rows) continue;
+          if (this.tiles[nc][nr].special === "bomb") continue;
+          // Locked partner means the swap would be rejected by _onSwap
+          // (immovable), so don't surface it as a valid move and bias
+          // idle-hint picks toward dead moves.
+          if (this.tiles[nc][nr].locked > 0) continue;
+          add(cc, rr, nc, nr);
         }
       }
     }
@@ -518,7 +669,14 @@
     // Step 2 — collect cluster cells, then chain-expand for any striped
     // tiles within them. Bombs in clusters can't happen (excluded from
     // matching) so only stripes trigger here.
+    //
+    // Also record the 4-neighbours of the ORIGINAL cluster cells (before
+    // chain expansion). Those are the cells whose locks get decremented
+    // in step 5. Computed pre-expansion so a striped tile's row-sweep
+    // doesn't blanket-unlock half the board.
     var queue = [];
+    var unlockTargets = Object.create(null);
+    var unlockDeltas = [[1, 0], [-1, 0], [0, 1], [0, -1]];
     for (var k2 = 0; k2 < clusters.length; k2++) {
       var cl2 = clusters[k2];
       for (var n = 0; n < cl2.length; n++) {
@@ -528,6 +686,12 @@
         if (!toRemove[key]) {
           toRemove[key] = true;
           queue.push({ c: c, r: r });
+        }
+        for (var d = 0; d < 4; d++) {
+          var nc = c + unlockDeltas[d][0];
+          var nr = r + unlockDeltas[d][1];
+          if (nc < 0 || nc >= this.cols || nr < 0 || nr >= this.rows) continue;
+          unlockTargets[nc + "," + nr] = true;
         }
       }
     }
@@ -556,8 +720,9 @@
 
     // Step 3 — apply removals (skipping reserved spawn cells), then write
     // the new specials onto the reserved cells.
-    for (var key2 in toRemove) {
-      var parts = key2.split(",");
+    var removalKeys = Object.keys(toRemove);
+    for (var idx = 0; idx < removalKeys.length; idx++) {
+      var parts = removalKeys[idx].split(",");
       var rc = parseInt(parts[0], 10);
       var rr2 = parseInt(parts[1], 10);
       if (isSpawn(rc, rr2)) continue;
@@ -570,9 +735,33 @@
       var sp = spawns[s];
       this.tiles[sp.c][sp.r].type = sp.type;
       this.tiles[sp.c][sp.r].special = sp.special;
+      // A spawned special replaces a cleared cell, so any latent lock on
+      // that cell would visually conflict with the new striped/bomb art.
+      // Clear it.
+      this.tiles[sp.c][sp.r].locked = 0;
     }
 
-    // Step 4 — column shifts.
+    // Step 5 — adjacency unlock. Each cell adjacent to an ORIGINAL cluster
+    // cell decrements its lock count by 1. Cells that were themselves
+    // cleared (their type was set to -1) skip — locked is meaningless on
+    // an empty cell and the refill will reset it anyway.
+    var unlockKeys = Object.keys(unlockTargets);
+    for (var u = 0; u < unlockKeys.length; u++) {
+      var parts2 = unlockKeys[u].split(",");
+      var uc = parseInt(parts2[0], 10);
+      var ur = parseInt(parts2[1], 10);
+      var ut = this.tiles[uc][ur];
+      if (ut.type < 0) continue;
+      if (ut.locked > 0) ut.locked -= 1;
+    }
+
+    this._recomputeShifts();
+  };
+
+  // For each column, walk bottom-up and tag each surviving tile with the
+  // number of empty cells beneath it — the renderer animates that distance
+  // as a fall. Called after any removal (cluster clear or bomb sweep).
+  Game.prototype._recomputeShifts = function () {
     for (var i = 0; i < this.cols; i++) {
       var shift = 0;
       for (var j = this.rows - 1; j >= 0; j--) {
@@ -609,59 +798,97 @@
   };
 
   // Bomb activation by swap — clears every tile matching targetType plus
-  // the bomb itself, scores per cleared tile (factored by combo), and
-  // routes into the standard resolve→refill cascade so post-bomb chains
-  // still trigger normally.
+  // the bomb itself, scores per *total* cleared tile (factored by combo),
+  // then routes into the standard resolve→refill cascade so post-bomb
+  // chains still trigger normally.
+  //
+  // Restructured into three phases so chain-cleared tiles from caught
+  // striped tiles actually count toward the score. Previously the chain
+  // mutated the board but wasn't reflected in `cleared.length`, so a bomb
+  // that swept up a striped tile cleared more cells than it scored.
   Game.prototype._activateBomb = function (move, targetType) {
     this.comboCount += 1;
     var mult = this.comboCount;
-    var cleared = [];
+    var self = this;
+
+    // Phase 1: initial sweep — every tile of targetType plus all bombs.
+    // Use an ordered list + key set so we can dedup chain-added cells.
+    var toClear = Object.create(null);
+    var ordered = [];
+    function enqueue(c, r) {
+      var key = c + "," + r;
+      if (toClear[key]) return;
+      if (self.tiles[c][r].type < 0) return; // already empty
+      toClear[key] = true;
+      ordered.push({ c: c, r: r });
+    }
     for (var c = 0; c < this.cols; c++) {
       for (var r = 0; r < this.rows; r++) {
         var t = this.tiles[c][r];
-        if (t.type === targetType || t.special === "bomb") {
-          cleared.push({ c: c, r: r, type: t.type, special: t.special });
-        }
+        if (t.type === targetType || t.special === "bomb") enqueue(c, r);
       }
     }
-    // 10 pts per cleared tile × combo multiplier. A typical bomb hits ~10
-    // tiles for ~100 pts at combo 1 — roughly equivalent to a 10-cluster,
-    // which feels right for "wiped out a colour".
-    var pts = cleared.length * 10 * mult;
-    this.score += pts;
 
+    // Phase 2: chain-expand for striped tiles in the initial set. One step
+    // of chain, not recursive — keeping the same single-level depth the
+    // previous implementation had so the gameplay feel is unchanged; the
+    // fix here is purely accounting (score reflects total cleared).
+    var initialLen = ordered.length;
+    for (var ip = 0; ip < initialLen; ip++) {
+      var pos = ordered[ip];
+      var tile = this.tiles[pos.c][pos.r];
+      if (tile.special === "h-striped") {
+        for (var cc = 0; cc < this.cols; cc++) enqueue(cc, pos.r);
+      } else if (tile.special === "v-striped") {
+        for (var rr = 0; rr < this.rows; rr++) enqueue(pos.c, rr);
+      }
+    }
+
+    // Phase 3: score + bonus seconds using the true total.
+    var pts = ordered.length * 10 * mult;
+    this.score += pts;
     var bonusSec = Math.floor(pts / SCORE_TO_TIME);
     if (bonusSec > 0) {
       this.timer = Math.min(this.timerMax, this.timer + bonusSec);
     }
 
-    for (var k = 0; k < cleared.length; k++) {
-      var cell = cleared[k];
-      // Chain-trigger any striped tiles caught in the bomb sweep, so a
-      // bomb that includes a striped tile also clears its row/column.
-      // (This is rare but rewarding when it happens.)
-      if (cell.special === "h-striped" || cell.special === "v-striped") {
-        if (cell.special === "h-striped") {
-          for (var cc = 0; cc < this.cols; cc++) {
-            if (this.tiles[cc][cell.r].type >= 0) {
-              this._spawnParticles(cc, cell.r, this.tiles[cc][cell.r].type);
-              this.tiles[cc][cell.r].type = -1;
-              this.tiles[cc][cell.r].special = null;
-            }
-          }
-        } else {
-          for (var rr = 0; rr < this.rows; rr++) {
-            if (this.tiles[cell.c][rr].type >= 0) {
-              this._spawnParticles(cell.c, rr, this.tiles[cell.c][rr].type);
-              this.tiles[cell.c][rr].type = -1;
-              this.tiles[cell.c][rr].special = null;
-            }
-          }
-        }
+    // Phase 4: apply removals + spawn particles. Particle color uses the
+    // tile's actual type (falls back to targetType for cells that were
+    // already empty mid-iteration — defensive, shouldn't occur after the
+    // enqueue guard).
+    //
+    // Also collect unlock targets from the ORIGINAL sweep cells (the same
+    // pre-chain-expansion rule clusters use, so the unlock budget stays
+    // consistent across match types). ordered[0..initialLen] are the
+    // originals; the rest were added by the striped-tile chain in phase 2.
+    var bombUnlockTargets = Object.create(null);
+    var bombUnlockDeltas = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    for (var origIdx = 0; origIdx < initialLen; origIdx++) {
+      var orig = ordered[origIdx];
+      for (var ud = 0; ud < 4; ud++) {
+        var unc = orig.c + bombUnlockDeltas[ud][0];
+        var unr = orig.r + bombUnlockDeltas[ud][1];
+        if (unc < 0 || unc >= this.cols || unr < 0 || unr >= this.rows) continue;
+        bombUnlockTargets[unc + "," + unr] = true;
       }
-      this._spawnParticles(cell.c, cell.r, cell.type < 0 ? targetType : cell.type);
+    }
+    for (var k = 0; k < ordered.length; k++) {
+      var cell = ordered[k];
+      var prevType = this.tiles[cell.c][cell.r].type;
+      this._spawnParticles(cell.c, cell.r, prevType >= 0 ? prevType : targetType);
       this.tiles[cell.c][cell.r].type = -1;
       this.tiles[cell.c][cell.r].special = null;
+    }
+    // Apply unlocks. Skip cleared cells (type < 0) — same guard as the
+    // cluster path; the cell is about to be refilled anyway.
+    var bombUnlockKeys = Object.keys(bombUnlockTargets);
+    for (var bu = 0; bu < bombUnlockKeys.length; bu++) {
+      var bparts = bombUnlockKeys[bu].split(",");
+      var buc = parseInt(bparts[0], 10);
+      var bur = parseInt(bparts[1], 10);
+      var but = this.tiles[buc][bur];
+      if (but.type < 0) continue;
+      if (but.locked > 0) but.locked -= 1;
     }
 
     this._spawnPopup(move.c2 + 0.5, move.r2 + 0.5, "+" + pts, FRUIT_HEX[targetType] || "#FFFFFF");
@@ -670,26 +897,15 @@
     }
     this._triggerShake(8, 0.24);
 
-    if (this.listener.onMatch) this.listener.onMatch([{ length: cleared.length, type: targetType }]);
+    if (this.listener.onMatch) this.listener.onMatch([{ length: ordered.length, type: targetType }]);
     this._notifyScore();
 
-    // Column shifts so the resolve phase can animate survivors falling.
-    for (var i2 = 0; i2 < this.cols; i2++) {
-      var sh = 0;
-      for (var j2 = this.rows - 1; j2 >= 0; j2--) {
-        if (this.tiles[i2][j2].type === -1) {
-          sh++;
-          this.tiles[i2][j2].shift = 0;
-        } else {
-          this.tiles[i2][j2].shift = sh;
-        }
-      }
-    }
-
+    this._recomputeShifts();
     this._setPhase("resolve");
   };
 
   Game.prototype._shiftAndRefill = function () {
+    var maxLockedPerColumn = Math.floor(this.rows / 3);
     for (var i = 0; i < this.cols; i++) {
       for (var j = this.rows - 1; j >= 0; j--) {
         if (this.tiles[i][j].type !== -1) {
@@ -707,14 +923,125 @@
         else break;
       }
 
+      // Count existing locked tiles in this column so the per-column cap
+      // (floor(rows/3) = 2 for an 8-row board) holds across refills as
+      // well as the initial spawn. Without this a cluster that clears
+      // half the column could refill 4 new locked tiles, deadlocking it.
+      var lockedInColumn = 0;
+      for (var lc = 0; lc < this.rows; lc++) {
+        if (this.tiles[i][lc].locked > 0) lockedInColumn++;
+      }
+
+      var stage = this._stage;
       for (var m = 0; m < this.rows; m++) {
         if (this.tiles[i][m].type === -1) {
           this.tiles[i][m].type = this._randomTile();
           this.tiles[i][m].special = null;
           this.tiles[i][m].fallFrom = emptyCount;
+
+          var locked = 0;
+          if (stage && stage.lockRate > 0 && lockedInColumn < maxLockedPerColumn) {
+            // One roll covers both tiers: lockDoubleRate < lockRate so a
+            // roll below the double rate counts as 2, below the single
+            // rate as 1, otherwise 0. Doing it as a single random keeps
+            // the joint distribution sane (P(double) is exactly the
+            // double rate, not double rate × single rate).
+            var roll = Math.random();
+            if (roll < stage.lockDoubleRate) {
+              locked = 2;
+              lockedInColumn++;
+            } else if (roll < stage.lockRate) {
+              locked = 1;
+              lockedInColumn++;
+            }
+          }
+          this.tiles[i][m].locked = locked;
         }
       }
     }
+
+    // No deadlock recovery here. A refill that leaves the board with no
+    // valid move (most likely when the lock RNG fills a column) used to be
+    // patched up in-place by silently stripping locks until a move existed.
+    // That gave the player no feedback (locks just vanished) and bypassed
+    // the visible shuffle entirely — exactly the case where the board most
+    // needs to announce "no moves" and rearrange. Instead we let the
+    // deadlock fall through to the cascade's end: the phase machine drives
+    // refill → ready, and the no-moves check in _update catches it there
+    // and routes to _shuffleBoard (popup via onShuffle + reshuffle, with
+    // locks preserved). That keeps a single, player-visible recovery path.
+  };
+
+  // Deadlock-recovery shuffle. Called from _update when the board has no
+  // valid moves. Preserves the locked-tile layout (locks stay in their
+  // grid slots, lock counts unchanged) and shuffles the unlocked tiles'
+  // contents (type + special) into a new arrangement with at least one
+  // valid move. Reuses the refill phase to animate the rearrangement —
+  // every shuffled tile gets fallFrom = rows+1 so the whole board drops
+  // back in from above.
+  Game.prototype._shuffleBoard = function () {
+    var safety = 50;
+    while (safety-- > 0) {
+      // Gather unlocked tile contents in row-major order.
+      var positions = [];
+      var contents = [];
+      for (var i = 0; i < this.cols; i++) {
+        for (var j = 0; j < this.rows; j++) {
+          var t = this.tiles[i][j];
+          if (t.locked === 0 && t.type >= 0) {
+            positions.push({ c: i, r: j });
+            contents.push({ type: t.type, special: t.special });
+          }
+        }
+      }
+      // Fisher-Yates shuffle.
+      for (var k = contents.length - 1; k > 0; k--) {
+        var jj = Math.floor(Math.random() * (k + 1));
+        var tmp = contents[k];
+        contents[k] = contents[jj];
+        contents[jj] = tmp;
+      }
+      // Reassign to the same positions.
+      for (var p = 0; p < positions.length; p++) {
+        var pos = positions[p];
+        this.tiles[pos.c][pos.r].type = contents[p].type;
+        this.tiles[pos.c][pos.r].special = contents[p].special;
+      }
+      // Resolve any pre-formed clusters the shuffle happened to create.
+      // (_resolveStartingClusters mutates only cluster cells, and locked
+      // tiles never appear in clusters, so this is locked-safe.)
+      this._resolveStartingClusters();
+      if (this._findMoves().length > 0) break;
+
+      // Still deadlocked — too many locks for the remaining unlocked
+      // tiles to form anything. Unlock one tile and try again. This
+      // gradually peels back the lock pressure until the board becomes
+      // playable; in practice fires zero or one iterations.
+      var unlocked = false;
+      for (var c = 0; c < this.cols && !unlocked; c++) {
+        for (var r = 0; r < this.rows && !unlocked; r++) {
+          if (this.tiles[c][r].locked > 0) {
+            this.tiles[c][r].locked = 0;
+            unlocked = true;
+          }
+        }
+      }
+      if (!unlocked) break; // nothing more we can do; loop exit is the only safe path
+    }
+
+    // Cascade-in animation: every unlocked tile drops back in from above.
+    // Locked tiles aren't animated — they stayed put, so animating them
+    // would visually contradict the "shuffle preserves locks" rule.
+    for (var ic = 0; ic < this.cols; ic++) {
+      for (var jc = 0; jc < this.rows; jc++) {
+        if (this.tiles[ic][jc].locked === 0 && this.tiles[ic][jc].type >= 0) {
+          this.tiles[ic][jc].fallFrom = this.rows + 1;
+        }
+      }
+    }
+
+    if (this.listener.onShuffle) this.listener.onShuffle();
+    this._setPhase("refill");
   };
 
   // --- Particles -----------------------------------------------------
@@ -837,26 +1164,28 @@
 
   // --- Timer ---------------------------------------------------------
 
+  Game.prototype._currentDrainRate = function () {
+    var base = 1 + (this.score / TIMER_DRAIN_SCALE);
+    // Stage multiplier stacks on top of the score-based drain. e.g. at
+    // stage 4 (×1.25) with score 1500, drain = 1.5 × 1.25 = 1.875/sec.
+    return base * (this._stage ? this._stage.drainMult : 1);
+  };
+
+  Game.prototype._notifyTimer = function () {
+    if (this.listener.onTimer) {
+      this.listener.onTimer(this.timer, this.timerMax, this._currentDrainRate());
+    }
+  };
+
+  // Kept as call-site stubs after the setInterval→rAF migration. _update
+  // owns drain and gameOver-on-zero now; these just push a UI snapshot so
+  // the bar paints the initial value the moment the player starts.
   Game.prototype._startTimer = function () {
-    var self = this;
-    if (this._timerHandle) return;
-    this._timerHandle = window.setInterval(function () {
-      if (self.state !== "playing") return;
-      self.timer -= 1 + (self.score / TIMER_DRAIN_SCALE);
-      if (self.timer <= 0) {
-        self.timer = 0;
-        self._gameOver("timeOut");
-      }
-      if (self.listener.onTimer) self.listener.onTimer(self.timer, self.timerMax);
-    }, 1000);
-    if (this.listener.onTimer) this.listener.onTimer(this.timer, this.timerMax);
+    this._notifyTimer();
   };
 
   Game.prototype._stopTimer = function () {
-    if (this._timerHandle != null) {
-      window.clearInterval(this._timerHandle);
-      this._timerHandle = null;
-    }
+    /* no-op — timer is gated by this.state in _update */
   };
 
   // --- Game over -----------------------------------------------------
@@ -893,11 +1222,31 @@
   Game.prototype._setPhase = function (next) {
     this.phase = next;
     this.animTime = 0;
+    // Board can only mutate across a phase boundary (resolve writes -1s,
+    // refill writes new types, etc.) so this is the right invalidation
+    // point for the memoised _findMoves result.
+    this._movesCache = null;
   };
 
   Game.prototype._notifyScore = function () {
     if (this.listener.onScore) this.listener.onScore(this.score);
+    // Score is monotonic, so a stage check here covers every advancement
+    // path (cluster scoring, bomb activation) without needing duplicate
+    // checks at each call site. We compare by id rather than identity so
+    // a restart that resets _stage to STAGES[0] doesn't re-emit stage 1.
+    var next = stageFor(this.score);
+    if (next.id > this._stage.id) {
+      this._stage = next;
+      this.stage = next.id;
+      if (this.listener.onStage) {
+        this.listener.onStage({ id: next.id, label: next.label });
+      }
+    }
   };
+
+  // Surfaced as a static so application.js can paint the initial timer bar
+  // without hardcoding "120" alongside this file's TIMER_START constant.
+  Game.TIMER_START = TIMER_START;
 
   window.Match3Game = Game;
 })();

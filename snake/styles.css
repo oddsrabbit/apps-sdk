@@ -31,6 +31,12 @@ html, body {
   font-size: 14px;
   -webkit-font-smoothing: none;
   font-smooth: never;
+  /* Tell the browser we own all touch gestures so Android Chrome's compositor
+     can't claim a swipe for scroll/zoom before our (non-passive) touch
+     listeners run. `{ passive: false }` on the listeners alone isn't enough
+     on Android — the compositor checks `touch-action` first. */
+  touch-action: none;
+  overscroll-behavior: none;
 }
 
 body { margin: 16px 0; }
@@ -70,17 +76,24 @@ h1.title {
   visibility: visible;
 }
 
+/* Score / best chips. Sized to match 2048's reference proportions so the
+   three games (2048, snake, match3) share one chip shape. Number font is
+   20px instead of 2048's 25px because Press Start 2P is visually chunky
+   at the same nominal size — keeps the chip from blowing the header
+   layout. Embossed border + gameboy palette remain. */
 .score-container, .best-container {
   position: relative;
   display: inline-block;
   background: var(--gb-darkest);
-  padding: 18px 18px 8px;
-  font-size: 18px;
-  min-width: 36px;
+  padding: 15px 22px;
+  font-size: 20px;
+  height: 22px;
+  line-height: 40px;
+  min-width: 40px;
   font-weight: bold;
   color: var(--gb-pale);
-  margin-top: 4px;
-  margin-left: 6px;
+  margin-top: 8px;
+  margin-left: 8px;
   text-align: center;
   border: 2px solid var(--gb-dark);
   box-shadow: inset 0 0 0 2px var(--gb-shadow);
@@ -88,12 +101,17 @@ h1.title {
 .score-container::after, .best-container::after {
   position: absolute;
   width: 100%;
-  top: 4px;
+  top: 8px;
   left: 0;
-  font-size: 9px;
-  line-height: 9px;
+  font-size: 11px;
+  line-height: 11px;
   text-align: center;
-  color: var(--gb-mid);
+  /* --gb-mid (#4a7c4a) on --gb-darkest (#0f380f) was too close in value
+     to read clearly. Use --gb-pale (the number's colour) at lowered
+     opacity so the label is visible without competing with the number —
+     same pattern as match3 + 2048. */
+  color: var(--gb-pale);
+  opacity: 0.65;
   letter-spacing: 1px;
 }
 .score-container::after { content: "SCORE"; }
@@ -392,8 +410,15 @@ strong.important {
   body { margin: 12px 0; }
   .container { width: auto; padding: 0 16px; }
   h1.title { font-size: 24px; margin-top: 6px; }
-  .score-container, .best-container { font-size: 14px; padding: 16px 12px 6px; min-width: 28px; }
-  .score-container::after, .best-container::after { font-size: 8px; top: 4px; }
+  .score-container, .best-container {
+    font-size: 14px;
+    padding: 13px 12px;
+    height: 14px;
+    line-height: 27px;
+    min-width: 32px;
+    margin-top: 0;
+  }
+  .score-container::after, .best-container::after { font-size: 9px; top: 6px; line-height: 9px; }
   .game-intro { font-size: 9px; max-width: 55%; }
   .restart-button { font-size: 9px; padding: 8px 10px; }
   .board-frame { padding: 16px; }

@@ -43,10 +43,10 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
     correlationId: CorrelationId,
     payload: z.object({ key: StorageKey, value: StorageKey }),
   }),
-  // Read-only counterpart to aggregate.count. Same k=5 anonymity floor
-  // (returns null below it), but does NOT register the caller into the
-  // bucket — use this when fetching neighboring buckets to render a
-  // distribution, where calling .count would corrupt the data.
+  // Read-only counterpart to aggregate.count. Does NOT register the caller
+  // into the bucket — use this when fetching neighboring buckets to render a
+  // distribution, where calling .count would corrupt the data. Returns null
+  // when the bucket has no recorded value (key/value pair never written).
   z.object({
     type: z.literal('aggregate.read'),
     correlationId: CorrelationId,

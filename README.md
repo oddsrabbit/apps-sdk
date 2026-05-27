@@ -5,7 +5,7 @@ The SDK for building games and apps on [OddsRabbit](https://www.oddsrabbit.com).
 > 🚧 **Alpha.** APIs subject to change.
 
 - **Full developer guide:** [oddsrabbit.com/developers/games](https://www.oddsrabbit.com/developers/games/)
-- **Reference games:** [`rabbit-words/`](./rabbit-words/), [`2048/`](./2048/), [`snake/`](./snake/), [`liquid/`](./liquid/)
+- **Reference games:** [`rabbit-words/`](./rabbit-words/), [`2048/`](./2048/), [`snake/`](./snake/), [`match3/`](./match3/), [`liquid/`](./liquid/)
 
 ## Hello world
 
@@ -61,6 +61,31 @@ Everything available on `window.OddsRabbit` once `await OR.whenReady()` resolves
 
 Full method signatures, manifest schema, scopes, and error codes live in the [developer guide](https://www.oddsrabbit.com/developer-games/).
 
+## Building for mobile
+
+Games render in a WebView on iOS / Android and in an iframe on the desktop web. Most things "just work" on both — except touch gestures, which have an Android-specific footgun that doesn't reproduce in desktop Chrome devtools.
+
+> ⚠️ **If your game uses swipe, drag, or any custom touch gesture, both rules below are required for Android.** Missing either one produces swipes that "only work in specific areas" — JS sees the gesture start but the WebView's compositor claims the rest of it for scroll/zoom.
+
+**Touch gesture checklist:**
+
+- [ ] **CSS: `touch-action: none`** on the element that receives the gesture (your `<canvas>`, board container, or `html, body` if gestures cover the whole screen). The Android compositor checks this *before* your JS runs to decide whether to scroll.
+- [ ] **JS: `{ passive: false }`** on every `touchstart` / `touchmove` listener attached to `window`, `document`, or `body`. These listeners are passive-by-default since Chrome 56, which means `preventDefault()` is silently ignored without this flag.
+- [ ] **CSS: `overscroll-behavior: none`** on `html, body` so the parent WebView's pull-to-refresh / edge-bounce can't claim drag-from-edge gestures.
+
+```css
+html, body { touch-action: none; overscroll-behavior: none; }
+/* Or, if only part of the screen handles gestures: */
+.game-canvas { touch-action: none; }
+```
+
+```js
+el.addEventListener('touchstart', handler, { passive: false });
+el.addEventListener('touchmove',  handler, { passive: false });
+```
+
+iOS has neither issue, so a swipe game that works on iOS Safari and desktop Chrome can be completely broken on Android. Always test on a real Android device before shipping. See [`2048/`](./2048/), [`snake/`](./snake/), and [`match3/`](./match3/) for working reference implementations.
+
 ## Verifying users on your backend
 
 If your app has its own server, verify `OR.sessionToken` rather than trusting client-supplied UUIDs:
@@ -89,6 +114,7 @@ src/schemas/    Zod schemas — single source of truth for the bridge
 rabbit-words/   RabbitWords — reference game (Games surface, Phase 1)
 2048/           2048 port — reference game
 snake/          Snake — Game Boy-styled reference game
+match3/         Fruit Match — match-3 reference game
 liquid/         Liquid WebGL toy — reference app, no scopes
 ```
 

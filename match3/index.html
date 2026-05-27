@@ -22,17 +22,38 @@
         <button type="button" class="restart-button">New Game</button>
       </div>
 
-      <div class="timer">
-        <div class="timer-fill"></div>
+      <div class="timer-row">
+        <div class="timer">
+          <div class="timer-fill"></div>
+        </div>
+        <!-- Score-driven drain multiplier (e.g. "×1.8"). Surfaced only when
+             the speed-up is perceptible so the bar stays clean at low scores. -->
+        <span class="timer-speed" aria-hidden="true"></span>
       </div>
 
       <div class="game-container">
         <div class="board-frame">
-          <canvas class="game-canvas" aria-label="Fruit match board"></canvas>
+          <!-- tabindex makes the canvas focusable; keyboard handlers in
+               input_manager.js bind here so arrow keys still scroll the
+               page when the canvas isn't focused. -->
+          <canvas class="game-canvas" aria-label="Fruit match board" tabindex="0"></canvas>
         </div>
 
-        <!-- Cascade combo banner. Pops up on combo ≥2; hidden by default. -->
-        <div class="combo-banner" aria-live="polite"></div>
+        <!-- Cascade combo banner. Pops up on combo ≥2; hidden by default.
+             aria-live=off — a long cascade would otherwise spam screen
+             readers with "COMBO ×2! +12" through "COMBO ×6! +144" in
+             rapid succession. The final score lives in the game-over
+             overlay, which IS announced. -->
+        <div class="combo-banner" aria-live="off"></div>
+
+        <!-- Board-wide radial flash; fires alongside the stage banner to
+             draw the eye even if the player was watching a cascade. -->
+        <div class="stage-flash" aria-hidden="true"></div>
+
+        <!-- Stage advancement banner. Fires once per stage transition
+             (2→3, 3→4, etc.); polite live region so the new ruleset
+             label is announced once. -->
+        <div class="stage-banner" aria-live="polite"></div>
 
         <div class="game-message" data-state="idle">
           <p class="game-message-text"></p>

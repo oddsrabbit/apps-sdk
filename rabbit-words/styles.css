@@ -604,19 +604,25 @@ header h1 {
 
 .modal-close:hover { filter: brightness(0.95); }
 
-/* Leaderboard modal — past-day results with prev/next day navigation. */
+/* Leaderboard modal — past-day results with prev/next day navigation.
+   Pattern: title + subtitle pinned at top, Play btn pinned at bottom,
+   body in the middle scrolls. Previously the whole modal scrolled, which
+   on a short viewport let the Play btn appear visually overlapping the
+   last friend row because both lived in the same scroll container. */
 .leaderboard-modal {
   max-width: 420px;
   position: relative;
   max-height: 90vh;
-  overflow-y: auto;
+  overflow: hidden;
 }
 
 .leaderboard-title-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 4px;
+  /* Pushes the row below the absolute-positioned close X so the next-day
+     chevron at the row's right end doesn't visually overlap the corner X. */
+  margin-top: 20px;
 }
 
 .leaderboard-title {
@@ -650,6 +656,23 @@ header h1 {
   cursor: not-allowed;
 }
 
+/* Leaderboard close X — absolute corner, just slightly inset from the
+   modal edge for breathing room. Flex centering on the SVG glyph because
+   the base .modal-x rule sized for an HTML &times; entity (no longer used
+   here — we draw an SVG that needs explicit centering). Chained selector
+   for higher specificity since .modal-x is defined later in the file. */
+.modal-x.leaderboard-modal-x {
+  top: 14px;
+  right: 14px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
 .leaderboard-modal-subtitle {
   text-align: center;
   color: var(--muted);
@@ -662,6 +685,13 @@ header h1 {
   flex-direction: column;
   gap: 14px;
   min-height: 120px;
+  /* The body owns the modal's vertical scroll: flex:1 to claim leftover
+     height, min-height:0 to override flex's default min-height:auto that
+     would otherwise prevent shrinking below content size and defeat the
+     scroll. */
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .leaderboard-loading {
