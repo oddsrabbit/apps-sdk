@@ -1,4 +1,8 @@
-import type { FriendScore, OddsRabbitGlobal } from '../../src/sdk/sdk';
+import type {
+  FriendScore,
+  OddsRabbitGlobal,
+  ScoreDistributionEntry,
+} from '../../src/sdk/sdk';
 import { ANSWERS, isValidGuess } from './words';
 
 declare global {
@@ -37,8 +41,8 @@ interface Streak {
 const DEFAULT_STATS: Stats = { played: 0, wins: 0, distribution: [0, 0, 0, 0, 0, 0] };
 const DEFAULT_STREAK: Streak = { current: 0, max: 0, lastPlayedPuzzleIndex: null };
 
-// Bucket keys submitted to / read from aggregate.count. Order matters for the
-// distribution chart — labels under each bar follow this sequence.
+// Distribution buckets, in chart order — the labels under each bar follow this
+// sequence. Scores from the platform are folded into these via bucketForScore.
 const DISTRIBUTION_BUCKETS = [
   'won-1', 'won-2', 'won-3', 'won-4', 'won-5', 'won-6', 'lost',
 ] as const;
@@ -507,7 +511,7 @@ function renderCommunityDistribution(
   const total = counts.reduce((a, b) => a + b, 0);
   const max = Math.max(1, ...counts);
 
-  // Empty state. Without this, a puzzle with <5 plays per bucket renders as
+  // Empty state. Without this, a puzzle with no recorded plays renders as
   // 7 bars labelled "0%" each, which reads as "literally nobody scored" —
   // misleading. Most early-puzzle / dev-environment / quiet-day cases fall
   // here; the message tells the player it's a data-volume issue, not a
@@ -867,14 +871,13 @@ async function submitGuess(state: State, raw: string): Promise<void> {
   await writeJson('today', state);
 
   if (state.status !== 'in_progress') {
-    // Writes first so the subsequent reads see this player's contribution
-    // (the player's own bucket appears in their distribution; scores.friends
-    // doesn't include the viewer, but other clients reading the leaderboard
-    // expect the score to be present).
+    // Submit the score first so the subsequent friends read sees this
+    // player's row. The community distribution is derived from these same
+    // score rows (see loadCommunityData), so there's no separate aggregate
+    // write to keep in sync.
     const [updatedStats, updatedStreak] = await Promise.all([
       finalizeStats(state),
       finalizeStreak(state),
-      updateAggregate(state),
       submitScoreToServer(state),
     ]);
     currentStats = updatedStats;
@@ -899,28 +902,6 @@ async function finalizeStreak(state: State): Promise<Streak> {
   const next = applyResultToStreak(streak, state);
   await writeJson('streak', next);
   return next;
-}
-
-async function updateAggregate(state: State): Promise<void> {
-  const bucket = bucketForState(state);
-  try {
-    await window.OddsRabbit.aggregate.count(`result-${state.puzzleIndex}`, bucket);
-  } catch {
-    /* best-effort */
-  }
-}
-
-function bucketForState(state: State): DistributionBucket {
-  if (state.status !== 'won') return 'lost';
-  switch (state.guesses.length) {
-    case 1: return 'won-1';
-    case 2: return 'won-2';
-    case 3: return 'won-3';
-    case 4: return 'won-4';
-    case 5: return 'won-5';
-    case 6: return 'won-6';
-    default: return 'lost';
-  }
 }
 
 /**
@@ -952,27 +933,53 @@ async function submitScoreToServer(state: State): Promise<void> {
 }
 
 /**
- * Fetch all 7 distribution buckets in parallel for a given puzzle. Uses
- * aggregate.read (not .count) — .count would register the viewer into every
- * bucket and corrupt the distribution. Each call can return null independently
- * (no recorded value for that bucket on this puzzle, or a transport failure);
- * the renderer treats those as 0 and shows an empty-state message if every
- * bucket comes back null.
+ * Map a submitted score back to its distribution bucket. Inverse of the
+ * `submitScoreToServer` formula: wins score `ROW_COUNT + 1 - guessCount`
+ * (so 1-guess = 6, 6-guess = 1), losses score 0. Returns null for any score
+ * outside that range (defensive — shouldn't happen for our own submissions).
+ */
+function bucketForScore(score: number): DistributionBucket | null {
+  if (score === 0) return 'lost';
+  const guessCount = ROW_COUNT + 1 - score;
+  if (guessCount >= 1 && guessCount <= ROW_COUNT) {
+    return `won-${guessCount}` as DistributionBucket;
+  }
+  return null;
+}
+
+/**
+ * Load the community guess distribution for a puzzle, derived directly from
+ * the scores table (the same rows the friends panel reads) via
+ * `scores.distribution`. This is the source of truth — it can never disagree
+ * with the recorded results, unlike the previous parallel aggregate-membership
+ * table which silently under-counted plays that were seeded or whose
+ * aggregate.count write was dropped.
+ *
+ * The server returns a histogram keyed by raw score; we fold each entry into
+ * its guess bucket. Buckets with no plays stay null so the renderer's
+ * `total === 0` empty state still fires for an unplayed puzzle.
  *
  * Parameterized by puzzleIndex so callers can fetch past rounds (e.g. a
  * deep-link from a push notification's leaderboard CTA), not just today.
  */
 async function loadCommunityData(puzzleIndex: number): Promise<CommunityData> {
-  const key = `result-${puzzleIndex}`;
-  const counts = await Promise.all(
-    DISTRIBUTION_BUCKETS.map((bucket) =>
-      window.OddsRabbit.aggregate.read(key, bucket).catch(() => null)
-    )
-  );
-  const buckets = {} as Record<DistributionBucket, number | null>;
-  DISTRIBUTION_BUCKETS.forEach((bucket, i) => {
-    buckets[bucket] = counts[i] ?? null;
-  });
+  const buckets = Object.fromEntries(
+    DISTRIBUTION_BUCKETS.map((b) => [b, null])
+  ) as Record<DistributionBucket, number | null>;
+
+  let entries: ScoreDistributionEntry[];
+  try {
+    entries = await window.OddsRabbit.scores.distribution({
+      roundKey: `puzzle-${puzzleIndex}`,
+    });
+  } catch {
+    return { buckets };
+  }
+
+  for (const { score, count } of entries) {
+    const bucket = bucketForScore(score);
+    if (bucket) buckets[bucket] = (buckets[bucket] ?? 0) + count;
+  }
   return { buckets };
 }
 

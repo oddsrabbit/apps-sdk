@@ -5,7 +5,7 @@ The SDK for building games and apps on [OddsRabbit](https://www.oddsrabbit.com).
 > 🚧 **Alpha.** APIs subject to change.
 
 - **Full developer guide:** [oddsrabbit.com/developers/games](https://www.oddsrabbit.com/developers/games/)
-- **Reference games:** [`rabbit-words/`](./rabbit-words/), [`2048/`](./2048/), [`snake/`](./snake/), [`match3/`](./match3/), [`liquid/`](./liquid/)
+- **Reference games:** [`rabbit-words/`](./rabbit-words/), [`2048/`](./2048/), [`snake/`](./snake/), [`match3/`](./match3/), [`solitaire/`](./solitaire/), [`liquid/`](./liquid/)
 
 ## Hello world
 
@@ -53,7 +53,8 @@ Everything available on `window.OddsRabbit` once `await OR.whenReady()` resolves
 - **`OR.sessionToken`** — short-lived JWT for verifying the user on your backend.
 - **`OR.colorScheme`** — the host's `'light'` or `'dark'` theme.
 - **`OR.storage.get/set/delete`** — per-user key/value store. Syncs across the user's mobile and web sessions; falls back to local browser storage for guests.
-- **`OR.aggregate.count`** — community-wide counts ("X% of players picked Y"). Returns `null` below a k=5 anonymity floor.
+- **`OR.aggregate.count` / `OR.aggregate.read`** — community-wide bucket counts ("X% of players picked Y"). `count` registers the caller into a bucket and returns the new count; `read` is the side-effect-free counterpart for fanning out across buckets. Counts are returned verbatim (no anonymity floor).
+- **`OR.scores.submit` / `OR.scores.friends` / `OR.scores.distribution`** — per-round leaderboard. `submit` records `{ score, metadata }` once per `(round, user)`; `friends` returns the people you follow for a round; `distribution` returns the community score histogram (`[{ score, count }]`) for a round, derived from the scores themselves so it always matches the recorded results.
 - **`OR.actions.share`** — system share sheet on mobile, Web Share API on web.
 - **`OR.actions.haptic`** — `'light' | 'medium' | 'success' | 'error'`. No-op on web.
 - **`OR.actions.requestSignIn`** — prompt the user to sign in at a natural friction moment.
@@ -115,6 +116,7 @@ rabbit-words/   RabbitWords — reference game (Games surface, Phase 1)
 2048/           2048 port — reference game
 snake/          Snake — Game Boy-styled reference game
 match3/         Fruit Match — match-3 reference game
+solitaire/      Solitaire — Klondike with daily deals + pixel rabbit court cards
 liquid/         Liquid WebGL toy — reference app, no scopes
 ```
 

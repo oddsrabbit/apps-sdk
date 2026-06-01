@@ -80,6 +80,16 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
       roundKey: RoundKey,
     }),
   }),
+  // Community score histogram for a round, derived server-side from the scores
+  // table (the source of truth) rather than a parallel aggregate table that
+  // can drift. Public read — guests can fetch it without auth.
+  z.object({
+    type: z.literal('scores.distribution'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      roundKey: RoundKey,
+    }),
+  }),
   z.object({
     type: z.literal('actions.share'),
     correlationId: CorrelationId,
@@ -167,6 +177,17 @@ export const FriendScoreSchema = z.object({
 });
 
 export type FriendScore = z.infer<typeof FriendScoreSchema>;
+
+// One bucket of a round's community score distribution. `score` is the raw
+// integer the app submitted; the app maps it back to its own buckets (e.g.
+// rabbit-words inverts `ROW_COUNT + 1 - guessCount`). `count` is the number of
+// distinct submissions with that score.
+export const ScoreDistributionEntrySchema = z.object({
+  score: z.number().int(),
+  count: z.number().int().nonnegative(),
+});
+
+export type ScoreDistributionEntry = z.infer<typeof ScoreDistributionEntrySchema>;
 
 export const BridgeInitSchema = z.object({
   type: z.literal('init'),

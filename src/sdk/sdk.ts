@@ -1,14 +1,16 @@
 import {
   FriendScoreSchema,
+  ScoreDistributionEntrySchema,
   type BridgeUser,
   type AppColorScheme,
   type AppHapticType,
   type AppLifecycleEvent,
   type FriendScore,
+  type ScoreDistributionEntry,
 } from '../schemas/messages';
 import { BridgeTransport, type LifecycleHandler } from './transport';
 
-export type { FriendScore } from '../schemas/messages';
+export type { FriendScore, ScoreDistributionEntry } from '../schemas/messages';
 
 export interface ScoreSubmitPayload {
   roundKey: string;
@@ -17,6 +19,7 @@ export interface ScoreSubmitPayload {
 }
 
 const FriendScoresArraySchema = FriendScoreSchema.array();
+const ScoreDistributionArraySchema = ScoreDistributionEntrySchema.array();
 
 export interface OddsRabbitGlobal {
   readonly user: BridgeUser | null;
@@ -87,6 +90,15 @@ export interface OddsRabbitGlobal {
      * earliest submission. Does not include the viewer's own score.
      */
     friends(payload: { roundKey: string }): Promise<FriendScore[]>;
+    /**
+     * Fetch the community score histogram for a round, computed server-side
+     * from the scores table. Returns one entry per distinct score value
+     * (`{ score, count }`), or an empty array when nobody has played the round.
+     * Public — works for signed-out viewers. The app maps `score` back to its
+     * own buckets. Because it reads the same rows `submit` writes, it can never
+     * disagree with the recorded results.
+     */
+    distribution(payload: { roundKey: string }): Promise<ScoreDistributionEntry[]>;
   };
 
   readonly actions: {
@@ -172,6 +184,15 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
         .request<unknown>('scores.friends', payload)
         .then((result) => {
           const parsed = FriendScoresArraySchema.safeParse(result);
+          return parsed.success ? parsed.data : [];
+        }),
+    distribution: (payload: {
+      roundKey: string;
+    }): Promise<ScoreDistributionEntry[]> =>
+      this.transport
+        .request<unknown>('scores.distribution', payload)
+        .then((result) => {
+          const parsed = ScoreDistributionArraySchema.safeParse(result);
           return parsed.success ? parsed.data : [];
         }),
   };

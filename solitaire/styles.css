@@ -1,0 +1,558 @@
+/* Press Start 2P (OFL 1.1). Borrowed from ../snake/fonts via the parent
+   build (build.config.mjs copies the file into dist/solitaire/fonts/). */
+@font-face {
+  font-family: "Press Start 2P";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./fonts/press-start-2p-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* Woodgrain card-table palette — solitaire's own identity, distinct from
+   snake/2048. Warm browns for the table + chrome, gold for chip/button text,
+   cream card faces with red/black pips. The canvas constants in renderer.js
+   mirror these (table surface, card backs, empty-slot ghosts) so the painted
+   board and the HTML chrome read as one wooden surface. */
+:root {
+  color-scheme: light;
+  --wood: #6b4327;            /* table surface + page bg (mirrors COL_FELT) */
+  --wood-dark: #3a2414;       /* recessed/shadow under cards (COL_FELT_DARK) */
+  --wood-pale: #ecc079;       /* warm gold — chip + button text */
+  --wood-mid: #8a5a30;        /* raised bevel / borders */
+  --wood-darkest: #2a1810;    /* darkest accent / button bg */
+  --wood-shadow: #221208;     /* frame base / deepest shadow */
+  --card-cream: #f5ecd6;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--wood);
+  color: var(--card-cream);
+  font-family: "Press Start 2P", ui-monospace, "Menlo", "Consolas", monospace;
+  font-size: 14px;
+  -webkit-font-smoothing: none;
+  font-smooth: never;
+  /* Drag-game touch rules — both required on Android (see parent README). */
+  touch-action: none;
+  overscroll-behavior: none;
+}
+
+/* The whole UI is a viewport-height flex column so the tall portrait board
+   scales DOWN to fit instead of overflowing (which, with touch-action:none,
+   left the lower tableau unreachable). Chrome rows size to content; the board
+   row takes whatever vertical space is left and the canvas scales into it,
+   preserving its 480×720 aspect. dvh tracks the mobile URL-bar collapse;
+   100vh is the fallback for browsers without dvh. */
+.container {
+  width: 520px;
+  max-width: calc(100vw - 24px);
+  margin: 0 auto;
+  height: 100vh;
+  height: 100dvh;
+  box-sizing: border-box;
+  padding: 10px 0 6px;
+  display: flex;
+  flex-direction: column;
+}
+
+.heading,
+.above-game,
+.game-explanation {
+  flex: 0 0 auto;
+}
+
+.heading::after {
+  content: "";
+  display: block;
+  clear: both;
+}
+
+h1.title {
+  font-size: 32px;
+  font-weight: bold;
+  margin: 0;
+  display: block;
+  float: left;
+  letter-spacing: 2px;
+  color: var(--card-cream);
+}
+
+.stats-container {
+  float: right;
+  text-align: right;
+  visibility: hidden;
+}
+.stats-container.ready {
+  visibility: visible;
+}
+
+/* Stats chips. Same embossed shape as snake's score chip. */
+.moves-container, .time-container {
+  position: relative;
+  display: inline-block;
+  background: var(--wood-darkest);
+  padding: 15px 18px;
+  font-size: 16px;
+  height: 22px;
+  line-height: 40px;
+  min-width: 36px;
+  font-weight: bold;
+  color: var(--wood-pale);
+  margin-top: 8px;
+  margin-left: 8px;
+  text-align: center;
+  border: 2px solid var(--wood-mid);
+  box-shadow: inset 0 0 0 2px var(--wood-shadow);
+}
+.moves-container::after, .time-container::after {
+  position: absolute;
+  width: 100%;
+  top: 8px;
+  left: 0;
+  font-size: 10px;
+  line-height: 10px;
+  text-align: center;
+  color: var(--wood-pale);
+  opacity: 0.65;
+  letter-spacing: 1px;
+}
+.moves-container::after { content: "MOVES"; }
+.time-container::after { content: "TIME"; }
+
+.above-game {
+  margin-top: 12px;
+}
+.above-game::after {
+  content: "";
+  display: block;
+  clear: both;
+}
+
+.game-intro {
+  float: left;
+  font-size: 10px;
+  line-height: 1.6;
+  margin: 8px 0 0;
+  max-width: 55%;
+  color: var(--card-cream);
+}
+
+.button-row {
+  float: right;
+  display: flex;
+  gap: 8px;
+}
+
+.undo-button, .restart-button, .game-message button {
+  background: var(--wood-darkest);
+  color: var(--wood-pale);
+  border: 2px solid var(--wood-mid);
+  border-bottom-width: 4px;
+  border-right-width: 4px;
+  padding: 10px 14px;
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+.undo-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.undo-button:active:not(:disabled),
+.restart-button:active,
+.game-message button:active {
+  border-bottom-width: 2px;
+  border-right-width: 2px;
+  transform: translate(2px, 2px);
+}
+
+.game-container {
+  flex: 1 1 auto;
+  min-height: 0;            /* allow the board row to shrink below content */
+  margin-top: 12px;
+  position: relative;
+  display: flex;
+  flex-direction: column;   /* board-frame fills this row's height (definite),
+                               so the canvas's max-height:100% resolves */
+  align-items: stretch;
+  cursor: default;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: none;
+}
+
+/* Embossed wooden frame. Pinned to fill the board row (game-container is
+   position:relative with a flex-resolved height), giving it a DEFINITE height
+   so the canvas's max-height:100% has something to resolve against — then it
+   centers the scaled canvas. The SVG tile is a wood-toned bevel: dark base,
+   raised panel, light top/left edge, dark bottom/right edge. */
+.board-frame {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--wood-shadow);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' shape-rendering='crispEdges'><rect width='24' height='24' fill='%23221208'/><rect x='3' y='3' width='18' height='18' fill='%235c3a1e'/><rect x='3' y='3' width='18' height='2' fill='%238a5a30'/><rect x='3' y='3' width='2' height='18' fill='%238a5a30'/><rect x='3' y='19' width='18' height='2' fill='%231a0f06'/><rect x='19' y='3' width='2' height='18' fill='%231a0f06'/></svg>");
+  background-size: 24px 24px;
+  background-repeat: repeat;
+  padding: 12px;
+  border: 2px solid var(--wood-darkest);
+  box-sizing: border-box;
+}
+
+.game-canvas {
+  display: block;
+  /* Scale to fit the board row, never exceeding the canvas's own resolution,
+     always preserving the 480×720 aspect (width/height auto + both maxes). */
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  background: var(--wood);
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  border: 2px solid var(--wood-darkest);
+  box-sizing: border-box;
+  touch-action: none;
+}
+
+.game-message {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  bottom: 16px;
+  left: 16px;
+  background: rgba(34, 18, 8, 0.9);
+  z-index: 100;
+  text-align: center;
+  padding: 16px;
+  box-sizing: border-box;
+}
+.game-message.visible { display: flex; }
+
+.game-message-text {
+  font-size: 22px;
+  letter-spacing: 2px;
+  color: var(--card-cream);
+  margin: 0;
+  text-shadow: 2px 2px 0 var(--wood-darkest);
+}
+.game-message-sub {
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: var(--wood-pale);
+  margin: 0;
+}
+.game-message-sub:empty { display: none; }
+
+.community-note {
+  font-size: 10px;
+  line-height: 1.6;
+  letter-spacing: 1px;
+  color: var(--card-cream);
+  opacity: 0.85;
+  margin: 0;
+  max-width: 80%;
+}
+.community-note:empty { display: none; }
+/* The community note is meaningful on both idle (when today's deal has
+   already been solved) and won states. Empty content hides itself via the
+   :empty selector above, so we don't need to gate it per-state anymore. */
+
+.game-message .lower {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* Per-state button visibility. Defaults hide all; each state opts in. */
+.game-message .lower button { display: none; }
+.game-message[data-state="idle"] .start-daily-button,
+.game-message[data-state="idle"] .start-random-button { display: inline-block; }
+.game-message[data-state="won"] .retry-daily-button,
+.game-message[data-state="won"] .retry-random-button,
+.game-message[data-state="won"] .share-button { display: inline-block; }
+
+/* Finish button is independent of overlay state — it appears as a floating
+   action button over the bottom of the board when canAutoComplete is true.
+   Application.js toggles display:inline-block when applicable. */
+.finish-button {
+  display: none;
+  position: absolute;
+  bottom: 32px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+}
+
+.game-explanation {
+  margin-top: 10px;
+  margin-bottom: 0;
+  font-size: 9px;
+  line-height: 1.6;
+  color: var(--card-cream);
+  opacity: 0.7;
+}
+strong.important {
+  color: var(--card-cream);
+  text-transform: uppercase;
+  opacity: 1;
+}
+
+.bootstrap-error {
+  margin: 20px auto;
+  padding: 16px 20px;
+  max-width: 460px;
+  background: var(--wood-darkest);
+  color: var(--card-cream);
+  font-size: 11px;
+  line-height: 1.6;
+  text-align: center;
+  border: 2px solid var(--wood-mid);
+}
+
+/* Friends panel on the won overlay. Populated by application.js after the
+   daily-leaderboard fetch resolves; cleared (and hidden via :empty) on idle,
+   random wins, and new deals. Sits on the dark translucent overlay, so text
+   is in the light end of the felt palette. */
+.friends-panel {
+  width: 100%;
+  max-width: 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.friends-panel:empty { display: none; }
+
+.friends-title {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--wood-pale);
+}
+
+.friends-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 132px;
+  overflow-y: auto;
+}
+.friends-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  font-size: 10px;
+  letter-spacing: 1px;
+  background: var(--wood-darkest);
+  border: 2px solid var(--wood-mid);
+  color: var(--card-cream);
+}
+.friends-row-you {
+  border-color: var(--wood-pale);
+}
+.friends-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.friends-result {
+  color: var(--wood-pale);
+  flex: none;
+}
+
+.friends-cta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.friends-cta-blurb {
+  margin: 0;
+  font-size: 9px;
+  line-height: 1.6;
+  letter-spacing: 1px;
+  color: var(--card-cream);
+  opacity: 0.85;
+}
+.friends-cta-btn {
+  background: var(--wood-darkest);
+  color: var(--wood-pale);
+  border: 2px solid var(--wood-mid);
+  border-bottom-width: 4px;
+  border-right-width: 4px;
+  padding: 9px 14px;
+  font: inherit;
+  font-size: 9px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+.friends-cta-btn:active {
+  border-bottom-width: 2px;
+  border-right-width: 2px;
+  transform: translate(2px, 2px);
+}
+
+/* Share modal. Opened from the Share button on the won overlay. Same visual
+   language as the rest of the game (felt palette, embossed buttons) so it
+   doesn't look like a stock browser dialog. Ported from snake's modal. */
+.share-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(34, 18, 8, 0.85);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  box-sizing: border-box;
+}
+.share-modal {
+  background: var(--card-cream);
+  color: var(--wood-darkest);
+  border: 2px solid var(--wood-darkest);
+  box-shadow: 6px 6px 0 var(--wood-darkest);
+  padding: 20px;
+  width: 100%;
+  max-width: 380px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  text-align: center;
+}
+.share-modal h2 {
+  margin: 0;
+  font-size: 14px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+.share-preview {
+  background: var(--wood-darkest);
+  color: var(--wood-pale);
+  padding: 14px;
+  font-size: 10px;
+  line-height: 1.6;
+  letter-spacing: 1px;
+  border: 2px solid var(--wood-mid);
+  word-break: break-word;
+  white-space: pre-line;
+}
+.share-action {
+  background: var(--wood-darkest);
+  color: var(--wood-pale);
+  border: 2px solid var(--wood-mid);
+  border-bottom-width: 4px;
+  border-right-width: 4px;
+  padding: 10px 16px;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+.share-action:active {
+  border-bottom-width: 2px;
+  border-right-width: 2px;
+  transform: translate(2px, 2px);
+}
+.share-section-label {
+  font-size: 9px;
+  letter-spacing: 1px;
+  color: var(--wood-mid);
+  text-transform: uppercase;
+  margin-top: 4px;
+}
+.share-buttons {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.share-button-social {
+  background: var(--wood-darkest);
+  color: var(--wood-pale);
+  border: 2px solid var(--wood-mid);
+  border-bottom-width: 4px;
+  border-right-width: 4px;
+  padding: 10px 4px;
+  font: inherit;
+  font-size: 9px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+.share-button-social:active {
+  border-bottom-width: 2px;
+  border-right-width: 2px;
+  transform: translate(2px, 2px);
+}
+
+/* Toast. Bottom-centered slide-up; auto-dismissed by application.js. */
+.toast {
+  position: fixed;
+  bottom: 32px;
+  left: 50%;
+  transform: translate(-50%, 20px);
+  background: var(--wood-darkest);
+  color: var(--wood-pale);
+  padding: 10px 16px;
+  font-size: 10px;
+  letter-spacing: 1px;
+  border: 2px solid var(--wood-mid);
+  opacity: 0;
+  transition: opacity 200ms ease, transform 200ms ease;
+  z-index: 300;
+  pointer-events: none;
+}
+.toast.toast-show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+@media screen and (max-width: 540px), screen and (max-height: 800px) {
+  /* Keep the viewport-height flex column intact — no body margin (it would
+     push the 100dvh container into overflow); just trim the side padding. */
+  .container { width: auto; padding: 8px 12px 6px; }
+  h1.title { font-size: 22px; margin-top: 6px; }
+  .moves-container, .time-container {
+    font-size: 12px;
+    padding: 13px 10px;
+    height: 14px;
+    line-height: 27px;
+    min-width: 32px;
+    margin-top: 0;
+  }
+  .moves-container::after, .time-container::after { font-size: 9px; top: 6px; line-height: 9px; }
+  .game-intro { font-size: 9px; max-width: 50%; }
+  .undo-button, .restart-button { font-size: 9px; padding: 8px 10px; }
+  .board-frame { padding: 10px; }
+  .game-message { top: 10px; right: 10px; bottom: 10px; left: 10px; gap: 12px; }
+  .game-message-text { font-size: 16px; }
+  .game-message-sub { font-size: 9px; }
+  .game-explanation { font-size: 9px; }
+  .finish-button { bottom: 16px; }
+}

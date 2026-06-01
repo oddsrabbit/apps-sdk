@@ -52,6 +52,18 @@ const GAME_MATCH3_JS = [
   'application.js',
 ];
 
+// Solitaire. Original Klondike. Splits deck/rules out of game.js since
+// solitaire has materially more rules logic than the action games.
+const GAME_SOLITAIRE_JS = [
+  'input_manager.js',
+  'storage_manager.js',
+  'deck.js',
+  'solver.js',
+  'game.js',
+  'renderer.js',
+  'application.js',
+];
+
 await rm('dist', { recursive: true, force: true });
 await mkdir('dist/host', { recursive: true });
 await mkdir('dist/rabbit-words', { recursive: true });
@@ -60,6 +72,8 @@ await mkdir('dist/snake/js', { recursive: true });
 await mkdir('dist/snake/fonts', { recursive: true });
 await mkdir('dist/snake/images', { recursive: true });
 await mkdir('dist/match3/js', { recursive: true });
+await mkdir('dist/solitaire/js', { recursive: true });
+await mkdir('dist/solitaire/fonts', { recursive: true });
 await mkdir('dist/liquid/js', { recursive: true });
 
 const baseOpts = {
@@ -170,6 +184,15 @@ async function copyHostAssets() {
     ...GAME_MATCH3_JS.map((name) =>
       copyFile(`match3/js/${name}`, `dist/match3/js/${name}`)
     ),
+    // Solitaire. Reuses snake's Press Start 2P font — the OFL.txt ships
+    // alongside it so the redistributed font carries its license.
+    copyHtmlWithBuildId('solitaire/index.html', 'dist/solitaire/index.html'),
+    copyFile('solitaire/styles.css', 'dist/solitaire/styles.css'),
+    ...GAME_SOLITAIRE_JS.map((name) =>
+      copyFile(`solitaire/js/${name}`, `dist/solitaire/js/${name}`)
+    ),
+    copyFile('snake/fonts/press-start-2p-latin.woff2', 'dist/solitaire/fonts/press-start-2p-latin.woff2'),
+    copyFile('snake/fonts/OFL.txt', 'dist/solitaire/fonts/OFL.txt'),
     // Liquid — WebGL fluid simulation. Vendored vanilla JS, no bundling needed.
     copyHtmlWithBuildId('liquid/index.html', 'dist/liquid/index.html'),
     copyFile('liquid/js/script.js', 'dist/liquid/js/script.js'),
