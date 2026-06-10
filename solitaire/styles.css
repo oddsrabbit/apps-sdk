@@ -9,49 +9,51 @@
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
-/* Woodgrain card-table palette — solitaire's own identity, distinct from
-   snake/2048. Warm browns for the table + chrome, gold for chip/button text,
-   cream card faces with red/black pips. The canvas constants in renderer.js
-   mirror these (table surface, card backs, empty-slot ghosts) so the painted
-   board and the HTML chrome read as one wooden surface. */
+/* Light-oak card-table palette. Cards are painted onto a warm tan felt that
+   the canvas itself paints (COL_FELT in renderer.js mirrors --wood) — there
+   is no page-level background and no wooden frame around the canvas; the
+   host shell provides whatever sits behind the chrome. Chrome text reads in
+   dark wood so it stays legible on a light host bg. */
 :root {
   color-scheme: light;
-  --wood: #6b4327;            /* table surface + page bg (mirrors COL_FELT) */
-  --wood-dark: #3a2414;       /* recessed/shadow under cards (COL_FELT_DARK) */
-  --wood-pale: #ecc079;       /* warm gold — chip + button text */
-  --wood-mid: #8a5a30;        /* raised bevel / borders */
-  --wood-darkest: #2a1810;    /* darkest accent / button bg */
-  --wood-shadow: #221208;     /* frame base / deepest shadow */
+  --wood: #d9b483;            /* light-oak felt (mirrors COL_FELT) */
+  --wood-dark: #a87a47;       /* shadow beneath cards / mid wood */
+  --wood-pale: #f5ecd6;       /* cream — button text on dark button bg */
+  --wood-mid: #b88a5a;        /* warm bevel / button borders */
+  --wood-darkest: #5c3a1e;    /* dark wood — button bg, chrome text */
+  --wood-shadow: #8a5a30;     /* deepest accent — text shadow, overlay tint */
   --card-cream: #f5ecd6;
 }
 
 html, body {
   margin: 0;
   padding: 0;
-  height: 100%;
-  background: var(--wood);
-  color: var(--card-cream);
+  /* Body bg is transparent so the host shell shows through (chosen in the
+     redesign). Drag is locked to the canvas only (see .game-canvas) — that
+     lets the page scroll if the board pushes past the viewport on short
+     screens, which is the playability fix for the prior shrink-to-fit. */
+  background: transparent;
+  color: var(--wood-darkest);
   font-family: "Press Start 2P", ui-monospace, "Menlo", "Consolas", monospace;
   font-size: 14px;
   -webkit-font-smoothing: none;
   font-smooth: never;
-  /* Drag-game touch rules — both required on Android (see parent README). */
-  touch-action: none;
-  overscroll-behavior: none;
 }
 
-/* The whole UI is a viewport-height flex column so the tall portrait board
-   scales DOWN to fit instead of overflowing (which, with touch-action:none,
-   left the lower tableau unreachable). Chrome rows size to content; the board
-   row takes whatever vertical space is left and the canvas scales into it,
-   preserving its 480×720 aspect. dvh tracks the mobile URL-bar collapse;
-   100vh is the fallback for browsers without dvh. */
+/* Flex column that GROWS past the viewport when needed (was a fixed 100dvh
+   that shrank the board into unreadable cards on short screens). The board
+   now sizes by width with an aspect-ratio, so a short viewport just means
+   the bottom tableau falls below the fold and the page scrolls to reach it. */
 .container {
-  width: 520px;
+  /* Solitaire needs a wider footprint than the action games (snake/2048 use
+     520px): seven tableau columns side by side want real width or the cards
+     shrink to thumbnails. The board fills this, so the cards land ~90–100px
+     wide instead of ~56px. */
+  width: 760px;
   max-width: calc(100vw - 24px);
   margin: 0 auto;
-  height: 100vh;
-  height: 100dvh;
+  min-height: 100vh;
+  min-height: 100dvh;
   box-sizing: border-box;
   padding: 10px 0 6px;
   display: flex;
@@ -77,7 +79,7 @@ h1.title {
   display: block;
   float: left;
   letter-spacing: 2px;
-  color: var(--card-cream);
+  color: var(--wood-darkest);
 }
 
 .stats-container {
@@ -94,26 +96,26 @@ h1.title {
   position: relative;
   display: inline-block;
   background: var(--wood-darkest);
-  padding: 15px 18px;
-  font-size: 16px;
+  padding: 15px 22px;
+  font-size: 20px;
   height: 22px;
   line-height: 40px;
-  min-width: 36px;
+  min-width: 40px;
   font-weight: bold;
   color: var(--wood-pale);
   margin-top: 8px;
   margin-left: 8px;
   text-align: center;
   border: 2px solid var(--wood-mid);
-  box-shadow: inset 0 0 0 2px var(--wood-shadow);
+  box-shadow: inset 0 0 0 2px rgba(0, 0, 0, 0.45);
 }
 .moves-container::after, .time-container::after {
   position: absolute;
   width: 100%;
   top: 8px;
   left: 0;
-  font-size: 10px;
-  line-height: 10px;
+  font-size: 11px;
+  line-height: 11px;
   text-align: center;
   color: var(--wood-pale);
   opacity: 0.65;
@@ -137,16 +139,41 @@ h1.title {
   line-height: 1.6;
   margin: 8px 0 0;
   max-width: 55%;
-  color: var(--card-cream);
+  color: var(--wood-darkest);
 }
 
 .button-row {
   float: right;
   display: flex;
   gap: 8px;
+  align-items: center;
 }
 
-.undo-button, .restart-button, .game-message button {
+/* Sound on/off toggle, leftmost in the button row. Emoji glyph carries the
+   state (🔊 / 🔇); the button itself is a flat tap target with no chrome so
+   it reads as a small control, not a primary action like Undo / New Deal. */
+.sound-toggle {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  padding: 4px;
+  margin: 0;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.15s ease, transform 0.1s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.sound-toggle:hover { opacity: 1; }
+.sound-toggle:active { transform: translateY(1px); }
+.sound-toggle[aria-pressed="true"] { opacity: 0.45; }
+.sound-toggle:focus-visible {
+  outline: 2px solid var(--wood-darkest);
+  outline-offset: 2px;
+}
+
+.undo-button, .restart-button, .game-message button, .finish-button {
   background: var(--wood-darkest);
   color: var(--wood-pale);
   border: 2px solid var(--wood-mid);
@@ -166,60 +193,50 @@ h1.title {
 }
 .undo-button:active:not(:disabled),
 .restart-button:active,
-.game-message button:active {
+.game-message button:active,
+.finish-button:active {
   border-bottom-width: 2px;
   border-right-width: 2px;
   transform: translate(2px, 2px);
 }
 
 .game-container {
-  flex: 1 1 auto;
-  min-height: 0;            /* allow the board row to shrink below content */
   margin-top: 12px;
-  position: relative;
   display: flex;
-  flex-direction: column;   /* board-frame fills this row's height (definite),
-                               so the canvas's max-height:100% resolves */
-  align-items: stretch;
+  justify-content: center;
   cursor: default;
   -webkit-touch-callout: none;
   -webkit-user-select: none;
   user-select: none;
-  touch-action: none;
 }
 
-/* Embossed wooden frame. Pinned to fill the board row (game-container is
-   position:relative with a flex-resolved height), giving it a DEFINITE height
-   so the canvas's max-height:100% has something to resolve against — then it
-   centers the scaled canvas. The SVG tile is a wood-toned bevel: dark base,
-   raised panel, light top/left edge, dark bottom/right edge. */
+/* Canvas wrapper. No frame chrome anymore — purely a positioning context for
+   the game-message overlay, sized to the canvas so the overlay covers exactly
+   the board (not the surrounding column). The painted canvas felt is the only
+   "background" the player sees behind the cards. application.js may snap this
+   frame's width down a few px (inline style.width) so art pixels land on
+   whole device pixels — the snap targets the frame (not the canvas) so the
+   overlay and Finish button stay aligned with the board. */
 .board-frame {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background-color: var(--wood-shadow);
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' shape-rendering='crispEdges'><rect width='24' height='24' fill='%23221208'/><rect x='3' y='3' width='18' height='18' fill='%235c3a1e'/><rect x='3' y='3' width='18' height='2' fill='%238a5a30'/><rect x='3' y='3' width='2' height='18' fill='%238a5a30'/><rect x='3' y='19' width='18' height='2' fill='%231a0f06'/><rect x='19' y='3' width='2' height='18' fill='%231a0f06'/></svg>");
-  background-size: 24px 24px;
-  background-repeat: repeat;
-  padding: 12px;
-  border: 2px solid var(--wood-darkest);
-  box-sizing: border-box;
+  position: relative;
+  display: block;
+  width: 100%;
+  max-width: 720px;
 }
 
 .game-canvas {
   display: block;
-  /* Scale to fit the board row, never exceeding the canvas's own resolution,
-     always preserving the 480×720 aspect (width/height auto + both maxes). */
-  max-width: 100%;
-  max-height: 100%;
-  width: auto;
+  /* Width-driven sizing with an explicit aspect-ratio matching the canvas's
+     internal 900×860; the page scrolls vertically if the resulting height
+     overruns the viewport. touch-action:none stays on the canvas only —
+     drags don't initiate scroll — while the rest of the page can pan
+     normally. */
+  width: 100%;
   height: auto;
+  aspect-ratio: 900 / 860;
   background: var(--wood);
   image-rendering: pixelated;
   image-rendering: crisp-edges;
-  border: 2px solid var(--wood-darkest);
   box-sizing: border-box;
   touch-action: none;
 }
@@ -235,7 +252,7 @@ h1.title {
   right: 16px;
   bottom: 16px;
   left: 16px;
-  background: rgba(34, 18, 8, 0.9);
+  background: rgba(92, 58, 30, 0.92);
   z-index: 100;
   text-align: center;
   padding: 16px;
@@ -248,7 +265,7 @@ h1.title {
   letter-spacing: 2px;
   color: var(--card-cream);
   margin: 0;
-  text-shadow: 2px 2px 0 var(--wood-darkest);
+  text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.5);
 }
 .game-message-sub {
   font-size: 11px;
@@ -287,9 +304,11 @@ h1.title {
 .game-message[data-state="won"] .retry-random-button,
 .game-message[data-state="won"] .share-button { display: inline-block; }
 
-/* Finish button is independent of overlay state — it appears as a floating
-   action button over the bottom of the board when canAutoComplete is true.
-   Application.js toggles display:inline-block when applicable. */
+/* Finish button is a sibling of the canvas inside .board-frame, so it
+   positions against the canvas box directly and is independent of the
+   game-message overlay's display state — that's what lets it actually
+   render during the playing state (when the overlay is display:none and
+   canAutoComplete is true). Application.js toggles display:inline-block. */
 .finish-button {
   display: none;
   position: absolute;
@@ -304,11 +323,11 @@ h1.title {
   margin-bottom: 0;
   font-size: 9px;
   line-height: 1.6;
-  color: var(--card-cream);
+  color: var(--wood-darkest);
   opacity: 0.7;
 }
 strong.important {
-  color: var(--card-cream);
+  color: var(--wood-darkest);
   text-transform: uppercase;
   opacity: 1;
 }
@@ -421,7 +440,7 @@ strong.important {
 .share-modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(34, 18, 8, 0.85);
+  background: rgba(92, 58, 30, 0.85);
   z-index: 200;
   display: flex;
   align-items: center;
@@ -511,6 +530,64 @@ strong.important {
   transform: translate(2px, 2px);
 }
 
+/* Confirm dialog. Felt-styled yes/no for destructive actions (New Deal mid-
+   game). Same visual language as the share modal. */
+.confirm-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(92, 58, 30, 0.85);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  box-sizing: border-box;
+}
+.confirm-modal {
+  background: var(--card-cream);
+  color: var(--wood-darkest);
+  border: 2px solid var(--wood-darkest);
+  box-shadow: 6px 6px 0 var(--wood-darkest);
+  padding: 20px;
+  width: 100%;
+  max-width: 320px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  text-align: center;
+}
+.confirm-text {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.7;
+  letter-spacing: 1px;
+}
+.confirm-buttons {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+.confirm-cancel, .confirm-ok {
+  background: var(--wood-darkest);
+  color: var(--wood-pale);
+  border: 2px solid var(--wood-mid);
+  border-bottom-width: 4px;
+  border-right-width: 4px;
+  padding: 10px 16px;
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+.confirm-cancel:active, .confirm-ok:active {
+  border-bottom-width: 2px;
+  border-right-width: 2px;
+  transform: translate(2px, 2px);
+}
+
 /* Toast. Bottom-centered slide-up; auto-dismissed by application.js. */
 .toast {
   position: fixed;
@@ -534,8 +611,9 @@ strong.important {
 }
 
 @media screen and (max-width: 540px), screen and (max-height: 800px) {
-  /* Keep the viewport-height flex column intact — no body margin (it would
-     push the 100dvh container into overflow); just trim the side padding. */
+  /* Trim the side padding on small viewports. board-frame no longer has any
+     padding/border of its own — the canvas defines the board's footprint
+     and the page scrolls if the resulting height overruns the viewport. */
   .container { width: auto; padding: 8px 12px 6px; }
   h1.title { font-size: 22px; margin-top: 6px; }
   .moves-container, .time-container {
@@ -549,7 +627,6 @@ strong.important {
   .moves-container::after, .time-container::after { font-size: 9px; top: 6px; line-height: 9px; }
   .game-intro { font-size: 9px; max-width: 50%; }
   .undo-button, .restart-button { font-size: 9px; padding: 8px 10px; }
-  .board-frame { padding: 10px; }
   .game-message { top: 10px; right: 10px; bottom: 10px; left: 10px; gap: 12px; }
   .game-message-text { font-size: 16px; }
   .game-message-sub { font-size: 9px; }

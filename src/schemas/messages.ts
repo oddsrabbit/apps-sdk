@@ -174,6 +174,10 @@ export const FriendScoreSchema = z.object({
   score: z.number().int(),
   metadata: z.record(z.unknown()).nullable(),
   createdAt: z.string(),
+  // True when this row is the viewer themselves. Older outer hosts predate
+  // this field; `.default(false)` keeps SDK consumers' types simple while
+  // still parsing pre-isSelf responses.
+  isSelf: z.boolean().default(false),
 });
 
 export type FriendScore = z.infer<typeof FriendScoreSchema>;

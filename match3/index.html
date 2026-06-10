@@ -29,6 +29,10 @@
         <!-- Score-driven drain multiplier (e.g. "×1.8"). Surfaced only when
              the speed-up is perceptible so the bar stays clean at low scores. -->
         <span class="timer-speed" aria-hidden="true"></span>
+        <!-- Sound on/off. Procedural audio (js/sound_manager.js) is on by
+             default; this lets a player silence it. aria-pressed reflects the
+             muted state and is kept in sync from application.js. -->
+        <button type="button" class="sound-toggle" aria-label="Mute sound" aria-pressed="false">🔊</button>
       </div>
 
       <div class="game-container">
@@ -78,6 +82,7 @@
     <script src="./js/storage_manager.js?v=__BUILD_ID__"></script>
     <script src="./js/game.js?v=__BUILD_ID__"></script>
     <script src="./js/renderer.js?v=__BUILD_ID__"></script>
+    <script src="./js/sound_manager.js?v=__BUILD_ID__"></script>
     <script src="./js/application.js?v=__BUILD_ID__"></script>
   </body>
 </html>

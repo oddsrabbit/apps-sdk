@@ -20,6 +20,10 @@
       <div class="above-game">
         <p class="game-intro">Aces up, Kings down. Drag cards to build down by alternating colour.</p>
         <div class="button-row">
+          <!-- Sound on/off. Procedural audio (js/sound_manager.js) is on by
+               default; this lets a player silence it. aria-pressed reflects
+               the muted state and is kept in sync from application.js. -->
+          <button type="button" class="sound-toggle" aria-label="Mute sound" aria-pressed="false">🔊</button>
           <button type="button" class="undo-button" disabled>Undo</button>
           <button type="button" class="restart-button">New Deal</button>
         </div>
@@ -27,21 +31,26 @@
 
       <div class="game-container">
         <div class="board-frame">
-          <canvas class="game-canvas" width="480" height="720" aria-label="Solitaire game board"></canvas>
-        </div>
+          <canvas class="game-canvas" width="900" height="860" aria-label="Solitaire game board"></canvas>
 
-        <div class="game-message" data-state="idle">
-          <p class="game-message-text" role="status" aria-live="polite"></p>
-          <p class="game-message-sub" aria-live="polite"></p>
-          <p class="community-note"></p>
-          <div class="friends-panel"></div>
-          <div class="lower">
-            <button type="button" class="start-daily-button">Daily deal</button>
-            <button type="button" class="start-random-button">Random</button>
-            <button type="button" class="finish-button">Finish</button>
-            <button type="button" class="retry-daily-button">Today's deal</button>
-            <button type="button" class="retry-random-button">New random</button>
-            <button type="button" class="share-button">Share</button>
+          <!-- Floating action button. Sibling of the canvas (not nested in
+               .game-message) so it can paint during the playing state when
+               the overlay is display:none. application.js toggles its
+               display inline based on game.canAutoComplete(). -->
+          <button type="button" class="finish-button">Finish</button>
+
+          <div class="game-message" data-state="idle">
+            <p class="game-message-text" role="status" aria-live="polite"></p>
+            <p class="game-message-sub" aria-live="polite"></p>
+            <p class="community-note"></p>
+            <div class="friends-panel"></div>
+            <div class="lower">
+              <button type="button" class="start-daily-button">Daily deal</button>
+              <button type="button" class="start-random-button">Random</button>
+              <button type="button" class="retry-daily-button">Today's deal</button>
+              <button type="button" class="retry-random-button">New random</button>
+              <button type="button" class="share-button">Share</button>
+            </div>
           </div>
         </div>
       </div>
@@ -53,6 +62,7 @@
 
     <script src="./js/input_manager.js?v=__BUILD_ID__"></script>
     <script src="./js/storage_manager.js?v=__BUILD_ID__"></script>
+    <script src="./js/sound_manager.js?v=__BUILD_ID__"></script>
     <script src="./js/deck.js?v=__BUILD_ID__"></script>
     <script src="./js/solver.js?v=__BUILD_ID__"></script>
     <script src="./js/game.js?v=__BUILD_ID__"></script>

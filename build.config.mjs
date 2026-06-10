@@ -49,6 +49,7 @@ const GAME_MATCH3_JS = [
   'storage_manager.js',
   'game.js',
   'renderer.js',
+  'sound_manager.js',
   'application.js',
 ];
 
@@ -57,6 +58,7 @@ const GAME_MATCH3_JS = [
 const GAME_SOLITAIRE_JS = [
   'input_manager.js',
   'storage_manager.js',
+  'sound_manager.js',
   'deck.js',
   'solver.js',
   'game.js',

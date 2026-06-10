@@ -24,6 +24,13 @@
 
   var storage = new Match3StorageManager();
 
+  // Procedural audio (js/sound_manager.js). Constructed up front but stays
+  // silent until resume() runs inside the first user gesture — browsers keep
+  // the AudioContext suspended otherwise. All play* calls are no-ops while
+  // muted / suspended, so the listener handlers below never need to guard.
+  var sound = new Match3SoundManager();
+  var MUTED_KEY = "soundMuted";
+
   function noop() {}
 
   // Coarse score bands. Same shape as snake's, scaled for the much larger
@@ -452,21 +459,36 @@
           onScore: function (score) { setScore(score); },
           onBest: function (best) { setBest(best); },
           onTimer: function (remaining, total, drainRate) { setTimer(remaining, total, drainRate); },
-          onMatch: function (clusters) {
+          onSwap: function () {
+            // Soft click the instant a swap is committed (before we know if
+            // it matches). Pairs with the match pop / invalid thud that
+            // follows once the board resolves.
+            sound.swap();
+          },
+          onInvalidSwap: function () {
+            sound.invalidSwap();
+          },
+          onMatch: function (clusters, combo) {
+            // Match pop. Pitch scales with the longest cluster cleared this
+            // resolve step and with the cascade depth, so a chain walks up
+            // the scale. (Bomb sweeps arrive as a single big-length cluster.)
+            var maxLen = 0;
+            for (var i = 0; i < clusters.length; i++) {
+              if (clusters[i].length > maxLen) maxLen = clusters[i].length;
+            }
+            sound.match(maxLen, combo);
             // Light haptic per match. A long cascade fires once per resolve
             // step rather than once per cluster — feels like a chain rather
             // than a buzzer.
             try { OR.actions.haptic("light").catch(noop); } catch (_) {}
             // Promote the haptic intensity for big clears (5+ tiles).
-            for (var i = 0; i < clusters.length; i++) {
-              if (clusters[i].length >= 5) {
-                try { OR.actions.haptic("medium").catch(noop); } catch (_) {}
-                break;
-              }
+            if (maxLen >= 5) {
+              try { OR.actions.haptic("medium").catch(noop); } catch (_) {}
             }
           },
           onCombo: function (mult, roundPts) {
             showCombo(mult, roundPts);
+            sound.combo(mult);
             // Medium haptic on every combo step — a chain physically
             // building feels right. Higher combos already trigger a
             // bigger screen shake (handled in game.js).
@@ -474,6 +496,7 @@
           },
           onStage: function (info) {
             showStage(info);
+            sound.stage();
             // Success haptic on stage-up — reused from new-best because
             // both events are "you cleared a milestone" moments. Higher
             // intensity than combos so the player feels the difference
@@ -482,12 +505,16 @@
           },
           onShuffle: function () {
             showShuffle();
+            sound.shuffle();
             // Medium haptic — same "something rearranged on the board"
             // weight as a combo, lower than stage-up because shuffle is
             // a rescue rather than an achievement.
             try { OR.actions.haptic("medium").catch(noop); } catch (_) {}
           },
           onGameOver: function (info) {
+            // New-best gets its own celebratory jingle (below); a normal
+            // run-end gets the falling "time's up" tone.
+            if (!info.isNewBest) sound.gameOver();
             try { OR.actions.haptic("error").catch(noop); } catch (_) {}
             lastResult = { score: info.score, isNewBest: info.isNewBest };
             finalScoreEl.textContent = "Score: " + info.score;
@@ -499,6 +526,7 @@
             }
             if (info.isNewBest) {
               newBestNoteEl.textContent = "NEW BEST!";
+              sound.newBest();
               try { OR.actions.haptic("success").catch(noop); } catch (_) {}
             }
             fetchCommunityNote(info.score);
@@ -512,6 +540,76 @@
       try {
         OR.lifecycle.on("pause", function () { game.pause(); });
       } catch (_) {}
+
+      // Sound: unlock + mute toggle ----------------------------------
+      // Browsers keep the AudioContext suspended until a user gesture, so
+      // resume() on the first pointer/key event. once:true tears the
+      // listeners down after the first hit; capture so we see the gesture
+      // even when the canvas handlers stopPropagation.
+      function unlockAudio() { sound.resume(); }
+      var unlockOpts = { once: true, capture: true };
+      document.addEventListener("pointerdown", unlockAudio, unlockOpts);
+      document.addEventListener("touchstart", unlockAudio, unlockOpts);
+      document.addEventListener("keydown", unlockAudio, unlockOpts);
+
+      var soundToggleEl = document.querySelector(".sound-toggle");
+      function paintSoundToggle() {
+        if (!soundToggleEl) return;
+        var muted = sound.isMuted();
+        soundToggleEl.textContent = muted ? "🔇" : "🔊";
+        soundToggleEl.setAttribute("aria-pressed", muted ? "true" : "false");
+        soundToggleEl.setAttribute("aria-label", muted ? "Unmute sound" : "Mute sound");
+      }
+      // Hydrate the saved preference, then paint. Defaults to unmuted on any
+      // read failure (the safer default for a brand-new player who hasn't
+      // expressed a choice yet).
+      if (OR.storage && OR.storage.get) {
+        OR.storage.get(MUTED_KEY)
+          .then(function (raw) { sound.setMuted(raw === "1"); })
+          .catch(noop)
+          .then(paintSoundToggle);
+      } else {
+        paintSoundToggle();
+      }
+      if (soundToggleEl) {
+        soundToggleEl.addEventListener("click", function () {
+          // A click is a gesture — make sure the context is live so the
+          // unmute is immediately audible on the very next event.
+          sound.resume();
+          var muted = sound.toggleMute();
+          paintSoundToggle();
+          if (OR.storage && OR.storage.set) {
+            OR.storage.set(MUTED_KEY, muted ? "1" : "0").catch(noop);
+          }
+        });
+      }
+
+      // Tap-anywhere-to-start on the idle overlay. The overlay sits on top of
+      // the board (z-index 100), so a player following the "CLICK A FRUIT TO
+      // START" hint taps the covered board and nothing happens — the only live
+      // control is the Start button. Make the whole idle overlay a start
+      // target so that instinct works, while keeping the Start button.
+      //
+      // Routes through input.emit("toggle"), the exact event the Start button
+      // fires (see input_manager _bindButton), so idle → playing goes through
+      // one code path. Guards:
+      //   - idle only: in paused/over the overlay shows Resume / Try again +
+      //     Share, where a stray background tap must NOT start or restart.
+      //   - button taps are skipped here: the Start button's own handler calls
+      //     stopPropagation so its tap never reaches this listener, but the
+      //     closest("button") check keeps that intent explicit and survives
+      //     any future button that forgets to stop propagation.
+      // click + touchend mirror _bindButton; preventDefault on touchend
+      // suppresses the synthesized ghost click so a touch tap toggles once.
+      function onIdleOverlayActivate(e) {
+        if (overlayEl.getAttribute("data-state") !== "idle") return;
+        if (e.target.closest && e.target.closest("button")) return;
+        e.preventDefault();
+        sound.resume();
+        input.emit("toggle");
+      }
+      overlayEl.addEventListener("click", onIdleOverlayActivate);
+      overlayEl.addEventListener("touchend", onIdleOverlayActivate);
 
       // Responsive canvas — keep the internal pixel size in sync with the
       // CSS-computed display size. Resize fires on rotation + window resize

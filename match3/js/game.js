@@ -29,25 +29,36 @@
   var TILE_TYPES = 6;
   var ANIM_TIME = 0.18; // seconds per animation phase
 
-  var TIMER_START = 120;
+  var TIMER_START = 90;
   var SCORE_TO_TIME = 3;     // pts per second of timer bonus
-  var TIMER_DRAIN_SCALE = 3000;
+  var TIMER_DRAIN_SCALE = 2000;
 
   // Stage definitions — endless mode with escalating rules. Advancing
   // through stages is score-gated (not time-gated), so a careful low-score
-  // player still progresses if they survive long enough. Stage 5 is the
-  // endurance ceiling; we don't keep escalating past it because punishing-
-  // forever curves stop feeling like progress and start feeling like a
-  // wall. lockRate / lockDoubleRate are probabilities applied per refilled
-  // tile in _shiftAndRefill; drainMult stacks on top of the score-based
-  // drain in _currentDrainRate. Order in the array matches stage IDs (1-5)
-  // so the index→id mapping is just +1.
+  // player still progresses if they survive long enough. The curve runs to
+  // stage 7 (FRENZY) and stops there: by then the drain multiplier alone is
+  // ~2.9× and, stacked on the score-based ramp in _currentDrainRate, the
+  // clock empties fast enough that the run is decided on reflexes, not on
+  // ever-steeper numbers — escalating past it would stop reading as progress
+  // and start reading as a wall. lockRate / lockDoubleRate are probabilities
+  // applied per refilled tile in _shiftAndRefill; drainMult stacks
+  // multiplicatively on top of the score-based drain in _currentDrainRate.
+  // Order in the array matches stage IDs (1-7) so the index→id mapping is
+  // just +1.
+  //
+  // Tuning note: the drain felt far too slow in early playtests (a fresh
+  // board barely moved the bar). Both levers were sharpened — the per-stage
+  // drainMult ramps harder and TIMER_DRAIN_SCALE was lowered so the
+  // score-based term climbs sooner — so the timer's pace visibly accelerates
+  // as a run goes deep instead of flat-lining at ~1/sec.
   var STAGES = [
     { id: 1, minScore: 0,    drainMult: 1.0,  lockRate: 0.0,  lockDoubleRate: 0.0,  label: "" },
-    { id: 2, minScore: 200,  drainMult: 1.0,  lockRate: 0.08, lockDoubleRate: 0.0,  label: "LOCKED TILES" },
-    { id: 3, minScore: 500,  drainMult: 1.15, lockRate: 0.12, lockDoubleRate: 0.0,  label: "FASTER" },
-    { id: 4, minScore: 1000, drainMult: 1.25, lockRate: 0.18, lockDoubleRate: 0.03, label: "REINFORCED" },
-    { id: 5, minScore: 2000, drainMult: 1.4,  lockRate: 0.25, lockDoubleRate: 0.05, label: "ENDURANCE" },
+    { id: 2, minScore: 200,  drainMult: 1.2,  lockRate: 0.08, lockDoubleRate: 0.0,  label: "LOCKED TILES" },
+    { id: 3, minScore: 500,  drainMult: 1.45, lockRate: 0.12, lockDoubleRate: 0.0,  label: "FASTER" },
+    { id: 4, minScore: 1000, drainMult: 1.7,  lockRate: 0.18, lockDoubleRate: 0.03, label: "REINFORCED" },
+    { id: 5, minScore: 2000, drainMult: 2.0,  lockRate: 0.25, lockDoubleRate: 0.05, label: "ENDURANCE" },
+    { id: 6, minScore: 3500, drainMult: 2.4,  lockRate: 0.30, lockDoubleRate: 0.07, label: "RELENTLESS" },
+    { id: 7, minScore: 5500, drainMult: 2.9,  lockRate: 0.35, lockDoubleRate: 0.10, label: "FRENZY" },
   ];
 
   function stageFor(score) {
@@ -245,12 +256,14 @@
       this._swap(move.c1, move.r1, move.c2, move.r2);
       this.currentMove = move;
       this.comboCount = 0;
+      if (this.listener.onSwap) this.listener.onSwap();
       this._activateBomb(move, targetType);
       return;
     }
 
     this.currentMove = move;
     this.comboCount = 0;
+    if (this.listener.onSwap) this.listener.onSwap();
     this._swap(move.c1, move.r1, move.c2, move.r2);
     this._setPhase("swap-fwd");
   };
@@ -323,6 +336,10 @@
         this._removeClusters(this.clusters);
         this._setPhase("resolve");
       } else {
+        // No cluster formed — the swap is about to rewind. Fire here (not in
+        // the swap-back branch) so the "denied" cue lands the instant the
+        // move is rejected, in sync with the rewind animation starting.
+        if (this.listener.onInvalidSwap) this.listener.onInvalidSwap();
         this._setPhase("swap-back");
       }
     } else if (this.phase === "swap-back") {
@@ -631,7 +648,7 @@
       this._triggerShake(amp, 0.18);
     }
 
-    if (this.listener.onMatch) this.listener.onMatch(clusters);
+    if (this.listener.onMatch) this.listener.onMatch(clusters, mult);
     if (mult >= 2 && this.listener.onCombo) this.listener.onCombo(mult, totalThisRound);
     this._notifyScore();
   };
@@ -897,7 +914,7 @@
     }
     this._triggerShake(8, 0.24);
 
-    if (this.listener.onMatch) this.listener.onMatch([{ length: ordered.length, type: targetType }]);
+    if (this.listener.onMatch) this.listener.onMatch([{ length: ordered.length, type: targetType }], mult);
     this._notifyScore();
 
     this._recomputeShifts();
@@ -1245,7 +1262,7 @@
   };
 
   // Surfaced as a static so application.js can paint the initial timer bar
-  // without hardcoding "120" alongside this file's TIMER_START constant.
+  // from this file's TIMER_START rather than duplicating the starting value.
   Game.TIMER_START = TIMER_START;
 
   window.Match3Game = Game;

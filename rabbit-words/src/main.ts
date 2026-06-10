@@ -657,9 +657,17 @@ function renderFriendsPanel(
   list.className = 'friends-list';
 
   // Viewer's own row at the top, so the friends list reads as a comparison
-  // rather than an out-group leaderboard. Only when we actually have their
-  // result for the displayed round (end-of-game flow) — the past-day modal
-  // doesn't archive viewer state locally, so it omits this row.
+  // rather than an out-group leaderboard. Two sources, in priority order:
+  //   1. `viewerResult` (end-of-game flow) — synchronously available, so the
+  //      row paints without waiting on the scores.friends round-trip.
+  //   2. The `isSelf: true` row in `friends` (past-day modal) — viewer state
+  //      isn't archived locally there, so the backend's own entry is what
+  //      tells us the viewer played this round.
+  // The other branch is filtered out of the rest-of-friends loop below, so
+  // the viewer never renders twice.
+  const selfFromBackend = friends.find((f) => f.isSelf) ?? null;
+  const otherFriends = friends.filter((f) => !f.isSelf);
+
   if (viewerResult) {
     const viewerName = window.OddsRabbit.user
       ? `@${window.OddsRabbit.user.username}`
@@ -671,9 +679,21 @@ function renderFriendsPanel(
       viewerResult.guessCount,
       true
     );
+  } else if (selfFromBackend) {
+    const meta = selfFromBackend.metadata as
+      | { won?: boolean; guessCount?: number }
+      | null;
+    const won = meta?.won ?? selfFromBackend.score > 0;
+    appendResultRow(
+      list,
+      `@${selfFromBackend.username}`,
+      won,
+      meta?.guessCount,
+      true
+    );
   }
 
-  for (const friend of friends) {
+  for (const friend of otherFriends) {
     // App-specific metadata shape — rabbit-words submits `{ won, guessCount }`.
     // Falling back to score-based inference keeps this resilient if a future
     // migration drops the metadata.

@@ -12,17 +12,33 @@
   var Deck = window.SolitaireDeck;
 
   // --- Layout ---
+  //
+  // Every card sprite is AUTHORED at CARD_W × CARD_H (the historical 56×80)
+  // but PAINTED into an offscreen canvas that is SCALE× larger, through a
+  // ctx.scale(SCALE) transform. Each hand-placed 1px becomes a crisp SCALE×
+  // SCALE block, so the art reads sharp at the bigger on-board size without a
+  // single sprite coordinate changing. The board then lays those scaled
+  // sprites out using the post-scale dimensions CW × CH. SCALE is the one
+  // knob that makes the cards physically bigger and crisper — bumping it
+  // never touches the art code below.
+  var SCALE = 2;
+  var CARD_W = 56;               // art-authoring card width (sprite internals)
+  var CARD_H = 80;               // art-authoring card height
+  var CW = CARD_W * SCALE;       // 112 — on-board card width (layout + blits)
+  var CH = CARD_H * SCALE;       // 160 — on-board card height
 
-  var INTERNAL_W = 480;
-  var INTERNAL_H = 720;
-  var CARD_W = 56;
-  var CARD_H = 80;
-  var COL_GAP = 6;
-  var MARGIN = 26;
-  var TOP_ROW_Y = 24;
-  var TABLEAU_Y = 120;
-  var FACE_DOWN_OFFSET = 6;
-  var FACE_UP_OFFSET = 16;
+  // Board geometry, in on-board (post-scale) pixels. The old 480×720 portrait
+  // crushed seven columns into thumbnail cards and left the bottom half of
+  // the felt empty; this is a wide, near-square board sized just tall enough
+  // for the longest legal tableau run so the cards can be big.
+  var COL_GAP = 12;
+  var MARGIN = 22;
+  var TOP_ROW_Y = 40;
+  var TABLEAU_Y = 220;
+  var FACE_DOWN_OFFSET = 12;
+  var FACE_UP_OFFSET = 32;
+  var INTERNAL_W = 2 * MARGIN + 7 * CW + 6 * COL_GAP;   // 900
+  var INTERNAL_H = 860;          // covers TABLEAU_Y + ~6 down + ~12 up + a card
 
   // 7 column x-positions reused by top row (stock/waste/foundations) and
   // tableau columns. Stock at col 0, waste at col 1, foundations at cols
@@ -31,7 +47,7 @@
   // matches the original Klondike layout players expect.
   var COL_X = new Array(7);
   for (var c = 0; c < 7; c++) {
-    COL_X[c] = MARGIN + c * (CARD_W + COL_GAP);
+    COL_X[c] = MARGIN + c * (CW + COL_GAP);
   }
   var STOCK_X = COL_X[0];
   var WASTE_X = COL_X[1];
@@ -39,26 +55,26 @@
 
   // --- Palette ---
 
-  // Card-face colours. Cream-ish white is gentle on the green felt and
+  // Card-face colours. Cream-ish white is gentle on the light-oak felt and
   // close enough to a deck's actual paper colour. Pip reds and blacks are
   // slightly desaturated to sit on the cream face without clipping
   // visually. Pixel art tradition: never pure 0/255 on warm surfaces.
-  var COL_FELT = "#6b4327";          // wooden table surface (mirrors --wood)
-  var COL_FELT_DARK = "#3a2414";     // recessed wood under cards / empty slots
+  var COL_FELT = "#d9b483";          // light-oak table surface (mirrors --wood)
+  var COL_FELT_DARK = "#c79a66";     // recessed wood under cards / empty slots
   var COL_CARD = "#f5ecd6";          // cream face
   var COL_CARD_EDGE = "#3a2615";     // dark warm edge / 1px border
   var COL_RED = "#c01818";
   var COL_BLACK = "#1a1a1a";
-  var COL_BACK_PRIMARY = "#5e3a20";  // card-back base (warm wood)
-  var COL_BACK_ACCENT = "#3d2412";   // darker inner panel
+  var COL_BACK_PRIMARY = "#8a5a30";  // card-back base (warm wood — pops on light felt)
+  var COL_BACK_ACCENT = "#5c3a1e";   // darker inner panel
   var COL_CARROT = "#e8893e";
   var COL_CARROT_DARK = "#c45e1a";
   var COL_LEAF = "#5a8c3a";
   // Empty-slot ghost colour: needs to read against the recessed-wood fill we
-  // use for empty-slot backgrounds (COL_FELT_DARK #3a2414). A mid-tan sits a
-  // few shades lighter so the dashed border + recycle arrow stay visible
-  // without competing with the cards laid over them.
-  var COL_GHOST = "#a07845";
+  // use for empty-slot backgrounds (COL_FELT_DARK #c79a66). A dark wood tone
+  // gives the dashed border + recycle arrow real contrast against the lighter
+  // recess without competing with the cards laid over them.
+  var COL_GHOST = "#8a5a30";
   var COL_RABBIT_BODY = "#fff8e7";
   var COL_RABBIT_EAR = "#f4c2c2";    // pink inner ear
   var COL_RABBIT_NOSE = "#d97a8a";
@@ -99,6 +115,10 @@
     J: ["OOO", "..O", "..O", "O.O", ".O."],
     Q: [".O.", "O.O", "O.O", "OOO", "..O"],
     K: ["O.O", "OO.", "O..", "OO.", "O.O"],
+    // 0/1 are never produced by rankKey (ten renders via the "10" special
+    // case in drawRankAt) — they exist for the stock pile-depth counter.
+    "0": ["OOO", "O.O", "O.O", "O.O", "OOO"],
+    "1": [".O.", "OO.", ".O.", ".O.", "OOO"],
   };
 
   // Map a rank 0..12 to the glyph key used above. Rank 0 is the ace; ranks
@@ -120,17 +140,22 @@
   // is filled with the suit colour, '.' is transparent. Order matches
   // Deck.SUIT_* constants (clubs, diamonds, hearts, spades).
   var SUIT_SPRITES = [
-    // Clubs
+    // Clubs — three round lobes (top + left + right) over a stem and splayed
+    // base. The previous sprite tapered to a point and merged the lobes into
+    // one mass, which made clubs nearly indistinguishable from spades at card
+    // size. This one keeps a flat-round top lobe and cuts notches on row 3
+    // (top lobe vs side lobes) and row 6 (side lobes vs stem) so the trefoil
+    // silhouette survives the small scale.
     [
-      "....O....",
       "...OOO...",
-      "...OOO...",
-      "..O.O.O..",
-      ".OOOOOOO.",
-      ".OOOOOOO.",
+      "..OOOOO..",
+      "..OOOOO..",
+      "OO.OOO.OO",
+      "OOOOOOOOO",
+      "OOOOOOOOO",
+      ".OO.O.OO.",
       "...OOO...",
       "..OO.OO..",
-      ".OO...OO.",
     ],
     // Diamonds
     [
@@ -144,10 +169,12 @@
       "...OOO...",
       "....O....",
     ],
-    // Hearts
+    // Hearts — two distinct lobe tops with a clean V-dip between them, then
+    // the body rounds straight into the point. The old sprite had a stray
+    // pixel in the dip plus three full-width rows that read as a rectangle.
     [
-      ".OO.O.OO.",
-      "OOOOOOOOO",
+      ".OO...OO.",
+      "OOOO.OOOO",
       "OOOOOOOOO",
       "OOOOOOOOO",
       ".OOOOOOO.",
@@ -199,10 +226,11 @@
     var pipColor = (suit === Deck.SUIT_DIAMONDS || suit === Deck.SUIT_HEARTS) ? COL_RED : COL_BLACK;
 
     var off = document.createElement("canvas");
-    off.width = CARD_W;
-    off.height = CARD_H;
+    off.width = CW;
+    off.height = CH;
     var ctx = off.getContext("2d");
     ctx.imageSmoothingEnabled = false;
+    ctx.scale(SCALE, SCALE);
 
     // Cream body + 1px dark edge frame.
     ctx.fillStyle = COL_CARD;
@@ -245,8 +273,13 @@
       var count = rank + 1;
       var positions = pipLayout(count);
       for (var p = 0; p < positions.length; p++) {
-        var px = Math.round(positions[p][0] * (CARD_W - 16)) + 8 - 4;
-        var py = Math.round(positions[p][1] * (CARD_H - 28)) + 18 - 4;
+        // Pip region is inset clear of the corner rank+pip stacks: pips span
+        // cols 12-43 and rows 15-65, so the unit-square layout can never
+        // collide with the top-left stack (cols ≤ 11) or the bottom-right
+        // one (cols ≥ 45, rows ≥ 60). The old near-full-card span overprinted
+        // the bottom-right rank digit on every 4-10.
+        var px = Math.round(positions[p][0] * 23) + 12;
+        var py = Math.round(positions[p][1] * 42) + 15;
         paintMonoSprite(ctx, SUIT_SPRITES[suit], px, py, pipColor);
       }
     } else {
@@ -257,9 +290,13 @@
     return off;
   }
 
-  // Rank glyph width in pixels. "10" is the only multi-char case.
+  // Rank glyph width in pixels. "10" is the only multi-char case: the "1"
+  // paints at col 0 (the sprite reserves col 1 but it's empty) and the "0"
+  // paints at cols 3–5, so the visible footprint runs col 0 to col 5 — 6
+  // wide, not 7. Returning 7 used to nudge the bottom-right "10" one pixel
+  // further left than every other rank, since brX = CARD_W - 4 - width.
   function rankWidth(key) {
-    return key === "10" ? 7 : 3;
+    return key === "10" ? 6 : 3;
   }
 
   function drawRankAt(ctx, key, x, y, color) {
@@ -345,7 +382,7 @@
     if (rank === 10) {
       ctx.fillRect(cx + 3, headTopY - 4, 6, 6);            // base (short stub)
       ctx.fillRect(cx + 6, headTopY - 10, 6, 8);           // mid-bend
-      ctx.fillRect(cx + 10, headTopY - 14, 6, 6);          // tip flopped out to the right
+      ctx.fillRect(cx + 9, headTopY - 14, 6, 6);           // tip flopped out to the right
     } else {
       ctx.fillRect(cx + 3, headTopY - 15, 6, 17);          // right ear outline
     }
@@ -366,9 +403,17 @@
     // Ears.
     ctx.fillRect(cx - 8, headTopY - 14, 4, 15);
     if (rank === 10) {
-      ctx.fillRect(cx + 4, headTopY - 3, 4, 5);            // base stub
-      ctx.fillRect(cx + 7, headTopY - 9, 4, 6);            // mid bend
-      ctx.fillRect(cx + 11, headTopY - 13, 4, 5);          // floppy tip
+      // J's three-segment jester ear. Each cream slab is extended by 1 row
+      // toward its neighbour so the kink between segments shows as a clean
+      // 1-px outline, not a chunky 4-5-wide dark block (the bottom of the
+      // mid-bend slab overlapping the top of the next slab's outline).
+      ctx.fillRect(cx + 4, headTopY - 4, 4, 6);            // base stub (extended up 1 row toward mid)
+      ctx.fillRect(cx + 7, headTopY - 10, 4, 8);           // mid bend (extended 1 row each way)
+      // Tip shares its left column with the mid-bend slab (rows -10..-9) so
+      // the cream connects through the kink — one column further right the
+      // segments only touched diagonally and the tip floated as a detached
+      // block.
+      ctx.fillRect(cx + 10, headTopY - 13, 4, 5);          // floppy tip
     } else {
       ctx.fillRect(cx + 4, headTopY - 14, 4, 15);
     }
@@ -387,7 +432,7 @@
     if (rank === 10) {
       ctx.fillRect(cx + 5, headTopY - 2, 2, 4);            // pink in base stub
       ctx.fillRect(cx + 8, headTopY - 8, 2, 4);            // pink in mid bend
-      ctx.fillRect(cx + 12, headTopY - 11, 2, 3);          // pink in floppy tip
+      ctx.fillRect(cx + 11, headTopY - 11, 2, 3);          // pink in floppy tip
     } else {
       ctx.fillRect(cx + 5, headTopY - 12, 2, 12);
     }
@@ -411,15 +456,21 @@
 
     // -- Accessory --
     if (rank === 11) {
-      // Q: flower tucked beside the left ear.
-      drawFlower(ctx, cx - 14, headTopY - 11);
+      // Q: flower tucked beside the left ear. cx-16 keeps the flower's
+      // 7-wide middle row clear of the ear at col cx-9 (was cx-14, which
+      // overlapped 2 cols into the ear and overwrote its left outline +
+      // cream interior with flower pink).
+      drawFlower(ctx, cx - 16, headTopY - 11);
     } else if (rank === 12) {
       // K: crown sitting on the forehead between the ear roots.
       drawCrown(ctx, cx - 9, headTopY - 5);
     }
 
-    // -- Tiny suit pip in the portrait corner --
-    paintMonoSprite(ctx, SUIT_SPRITES[suit], CARD_W - 19, CARD_H - 24, pipColor);
+    // The four corner glyphs (rank + pip in each diagonal pair) already
+    // identify the suit; an extra in-banner pip near the bottom-right used
+    // to live here, but at this card size it sat right above the bottom-
+    // right corner glyph and read as the inner banner's own corner — making
+    // J/Q/K look like a card-within-a-card. Removed.
   }
 
   // 18×7 crown — three main peaks with gold finial balls, a base band with
@@ -480,10 +531,11 @@
   // card edge" at small sizes.
   function buildCardBack() {
     var off = document.createElement("canvas");
-    off.width = CARD_W;
-    off.height = CARD_H;
+    off.width = CW;
+    off.height = CH;
     var ctx = off.getContext("2d");
     ctx.imageSmoothingEnabled = false;
+    ctx.scale(SCALE, SCALE);
     ctx.fillStyle = COL_BACK_PRIMARY;
     ctx.fillRect(0, 0, CARD_W, CARD_H);
 
@@ -492,9 +544,16 @@
     ctx.fillRect(3, 3, CARD_W - 6, CARD_H - 6);
 
     // 2x2 grid of carrot sprites. Each sprite is roughly 12 wide × 16 tall.
-    // Spacing chosen so they don't crowd the border.
-    drawCarrotSprite(ctx, 7, 9);
-    drawCarrotSprite(ctx, CARD_W - 19, 9);
+    // The top pair sits at y=2 — high enough that the carrot leaves (rows
+    // 0–3 of the sprite) land inside the 6px FACE_DOWN_OFFSET peek window.
+    // Without this lift, a stacked face-down column shows only the cream
+    // edge + warm-brown band + dark accent (all flat), and the back motif
+    // never reads. With it, every face-down peek shows two green leaf
+    // tufts and the column looks like a deck of cards. The bottom pair
+    // stays put — they only need to look right on the unstacked top of
+    // the stock pile.
+    drawCarrotSprite(ctx, 7, 2);
+    drawCarrotSprite(ctx, CARD_W - 19, 2);
     drawCarrotSprite(ctx, 7, CARD_H - 25);
     drawCarrotSprite(ctx, CARD_W - 19, CARD_H - 25);
 
@@ -543,10 +602,11 @@
   // there: empty → no pip at all, just the outline.)
   function buildEmptyFoundation() {
     var off = document.createElement("canvas");
-    off.width = CARD_W;
-    off.height = CARD_H;
+    off.width = CW;
+    off.height = CH;
     var ctx = off.getContext("2d");
     ctx.imageSmoothingEnabled = false;
+    ctx.scale(SCALE, SCALE);
     drawEmptyOutline(ctx);
     return off;
   }
@@ -555,32 +615,34 @@
   // here flips the waste back into the stock.
   function buildEmptyStock() {
     var off = document.createElement("canvas");
-    off.width = CARD_W;
-    off.height = CARD_H;
+    off.width = CW;
+    off.height = CH;
     var ctx = off.getContext("2d");
     ctx.imageSmoothingEnabled = false;
+    ctx.scale(SCALE, SCALE);
     drawEmptyOutline(ctx);
     // Circular arrow — half-ring + arrowhead. Simple 16×16 sprite centered.
     ctx.fillStyle = COL_GHOST;
     var cx = CARD_W / 2;
     var cy = CARD_H / 2;
-    // Arc (broken at top-right for the arrowhead opening).
-    for (var a = Math.PI * 0.15; a < Math.PI * 2.2; a += 0.18) {
+    // Arc from just past 3 o'clock around to the upper-right, leaving a real
+    // gap for the arrowhead. (The old bounds 0.15π..2.2π spanned more than a
+    // full turn, so the ring drew closed and the arrowhead vanished into it.)
+    for (var a = Math.PI * 0.05; a < Math.PI * 1.7; a += 0.18) {
       var rx = Math.round(cx + Math.cos(a) * 9);
       var ry = Math.round(cy + Math.sin(a) * 9);
       ctx.fillRect(rx, ry, 2, 2);
     }
-    // Arrowhead.
-    ctx.fillRect(cx + 9, cy - 5, 2, 2);
-    ctx.fillRect(cx + 10, cy - 4, 2, 2);
-    ctx.fillRect(cx + 11, cy - 3, 2, 2);
-    ctx.fillRect(cx + 7, cy - 5, 2, 2);
-    ctx.fillRect(cx + 6, cy - 6, 2, 2);
+    // Arrowhead — stepped solid triangle at the arc's end, pointing
+    // clockwise (down-right) into the gap.
+    ctx.fillRect(cx + 1, cy - 10, 6, 2);
+    ctx.fillRect(cx + 3, cy - 8, 4, 2);
+    ctx.fillRect(cx + 5, cy - 6, 2, 2);
     return off;
   }
 
-  // Generic empty-card outline — dashed border on a dark green fill, used
-  // for both foundation slots and the empty stock.
+  // Generic empty-card outline — dashed border on a recessed-wood fill,
+  // used for both foundation slots and the empty stock.
   function drawEmptyOutline(ctx) {
     ctx.fillStyle = COL_FELT_DARK;
     ctx.fillRect(0, 0, CARD_W, CARD_H);
@@ -621,8 +683,11 @@
 
   Renderer.INTERNAL_W = INTERNAL_W;
   Renderer.INTERNAL_H = INTERNAL_H;
-  Renderer.CARD_W = CARD_W;
-  Renderer.CARD_H = CARD_H;
+  Renderer.CARD_W = CW;
+  Renderer.CARD_H = CH;
+  // Exported so application.js paints the same felt on the pre-deal canvas
+  // (it previously hardcoded a stale dark-wood hex that didn't match).
+  Renderer.COL_FELT = COL_FELT;
 
   // Repaint the entire scene.
   //   dragState (optional): { source, pointer:{x,y}, offset:{x,y},
@@ -683,7 +748,7 @@
   // outlined.
   Renderer.prototype._targetRect = function (board, target) {
     if (target.kind === "foundation") {
-      return { x: FOUNDATION_X[target.index], y: TOP_ROW_Y, w: CARD_W, h: CARD_H };
+      return { x: FOUNDATION_X[target.index], y: TOP_ROW_Y, w: CW, h: CH };
     }
     if (target.kind === "tableau") {
       // Highlight targets never include the drag's own source column (the
@@ -691,9 +756,9 @@
       // landing spot — no need to account for a suppressed source slice.
       var stack = board.tableau[target.col];
       if (!stack || stack.length === 0) {
-        return { x: COL_X[target.col], y: TABLEAU_Y, w: CARD_W, h: CARD_H };
+        return { x: COL_X[target.col], y: TABLEAU_Y, w: CW, h: CH };
       }
-      return { x: COL_X[target.col], y: this._cardYAt(target.col, stack.length - 1, board), w: CARD_W, h: CARD_H };
+      return { x: COL_X[target.col], y: this._cardYAt(target.col, stack.length - 1, board), w: CW, h: CH };
     }
     return null;
   };
@@ -704,11 +769,31 @@
     if (board.stock.length === 0) {
       this.ctx.drawImage(this._emptyStock, x, y);
     } else {
-      // Stacked-stock indicator — a second card-back peeking out a few pixels
-      // to the left when there's depth, then the real top on top of it. Cheap
-      // signal that the pile has cards without rendering every back.
-      if (board.stock.length > 1) this.ctx.drawImage(this._cardBack, x - 2, y);
+      // Stacked-stock indicator — a second card-back peeking out diagonally
+      // up-left when there's depth, then the real top on top of it. The
+      // diagonal offset shows two edges of the card beneath (top + left) so
+      // it reads as a stacked deck; a horizontal-only offset exposed just a
+      // cream sliver that read as a rendering artifact.
+      if (board.stock.length > 1) this.ctx.drawImage(this._cardBack, x - 4, y - 4);
       this.ctx.drawImage(this._cardBack, x, y);
+      // Pile-depth count in the gap under the top row, so players can see
+      // how many draws remain before the next recycle.
+      this._drawPileCount(board.stock.length, x + CW / 2, TOP_ROW_Y + CH + 6);
+    }
+  };
+
+  // Small pixel number centered under a pile. Digits reuse the 3×5 rank-
+  // glyph font at the same SCALE as the card corners; drawn in the ghost
+  // colour so the badge reads as a table marking, not a card.
+  Renderer.prototype._drawPileCount = function (n, centerX, y) {
+    var str = String(n);
+    var w = (str.length * 4 - 1) * SCALE; // 3px digits + 1px gaps
+    var x = Math.round(centerX - w / 2);
+    for (var i = 0; i < str.length; i++) {
+      var glyph = RANK_GLYPHS[str.charAt(i)];
+      if (!glyph) continue;
+      paintMonoSpriteScaled(this.ctx, glyph, x, y, COL_GHOST, SCALE);
+      x += 4 * SCALE;
     }
   };
 
@@ -780,9 +865,17 @@
   Renderer.prototype._drawDragPreview = function (dragState) {
     var px = dragState.pointer.x - dragState.offset.x;
     var py = dragState.pointer.y - dragState.offset.y;
-    // Subtle shadow under the stack.
+    // Subtle shadow under the stack. Only the L-shaped strip that pokes
+    // past the bottom card's right and bottom edges is actually visible —
+    // the rest of the stack-sized rectangle would just be hidden under the
+    // cards. We paint exactly that L so the shadow reads as a drop shadow
+    // and not as a faint tint visible at the card edges.
+    var stackH = CH + (dragState.cards.length - 1) * FACE_UP_OFFSET;
     this.ctx.fillStyle = "rgba(0,0,0,0.25)";
-    this.ctx.fillRect(px + 2, py + 4, CARD_W, CARD_H + (dragState.cards.length - 1) * FACE_UP_OFFSET);
+    // Right-edge strip (3 px wide, from top of stack to its full bottom).
+    this.ctx.fillRect(px + CW, py + 6, 3, stackH);
+    // Bottom-edge strip (6 px tall, under the bottom card only).
+    this.ctx.fillRect(px + 3, py + stackH, CW, 6);
     for (var i = 0; i < dragState.cards.length; i++) {
       this.ctx.drawImage(this._cardSprites[dragState.cards[i]], px, py + i * FACE_UP_OFFSET);
     }
@@ -802,11 +895,11 @@
   // card rects.
   Renderer.prototype.hitTest = function (x, y) {
     // Top row: stock + waste + foundations.
-    if (y >= TOP_ROW_Y && y < TOP_ROW_Y + CARD_H) {
-      if (x >= STOCK_X && x < STOCK_X + CARD_W) return { kind: "stock" };
-      if (x >= WASTE_X && x < WASTE_X + CARD_W) return { kind: "waste" };
+    if (y >= TOP_ROW_Y && y < TOP_ROW_Y + CH) {
+      if (x >= STOCK_X && x < STOCK_X + CW) return { kind: "stock" };
+      if (x >= WASTE_X && x < WASTE_X + CW) return { kind: "waste" };
       for (var i = 0; i < 4; i++) {
-        if (x >= FOUNDATION_X[i] && x < FOUNDATION_X[i] + CARD_W) {
+        if (x >= FOUNDATION_X[i] && x < FOUNDATION_X[i] + CW) {
           return { kind: "foundation", index: i };
         }
       }
@@ -815,11 +908,11 @@
     if (!this._lastBoard) return null;
     for (var col = 0; col < 7; col++) {
       var cx = COL_X[col];
-      if (x < cx || x >= cx + CARD_W) continue;
+      if (x < cx || x >= cx + CW) continue;
       var stack = this._lastBoard.tableau[col];
       if (stack.length === 0) {
         // Empty column — accept any y within a card-height of the tableau row.
-        if (y >= TABLEAU_Y && y < TABLEAU_Y + CARD_H) {
+        if (y >= TABLEAU_Y && y < TABLEAU_Y + CH) {
           return { kind: "tableau", col: col, index: -1 };
         }
         return null;
@@ -827,7 +920,7 @@
       // Top-card-first iteration.
       for (var i = stack.length - 1; i >= 0; i--) {
         var cy = this._cardYAt(col, i, this._lastBoard);
-        if (y >= cy && y < cy + CARD_H) {
+        if (y >= cy && y < cy + CH) {
           return { kind: "tableau", col: col, index: i };
         }
       }
@@ -867,8 +960,8 @@
   Renderer.prototype.layout = {
     INTERNAL_W: INTERNAL_W,
     INTERNAL_H: INTERNAL_H,
-    CARD_W: CARD_W,
-    CARD_H: CARD_H,
+    CARD_W: CW,
+    CARD_H: CH,
     TOP_ROW_Y: TOP_ROW_Y,
     TABLEAU_Y: TABLEAU_Y,
     FACE_UP_OFFSET: FACE_UP_OFFSET,

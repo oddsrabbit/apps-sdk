@@ -42,6 +42,8 @@
     this._moves = 0;
     this._startMs = 0;
     this._endMs = 0;
+    this._pausedAt = 0;          // wall-clock when the host backgrounded us, or 0
+    this._frozenElapsedMs = null; // elapsed pinned at Finish-tap during auto-complete
   }
 
   SolitaireGame.prototype.getState = function () { return this._state; };
@@ -53,11 +55,43 @@
   SolitaireGame.prototype.getUndoDepth = function () { return this._undo.length; };
 
   // Elapsed wall-clock for the current deal. Frozen at win time so the
-  // overlay shows the final time, not the time-since-win.
+  // overlay shows the final time, not the time-since-win. Also honours the
+  // auto-complete freeze (see freezeElapsed) and the background pause (see
+  // pauseClock) so neither cascade animation nor backgrounded time counts.
   SolitaireGame.prototype.getElapsedMs = function () {
     if (this._state === STATE_IDLE || this._startMs === 0) return 0;
     if (this._state === STATE_WON) return this._endMs - this._startMs;
+    if (this._frozenElapsedMs != null) return this._frozenElapsedMs;
+    if (this._pausedAt) return this._pausedAt - this._startMs;
     return Date.now() - this._startMs;
+  };
+
+  // Clock pause across host backgrounding. The daily leaderboard ranks by
+  // solve time, so time spent with the app in the background shouldn't count
+  // against the player. pause pins the reading; resume shifts _startMs
+  // forward by the paused span. Both are idempotent and no-ops outside an
+  // active deal.
+  SolitaireGame.prototype.pauseClock = function () {
+    if (this._state !== STATE_PLAYING || this._pausedAt) return;
+    this._pausedAt = Date.now();
+  };
+
+  SolitaireGame.prototype.resumeClock = function () {
+    if (!this._pausedAt) return;
+    if (this._state === STATE_PLAYING) this._startMs += Date.now() - this._pausedAt;
+    this._pausedAt = 0;
+  };
+
+  // Pin the elapsed clock at the moment Finish is tapped. The auto-complete
+  // cascade animates one move per ~60ms purely for show — the game is
+  // already decided — so the animation time shouldn't inflate the recorded
+  // (leaderboard) solve time. _checkWin stamps _endMs from the frozen value.
+  SolitaireGame.prototype.freezeElapsed = function () {
+    if (this._state === STATE_PLAYING) this._frozenElapsedMs = this.getElapsedMs();
+  };
+
+  SolitaireGame.prototype.unfreezeElapsed = function () {
+    this._frozenElapsedMs = null;
   };
 
   // Whether the "Finish" auto-complete button should surface. Two gates:
@@ -156,6 +190,8 @@
     this._moves = 0;
     this._startMs = Date.now();
     this._endMs = 0;
+    this._pausedAt = 0;
+    this._frozenElapsedMs = null;
     this._setState(STATE_PLAYING);
     this._emitChange();
   };
@@ -175,6 +211,8 @@
     this._moves = 0;
     this._startMs = 0;
     this._endMs = 0;
+    this._pausedAt = 0;
+    this._frozenElapsedMs = null;
     this._setState(STATE_IDLE);
     this._emitChange();
   };
@@ -196,6 +234,8 @@
     var elapsedAtPause = snap.elapsedMs | 0;
     this._startMs = Date.now() - elapsedAtPause;
     this._endMs = 0;
+    this._pausedAt = 0;
+    this._frozenElapsedMs = null;
     this._setState(STATE_PLAYING);
     this._emitChange();
     return true;
@@ -518,7 +558,13 @@
     var total = 0;
     for (var i = 0; i < f.length; i++) total += f[i].length;
     if (total === Deck.DECK_SIZE) {
-      this._endMs = Date.now();
+      // If the win arrived via the Finish cascade, the recorded time is the
+      // frozen Finish-tap reading, not the wall clock after the animation.
+      this._endMs = (this._frozenElapsedMs != null)
+        ? this._startMs + this._frozenElapsedMs
+        : Date.now();
+      this._frozenElapsedMs = null;
+      this._pausedAt = 0;
       this._setState(STATE_WON);
     }
   };

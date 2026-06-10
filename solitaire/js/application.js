@@ -14,6 +14,7 @@
   var RendererClass = window.SolitaireRenderer;
   var InputClass = window.SolitaireInputManager;
   var StorageClass = window.SolitaireStorageManager;
+  var SoundClass = window.SolitaireSoundManager;
 
   var LANDING_URL = "https://www.oddsrabbit.com/games/solitaire/";
 
@@ -48,6 +49,12 @@
 
   var storage = new StorageClass();
   var renderer = new RendererClass(canvas);
+  // Procedural audio (js/sound_manager.js). Constructed up front but stays
+  // suspended until the first user gesture unlocks it (see initSound); the
+  // play* methods self-guard when muted/suspended, so handlers below never
+  // need to check.
+  var sound = new SoundClass();
+  var MUTED_KEY = "soundMuted";
   var game = new GameClass({
     storage: storage,
     listener: {
@@ -68,6 +75,12 @@
   // suppresses the source location's top while a drag is active so the
   // lift-off is visible.
   var dragState = null;
+
+  // True while the Finish cascade is running. onBoardChange fires once per
+  // auto-complete step and would otherwise re-show the Finish button (which
+  // canAutoComplete keeps green-lit until the last card), making it blink over
+  // the cascade. This flag keeps it hidden for the duration.
+  var autoCompleting = false;
 
   // --- Overlay state ---
 
@@ -123,9 +136,11 @@
     var board = game.getBoard();
     if (!board) {
       // Pre-deal — paint the empty wooden table so the canvas doesn't flash
-      // white behind the idle overlay (matches COL_FELT in renderer.js).
+      // white behind the idle overlay. Uses the renderer's exported felt
+      // colour so the idle board can't drift from the in-game one again (a
+      // stale dark-wood hex used to live here).
       var ctx = canvas.getContext("2d");
-      ctx.fillStyle = "#6b4327";
+      ctx.fillStyle = RendererClass.COL_FELT;
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       return;
     }
@@ -166,7 +181,7 @@
     render();
     refreshStats();
     undoBtn.disabled = game.getUndoDepth() === 0;
-    finishBtn.style.display = game.canAutoComplete() ? "inline-block" : "none";
+    finishBtn.style.display = (!autoCompleting && game.canAutoComplete()) ? "inline-block" : "none";
   }
 
   function onStateChange(state) {
@@ -193,7 +208,9 @@
     // current even if it changed mid-session (e.g. won and bounced back
     // to idle via a manual New Deal).
     var streak = storage.getStreak();
-    var bestMs = storage.getBest();
+    // "Best" on the chooser is the daily best — it sits next to the streak,
+    // and random deals (re-rollable until easy) track their own best.
+    var bestMs = storage.getBestFor(GameClass.MODE_DAILY);
     var subParts = [];
     if (streak > 0) subParts.push("Streak " + streak);
     if (bestMs > 0) subParts.push("Best " + formatTime(bestMs));
@@ -231,14 +248,42 @@
     if (dailySeed.id === today && dailySeed.value != null) return;
     if (dailySeed.scheduled) return;
     dailySeed.scheduled = true;
-    // Defer past the current paint so the idle overlay renders first.
-    setTimeout(function () {
-      dailySeed.scheduled = false;
+    // Time-sliced search: one seed attempt per timeout tick instead of the
+    // whole findSolvableSeed loop in one synchronous burst. A single attempt
+    // is bounded by the solver's node budget (~tens of ms worst case), so
+    // the main thread stays responsive on low-end devices even when several
+    // consecutive seeds fail to prove out. The attempt sequence (base+k,
+    // falling back to base) mirrors findSolvableSeed exactly, so this lands
+    // on the identical seed every device-and-path computes.
+    var Solver = window.SolitaireSolver;
+    var maxAttempts = Solver._internal.MAX_SEED_ATTEMPTS;
+    var k = 0;
+    function step() {
       var t = Deck.dailyId();
-      if (dailySeed.id === t && dailySeed.value != null) return;
-      dailySeed.value = window.SolitaireSolver.findSolvableSeed(t);
-      dailySeed.id = t;
-    }, 0);
+      if (dailySeed.id === t && dailySeed.value != null) {
+        dailySeed.scheduled = false; // resolved elsewhere (sync fallback)
+        return;
+      }
+      if (t !== today) { today = t; k = 0; } // crossed UTC midnight mid-search
+      var seed = (today + k) | 0;
+      if (Solver.isSolvable(Deck.deal(seed))) {
+        dailySeed.value = seed;
+        dailySeed.id = today;
+        dailySeed.scheduled = false;
+        return;
+      }
+      if (++k >= maxAttempts) {
+        // Same unfiltered fallback findSolvableSeed uses; effectively never
+        // reached in practice.
+        dailySeed.value = today;
+        dailySeed.id = today;
+        dailySeed.scheduled = false;
+        return;
+      }
+      setTimeout(step, 0);
+    }
+    // Defer past the current paint so the idle overlay renders first.
+    setTimeout(step, 0);
   }
 
   function getDailySeed() {
@@ -260,6 +305,7 @@
     } else {
       game.newDeal(mode);
     }
+    sound.deal();
   }
 
   function finalizeWin() {
@@ -268,9 +314,11 @@
     var ms = game.getElapsedMs();
     var moves = game.getMoves();
     var isDaily = game.getMode() === GameClass.MODE_DAILY;
-    var bestMs = storage.getBest();
+    // Best times are per-mode: random deals can be re-rolled until easy, so
+    // letting them set the shared best made the stat gameable.
+    var bestMs = storage.getBestFor(game.getMode());
     var isNewBest = bestMs === 0 || ms < bestMs;
-    if (isNewBest) storage.setBest(ms);
+    if (isNewBest) storage.setBestFor(game.getMode(), ms);
 
     // Streak + aggregate are daily-only. Random wins are still celebrated
     // but don't move the community-comparison numbers.
@@ -309,6 +357,8 @@
     var subText = formatTime(ms) + "  ·  " + moves + " moves" + (isNewBest ? "  ·  NEW BEST" : "");
     setOverlayText(mainText, subText);
     haptic("success");
+    if (isNewBest) sound.newBest();
+    else sound.win();
   }
 
   // --- Scores / friends leaderboard ---
@@ -658,6 +708,48 @@
     return pad2(mm) + ":" + pad2(ss);
   }
 
+  // --- Confirm dialog ---
+  //
+  // Felt-styled yes/no modal for destructive actions (currently just "New
+  // Deal" mid-game). window.confirm would break the in-app look and is blocked
+  // in some embedded hosts, so we roll our own. Single-instance: if one is
+  // already open we no-op, so a repeated tap / 'r' keypress can't stack them.
+  function showConfirm(message, confirmLabel, onConfirm) {
+    if (document.querySelector(".confirm-modal-backdrop")) return;
+
+    var backdrop = document.createElement("div");
+    backdrop.className = "confirm-modal-backdrop";
+    backdrop.setAttribute("role", "dialog");
+    backdrop.setAttribute("aria-modal", "true");
+    backdrop.innerHTML =
+      '<div class="confirm-modal">' +
+        '<p class="confirm-text"></p>' +
+        '<div class="confirm-buttons">' +
+          '<button type="button" class="confirm-cancel" data-action="cancel">Cancel</button>' +
+          '<button type="button" class="confirm-ok" data-action="ok"></button>' +
+        '</div>' +
+      '</div>';
+    // Set text via textContent (not innerHTML) so the message can't inject markup.
+    backdrop.querySelector(".confirm-text").textContent = message;
+    backdrop.querySelector(".confirm-ok").textContent = confirmLabel;
+    document.body.appendChild(backdrop);
+
+    function close() {
+      if (backdrop.parentNode) backdrop.parentNode.removeChild(backdrop);
+      document.removeEventListener("keydown", onKey);
+    }
+    function onKey(e) { if (e.key === "Escape") close(); }
+    document.addEventListener("keydown", onKey);
+
+    backdrop.addEventListener("click", function (e) {
+      // Backdrop click (outside the modal body) cancels.
+      if (e.target === backdrop) { close(); return; }
+      var action = e.target && e.target.dataset ? e.target.dataset.action : null;
+      if (action === "cancel") { close(); return; }
+      if (action === "ok") { close(); onConfirm(); }
+    });
+  }
+
   // --- Aggregate (community completion count) ---
   //
   // OR.aggregate.count(key, bucket) registers the caller into the bucket
@@ -704,27 +796,47 @@
 
   // --- Input wiring ---
 
+  // Draw (or recycle) from the stock with matching feedback. Shared by the
+  // stock tap and the spacebar shortcut. The recycle case is detected before
+  // the move since drawStock handles both behind one return value.
+  function doDraw() {
+    if (game.getState() !== GameClass.STATE_PLAYING) return;
+    var board = game.getBoard();
+    var isRecycle = board.stock.length === 0 && board.waste.length > 0;
+    if (game.drawStock()) {
+      haptic("light");
+      if (isRecycle) sound.recycle();
+      else sound.draw();
+    }
+  }
+
   input.on("tap", function (loc) {
     if (game.getState() !== GameClass.STATE_PLAYING) return;
     if (loc.kind === "stock") {
-      var ok = game.drawStock();
-      if (ok) haptic("light");
+      doDraw();
       return;
     }
-    // Tap on the top of a tableau column or the waste → try auto-send to
-    // foundation. Avoids forcing the player to drag every foundation move.
+    // Tap on the top of a tableau column or the waste → auto-move it. Avoids
+    // forcing the player to drag every move.
     if (loc.kind === "tableau") {
       var stack = game.getBoard().tableau[loc.col];
       if (loc.index !== stack.length - 1) return; // not the top
-      tryAutoSend({ kind: "tableau", col: loc.col, index: loc.index });
+      tryAutoMove({ kind: "tableau", col: loc.col, index: loc.index });
       return;
     }
     if (loc.kind === "waste") {
-      tryAutoSend({ kind: "waste" });
+      tryAutoMove({ kind: "waste" });
     }
   });
 
-  function tryAutoSend(source) {
+  // Auto-move the tapped card to the best legal destination. Priority:
+  // foundation first (always progress), then a non-empty tableau column
+  // (building on an existing run), then an empty column (kings). The empty-
+  // column branch is suppressed when the source is a lone tableau card
+  // (index 0) — relocating it from one bare column to another reveals nothing
+  // and just churns the board. Foundation-first means a tap never strands a
+  // card on the tableau when it could be banked.
+  function tryAutoMove(source) {
     var board = game.getBoard();
     var card;
     if (source.kind === "waste") {
@@ -735,18 +847,55 @@
     } else {
       return;
     }
+
+    // 1) Foundation.
     var tops = [];
     for (var i = 0; i < board.foundations.length; i++) {
       var f = board.foundations[i];
       tops.push(f.length ? f[f.length - 1] : null);
     }
-    var target = Deck.findFoundationTarget(card, tops);
-    if (target < 0) return;
-    var ok = game.tryMove(source, { kind: "foundation", index: target });
-    if (ok) haptic("success");
+    var fTarget = Deck.findFoundationTarget(card, tops);
+    if (fTarget >= 0) {
+      if (game.tryMove(source, { kind: "foundation", index: fTarget })) {
+        haptic("success");
+        sound.foundation();
+      }
+      return;
+    }
+
+    // 2) Tableau. Take the first non-empty legal column; remember the first
+    // empty one as a fallback for kings.
+    var emptyCol = -1;
+    for (var c = 0; c < board.tableau.length; c++) {
+      if (source.kind === "tableau" && source.col === c) continue;
+      var col = board.tableau[c];
+      var colTop = col.length ? col[col.length - 1] : null;
+      if (!Deck.canStackOnTableau(card, colTop)) continue;
+      if (colTop == null) {
+        if (emptyCol < 0) emptyCol = c;
+        continue;
+      }
+      if (game.tryMove(source, { kind: "tableau", col: c })) {
+        haptic("success");
+        sound.place();
+      }
+      return;
+    }
+    if (emptyCol >= 0) {
+      var pointless = source.kind === "tableau" && source.index === 0;
+      if (!pointless && game.tryMove(source, { kind: "tableau", col: emptyCol })) {
+        haptic("success");
+        sound.place();
+      }
+    }
   }
 
   input.on("pickup", function (e) {
+    // State gate: after a win the overlay leaves a thin ring of live canvas
+    // around its inset, and a drag started there would lift cards off a
+    // finished board. tryMove would reject the drop anyway, but don't paint
+    // the pickup either.
+    if (game.getState() !== GameClass.STATE_PLAYING) return;
     var board = game.getBoard();
     if (!board) return;
     // Build the moving stack. For tableau, that's index..end of column.
@@ -820,8 +969,11 @@
     var ok = game.tryMove(src, dropTarget);
     if (ok) {
       haptic("success");
+      if (dropTarget.kind === "foundation") sound.foundation();
+      else sound.place();
     } else {
       haptic("error");
+      sound.invalid();
       render();
     }
   });
@@ -834,30 +986,39 @@
   input.on("keyboard", function (action) {
     if (action === "undo") return doUndo();
     if (action === "restart") {
-      storage.clearSavedGame();
-      game.resetToIdle();
+      requestNewDeal();
       return;
     }
     if (action === "draw") {
-      if (game.getState() === GameClass.STATE_PLAYING) {
-        if (game.drawStock()) haptic("light");
-      }
+      doDraw();
     }
   });
 
   // --- Buttons ---
 
   undoBtn.addEventListener("click", doUndo);
-  restartBtn.addEventListener("click", function () {
-    // "New Deal" on the toolbar always pops the player back to the idle
-    // chooser — feels safer than silently rerolling a random deal and
-    // matches what other solitaire clients do. resetToIdle() transitions the
-    // engine to IDLE, which fires onStateChange → stopTimeTick + the idle
-    // overlay; doing it via state (not just setOverlayState) is what stops
-    // the time ticker from leaking and the chips from counting a dead deal.
+  restartBtn.addEventListener("click", requestNewDeal);
+
+  // "New Deal" pops the player back to the idle chooser. resetToIdle()
+  // transitions the engine to IDLE, which fires onStateChange → stopTimeTick +
+  // the idle overlay; doing it via state (not just setOverlayState) is what
+  // stops the time ticker from leaking and the chips from counting a dead
+  // deal. Because the move history and saved game are discarded with no resume
+  // path, we confirm first whenever there's real progress to lose — an
+  // accidental tap deep into a hard daily would otherwise be unrecoverable.
+  function requestNewDeal() {
+    var inProgress = game.getState() === GameClass.STATE_PLAYING && game.getMoves() > 0;
+    if (inProgress) {
+      showConfirm("Leave this deal? Your progress will be lost.", "New deal", doNewDeal);
+      return;
+    }
+    doNewDeal();
+  }
+
+  function doNewDeal() {
     storage.clearSavedGame();
     game.resetToIdle();
-  });
+  }
 
   startDailyBtn.addEventListener("click", function () { startDeal(GameClass.MODE_DAILY); });
   startRandomBtn.addEventListener("click", function () { startDeal(GameClass.MODE_RANDOM); });
@@ -868,7 +1029,10 @@
 
   function doUndo() {
     if (game.getState() !== GameClass.STATE_PLAYING) return;
-    if (game.undo()) haptic("light");
+    if (game.undo()) {
+      haptic("light");
+      sound.undo();
+    }
   }
 
   // Auto-complete cascade — one autoplay step (foundation send, or a stock
@@ -879,13 +1043,26 @@
   // proven this cascade terminates in a win, so it should never trip.
   function runAutoComplete() {
     if (!game.canAutoComplete()) return;
+    autoCompleting = true;
+    // The game is decided the moment Finish is tapped — the cascade is pure
+    // show — so pin the clock here. Otherwise the animation (60ms × dozens
+    // of steps) inflates the leaderboard time.
+    game.freezeElapsed();
     finishBtn.style.display = "none";
     var guard = 0;
     function step() {
-      if (guard++ > 1000) return;
+      if (guard++ > 1000) { autoCompleting = false; game.unfreezeElapsed(); return; }
       var didMove = game.autoCompleteStep();
+      if (didMove) sound.cascade(guard);
       if (didMove && game.getState() === GameClass.STATE_PLAYING) {
         setTimeout(step, 60);
+      } else {
+        // Cascade finished (won, or — defensively — nothing left to move).
+        // On the won path _checkWin already consumed the frozen time;
+        // unfreeze covers the defensive stall so the clock can't stay
+        // pinned on a still-playing board.
+        autoCompleting = false;
+        game.unfreezeElapsed();
       }
     }
     step();
@@ -913,10 +1090,109 @@
   // mid-deal game silently. pagehide is the belt-and-suspenders fallback —
   // same pattern 2048 uses (see 2048/js/storage_manager.js). Both are
   // best-effort; the storage write is fire-and-forget.
+  //
+  // Backgrounding also pauses the deal clock: the daily leaderboard ranks by
+  // solve time, so minutes spent in another app shouldn't count against the
+  // player. visibilitychange mirrors the bridge events for plain-browser
+  // hosts; pauseClock/resumeClock are idempotent, so double-firing is safe.
   if (OR.lifecycle && typeof OR.lifecycle.on === "function") {
-    OR.lifecycle.on("pause", persistSnapshot);
+    OR.lifecycle.on("pause", function () {
+      persistSnapshot();
+      game.pauseClock();
+    });
+    OR.lifecycle.on("resume", function () {
+      game.resumeClock();
+    });
   }
   window.addEventListener("pagehide", persistSnapshot);
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) {
+      persistSnapshot();
+      game.pauseClock();
+    } else {
+      game.resumeClock();
+    }
+  });
+
+  // --- Sound unlock + mute toggle ---
+
+  // Browsers keep the AudioContext suspended until a user gesture, so
+  // resume() on the first pointer/key event. once:true tears the listeners
+  // down after the first hit; capture so we see the gesture even when the
+  // canvas handlers stop propagation. The mute preference persists via the
+  // storage bridge under MUTED_KEY (same shape as match3).
+  function initSound() {
+    function unlockAudio() { sound.resume(); }
+    var unlockOpts = { once: true, capture: true };
+    document.addEventListener("pointerdown", unlockAudio, unlockOpts);
+    document.addEventListener("touchstart", unlockAudio, unlockOpts);
+    document.addEventListener("keydown", unlockAudio, unlockOpts);
+
+    var soundToggleEl = document.querySelector(".sound-toggle");
+    function paintSoundToggle() {
+      if (!soundToggleEl) return;
+      var muted = sound.isMuted();
+      soundToggleEl.textContent = muted ? "🔇" : "🔊";
+      soundToggleEl.setAttribute("aria-pressed", muted ? "true" : "false");
+      soundToggleEl.setAttribute("aria-label", muted ? "Unmute sound" : "Mute sound");
+    }
+    // Hydrate the saved preference, then paint. Defaults to unmuted on any
+    // read failure (the safer default for a brand-new player who hasn't
+    // expressed a choice yet).
+    if (OR.storage && OR.storage.get) {
+      OR.storage.get(MUTED_KEY)
+        .then(function (raw) { sound.setMuted(raw === "1"); })
+        .catch(function () {})
+        .then(paintSoundToggle);
+    } else {
+      paintSoundToggle();
+    }
+    if (soundToggleEl) {
+      soundToggleEl.addEventListener("click", function () {
+        // A click is a gesture — make sure the context is live so the
+        // unmute is immediately audible on the very next event.
+        sound.resume();
+        var muted = sound.toggleMute();
+        paintSoundToggle();
+        if (OR.storage && OR.storage.set) {
+          OR.storage.set(MUTED_KEY, muted ? "1" : "0").catch(function () {});
+        }
+      });
+    }
+  }
+
+  // --- Crisp-scale snapping ---
+
+  // The canvas is CSS-scaled to the column width, which generally lands the
+  // pixel art at a fractional device-pixel ratio — nearest-neighbour then
+  // renders art pixels in alternating widths, a subtle wobble in the 1px
+  // card borders. Each art pixel is 2 internal px, so the art is wobble-free
+  // when (cssWidth × dpr) is a multiple of INTERNAL_W / 2. When the column
+  // width is within 8% of such a size, snap down to it; otherwise keep the
+  // full width — a small wobble beats giant side margins (e.g. narrow phones
+  // at 3× would lose ~15% of the board).
+  //
+  // The snap is applied to .board-frame, NOT the canvas: the frame is the
+  // positioning context for the game-message overlay and the Finish button,
+  // so shrinking only the canvas would leave both overhanging the board.
+  // The canvas stays width:100% of the frame; flex centering on
+  // .game-container keeps the narrower frame centred.
+  function snapCanvasWidth() {
+    var frame = canvas.parentElement; // .board-frame
+    if (!frame) return;
+    // Clear any previous snap so clientWidth reports the natural CSS width
+    // (100% of the column, capped by the frame's max-width).
+    frame.style.width = "";
+    var avail = frame.clientWidth;
+    if (!avail) return;
+    var dpr = window.devicePixelRatio || 1;
+    var step = (RendererClass.INTERNAL_W / 2) / dpr;
+    var snapped = Math.floor(avail / step) * step;
+    if (snapped > 0 && avail - snapped <= avail * 0.08) {
+      frame.style.width = snapped + "px";
+    }
+  }
+  window.addEventListener("resize", snapCanvasWidth);
 
   // --- Bootstrap sequence ---
 
@@ -924,6 +1200,8 @@
     OR.whenReady().then(function () {
       return storage.hydrate();
     }).then(function () {
+      initSound();
+      snapCanvasWidth();
       // Restore an in-progress deal if we have one. Daily deals only
       // restore if the seed still matches today — yesterday's deal
       // wouldn't count toward today's streak, so silently discarding it
