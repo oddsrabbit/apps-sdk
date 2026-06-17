@@ -391,15 +391,28 @@ header h1 {
   font-variant-numeric: tabular-nums;
 }
 
-/* Empty (0%) buckets recede — light track + muted label — so populated bars
-   carry the eye. Placed before .hist-bar-current so the green still wins for
-   the viewer's own bar (a bucket the viewer is in is never empty anyway). */
-.hist-bar-empty .hist-fill {
-  background: var(--border);
-  color: var(--muted);
+.hist-bar-current .hist-fill { background: var(--green); }
+
+/* Headline banner above the community distribution — ties to the green "You"
+   bar so the viewer's standing reads at a glance. */
+.dist-headline {
+  margin: 0;
+  padding: 9px 12px;
+  background: color-mix(in srgb, var(--green) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--green) 35%, transparent);
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  text-align: center;
 }
 
-.hist-bar-current .hist-fill { background: var(--green); }
+.dist-headline strong {
+  color: var(--green);
+  font-size: 16px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
 
 /* "You" marker beside the viewer's own bar. */
 .hist-you {

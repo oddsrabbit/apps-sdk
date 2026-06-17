@@ -509,7 +509,6 @@ function renderCommunityDistribution(
   // The total === 0 check below handles the all-empty case separately.
   const counts = DISTRIBUTION_BUCKETS.map((b) => community.buckets[b] ?? 0);
   const total = counts.reduce((a, b) => a + b, 0);
-  const max = Math.max(1, ...counts);
 
   // Empty state. Without this, a puzzle with no recorded plays renders as
   // 7 bars labelled "0%" each, which reads as "literally nobody scored" —
@@ -524,20 +523,42 @@ function renderCommunityDistribution(
     return wrap;
   }
 
+  // Headline: "you did better than X% of players". Buckets are ordered
+  // best→worst, so everyone in a later bucket (more guesses, or didn't solve)
+  // finished behind the viewer. Shown only when the viewer actually won and
+  // beat part of the field — beating nobody (0%) or not solving the puzzle
+  // gets no banner rather than a deflating one.
+  if (userBucket !== null && userBucket !== 'lost') {
+    const userIndex = DISTRIBUTION_BUCKETS.indexOf(userBucket);
+    let worse = 0;
+    for (let i = userIndex + 1; i < counts.length; i++) worse += counts[i] ?? 0;
+    const beatPct = Math.round((worse / total) * 100);
+    if (beatPct > 0) {
+      const headline = document.createElement('p');
+      headline.className = 'dist-headline';
+      const strong = document.createElement('strong');
+      strong.textContent = `${beatPct}%`;
+      headline.append('You did better than ', strong, ' of players');
+      wrap.appendChild(headline);
+    }
+  }
+
+  // Only chart buckets that actually have plays. Empty "0%" rows are noise —
+  // and the viewer's own bucket always holds at least their own play, so the
+  // green "You" bar never gets dropped. max is over populated buckets only.
+  const max = Math.max(1, ...counts);
   const hist = document.createElement('div');
   hist.className = 'histogram community-hist';
   DISTRIBUTION_BUCKETS.forEach((bucket, i) => {
     const count = counts[i] ?? 0;
-    const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+    if (count === 0) return;
 
+    const pct = Math.round((count / total) * 100);
     const isCurrent = userBucket !== null && bucket === userBucket;
 
     const bar = document.createElement('div');
     bar.className = 'hist-bar';
     if (isCurrent) bar.classList.add('hist-bar-current');
-    // Empty buckets recede so the populated bars (and the green "you" bar)
-    // read as the signal, not the 0% chips.
-    if (count === 0) bar.classList.add('hist-bar-empty');
 
     const label = document.createElement('span');
     label.className = 'hist-label';
