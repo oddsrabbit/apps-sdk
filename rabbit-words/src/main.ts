@@ -530,9 +530,14 @@ function renderCommunityDistribution(
     const count = counts[i] ?? 0;
     const pct = total > 0 ? Math.round((count / total) * 100) : 0;
 
+    const isCurrent = userBucket !== null && bucket === userBucket;
+
     const bar = document.createElement('div');
     bar.className = 'hist-bar';
-    if (userBucket && bucket === userBucket) bar.classList.add('hist-bar-current');
+    if (isCurrent) bar.classList.add('hist-bar-current');
+    // Empty buckets recede so the populated bars (and the green "you" bar)
+    // read as the signal, not the 0% chips.
+    if (count === 0) bar.classList.add('hist-bar-empty');
 
     const label = document.createElement('span');
     label.className = 'hist-label';
@@ -547,6 +552,16 @@ function renderCommunityDistribution(
 
     bar.appendChild(label);
     bar.appendChild(fill);
+
+    // "You" marker to the right of the viewer's own bar — green text removes
+    // any "is green good or just me?" ambiguity.
+    if (isCurrent) {
+      const you = document.createElement('span');
+      you.className = 'hist-you';
+      you.textContent = 'You';
+      bar.appendChild(you);
+    }
+
     hist.appendChild(bar);
   });
   wrap.appendChild(hist);
@@ -1383,23 +1398,8 @@ async function showLeaderboardModal(puzzleIndex: number): Promise<void> {
   const modal = document.createElement('div');
   modal.className = 'modal leaderboard-modal';
 
-  // Close X in the top-right corner (standard modal placement). Absolute
-  // position relative to .leaderboard-modal; the title row below has a
-  // margin-top that clears the X's vertical band so the next-day chevron
-  // doesn't collide with it. SVG glyph (same style as the chevrons) instead
-  // of the &times; entity — system-ui renders × visually off-centre inside
-  // a fixed-height circle.
-  const closeBtn = document.createElement('button');
-  closeBtn.type = 'button';
-  closeBtn.className = 'modal-x leaderboard-modal-x';
-  closeBtn.setAttribute('aria-label', 'Close');
-  closeBtn.dataset.action = 'close';
-  closeBtn.innerHTML =
-    '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-    '<line x1="6" y1="6" x2="18" y2="18"/>' +
-    '<line x1="18" y1="6" x2="6" y2="18"/>' +
-    '</svg>';
-  modal.appendChild(closeBtn);
+  // No close X — the modal dismisses via backdrop tap, the Escape key, or the
+  // "Play today's puzzle" button below, so a dedicated X is redundant.
 
   const titleRow = document.createElement('div');
   titleRow.className = 'leaderboard-title-row';
@@ -1466,9 +1466,15 @@ async function showLeaderboardModal(puzzleIndex: number): Promise<void> {
 
     if (myToken !== requestToken) return;
 
+    // Highlight the viewer's own bucket in the distribution. Their result for
+    // this round comes from the friends payload (the self row), so it works for
+    // any past puzzle, not just today's locally-stored game.
+    const self = friends.find((f) => f.isSelf);
+    const userBucket = self ? bucketForScore(self.score) : null;
+
     body.innerHTML = '';
     body.appendChild(
-      renderCommunityDistribution(community, null, 'How everyone did')
+      renderCommunityDistribution(community, userBucket, 'How everyone did')
     );
     body.appendChild(renderFriendsPanel(friends));
   };

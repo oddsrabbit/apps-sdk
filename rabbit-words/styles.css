@@ -391,7 +391,24 @@ header h1 {
   font-variant-numeric: tabular-nums;
 }
 
+/* Empty (0%) buckets recede — light track + muted label — so populated bars
+   carry the eye. Placed before .hist-bar-current so the green still wins for
+   the viewer's own bar (a bucket the viewer is in is never empty anyway). */
+.hist-bar-empty .hist-fill {
+  background: var(--border);
+  color: var(--muted);
+}
+
 .hist-bar-current .hist-fill { background: var(--green); }
+
+/* "You" marker beside the viewer's own bar. */
+.hist-you {
+  font: 700 11px system-ui;
+  color: var(--green);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
 
 /* Community / friends panels — share the .hist-* primitives so labels and
    bar geometry stay consistent with the personal distribution. */
@@ -620,9 +637,9 @@ header h1 {
   display: flex;
   align-items: center;
   gap: 8px;
-  /* Pushes the row below the absolute-positioned close X so the next-day
-     chevron at the row's right end doesn't visually overlap the corner X. */
-  margin-top: 20px;
+  /* Small top inset for breathing room; the larger gap that used to clear the
+     corner close X is no longer needed now that the X is gone. */
+  margin-top: 4px;
 }
 
 .leaderboard-title {
@@ -654,23 +671,6 @@ header h1 {
 .leaderboard-nav-btn[disabled] {
   opacity: 0.3;
   cursor: not-allowed;
-}
-
-/* Leaderboard close X — absolute corner, just slightly inset from the
-   modal edge for breathing room. Flex centering on the SVG glyph because
-   the base .modal-x rule sized for an HTML &times; entity (no longer used
-   here — we draw an SVG that needs explicit centering). Chained selector
-   for higher specificity since .modal-x is defined later in the file. */
-.modal-x.leaderboard-modal-x {
-  top: 14px;
-  right: 14px;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
 }
 
 .leaderboard-modal-subtitle {
