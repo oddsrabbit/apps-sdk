@@ -48,7 +48,7 @@ const DISTRIBUTION_BUCKETS = [
 ] as const;
 type DistributionBucket = typeof DISTRIBUTION_BUCKETS[number];
 
-// `null` per bucket = the aggregate API returned no recorded value for it
+// `null` per bucket = the distribution read returned no recorded value for it
 // (unplayed puzzle, network failure, etc.). Render as zero so the histogram
 // has a stable visual; the "Not enough plays yet" empty state handles the
 // case where every bucket comes back null.
@@ -62,6 +62,9 @@ let currentState: State;
 let currentStats: Stats = DEFAULT_STATS;
 let currentStreak: Streak = DEFAULT_STREAK;
 let currentFriends: FriendScore[] | undefined;
+// Today's community distribution, loaded once the game ends. null until then (or
+// if the bridge read fails) — the end screen simply omits the section.
+let currentCommunity: CommunityData | null = null;
 let currentInput = '';
 
 // One-shot animation flags. Set when an event happens (submit, keystroke);
@@ -111,26 +114,68 @@ function buildShareGrid(state: State): string {
     .join('\n');
 }
 
-function freshState(): State {
+function freshState(answerOverride?: string | null): State {
   const index = todayPuzzleIndex();
   return {
     puzzleIndex: index,
-    answer: pickAnswer(index),
+    // Prefer the server-authored answer; fall back to the bundled pool when the
+    // host has no content endpoint, the round isn't published yet, or we're
+    // offline. Once chosen it's persisted in state, so the game is stable for
+    // the rest of the round regardless of which source produced it.
+    answer: answerOverride ?? pickAnswer(index),
     guesses: [],
     status: 'in_progress',
   };
 }
 
-async function loadState(): Promise<State> {
+/**
+ * Fetch today's answer from the server (bridge `content.daily`). Returns null —
+ * so the caller uses the bundled pool — when the host doesn't implement the
+ * method, the round isn't available yet, or the payload is malformed. Guests
+ * included: content is public, so we don't gate on `user`.
+ */
+async function loadDailyAnswer(puzzleIndex: number): Promise<string | null> {
+  const daily = await window.OddsRabbit.content.daily({
+    roundKey: `puzzle-${puzzleIndex}`,
+  });
+  const answer = daily?.content?.['answer'];
+  return typeof answer === 'string' && /^[A-Z]{5}$/.test(answer) ? answer : null;
+}
+
+/** Returns true when `s` is a structurally valid State. Guards against a
+ * corrupt or legacy-schema `today` blob crashing render() — fall back to a
+ * fresh game instead of trusting `JSON.parse(...) as State`. */
+function isValidState(s: unknown): s is State {
+  if (!s || typeof s !== 'object') return false;
+  const v = s as Partial<State>;
+  return (
+    typeof v.puzzleIndex === 'number' &&
+    typeof v.answer === 'string' &&
+    Array.isArray(v.guesses) &&
+    (v.status === 'in_progress' || v.status === 'won' || v.status === 'lost')
+  );
+}
+
+/** Read today's persisted game, or null when there's none / it's stale / corrupt. */
+async function readStoredState(): Promise<State | null> {
   try {
     const raw = await window.OddsRabbit.storage.get('today');
-    if (!raw) return freshState();
-    const parsed = JSON.parse(raw) as State;
-    if (parsed.puzzleIndex !== todayPuzzleIndex()) return freshState();
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isValidState(parsed)) return null;
+    if (parsed.puzzleIndex !== todayPuzzleIndex()) return null;
     return parsed;
   } catch {
-    return freshState();
+    return null;
   }
+}
+
+async function loadState(): Promise<State> {
+  // A game already in progress keeps its persisted answer — only a brand-new
+  // round needs the server fetch, so we don't pay the round-trip on every load.
+  const stored = await readStoredState();
+  if (stored) return stored;
+  return freshState(await loadDailyAnswer(todayPuzzleIndex()));
 }
 
 async function readJson<T>(key: string, fallback: T): Promise<T> {
@@ -220,7 +265,13 @@ function render(): void {
     root.appendChild(renderKeyboard(currentState));
   } else {
     root.appendChild(
-      renderEndGame(currentState, currentStats, currentStreak, currentFriends)
+      renderEndGame(
+        currentState,
+        currentStats,
+        currentStreak,
+        currentFriends,
+        currentCommunity
+      )
     );
   }
   root.appendChild(renderResetTime());
@@ -246,10 +297,8 @@ function renderPuzzleHeader(state: State): HTMLElement {
   actions.className = 'puzzle-header-actions';
 
   // Yesterday's leaderboard — hidden on day 0 since there's nothing to show.
-  // Today's results are intentionally NOT exposed here: mid-day distribution
-  // shifts as the day's plays roll in, and a user checking twice would see
-  // different numbers — which invites "wait, that doesn't match my push
-  // notification" confusion. The end-of-round screen shows the final shape.
+  // This header button is for *past* settled rounds only; today's distribution
+  // appears on the end-of-round screen once the player finishes.
   if (state.puzzleIndex > 0) {
     const leaderboard = document.createElement('button');
     leaderboard.type = 'button';
@@ -410,7 +459,8 @@ function renderEndGame(
   state: State,
   stats: Stats,
   streak: Streak,
-  friends?: FriendScore[]
+  friends?: FriendScore[],
+  community?: CommunityData | null
 ): HTMLElement {
   const wrap = document.createElement('div');
   wrap.className = 'end-game';
@@ -425,10 +475,17 @@ function renderEndGame(
   }
   wrap.appendChild(verdict);
 
+  // Today's community distribution + "you did better than X%" headline. Omitted
+  // until the bridge read lands (community === null), since it shifts as the
+  // day's plays come in. Buckets with no plays fall back to the empty state.
+  if (community) {
+    wrap.appendChild(
+      renderCommunityDistribution(community, bucketForScore(scoreForState(state)))
+    );
+  }
+
   // Friends panel — the social heart. Always render (handles anon + empty
   // states internally) so signed-out users still see the sign-in CTA.
-  // Today's community distribution lives in the leaderboard modal for past
-  // rounds only; mid-day shape is too noisy to show inline.
   wrap.appendChild(renderFriendsPanel(friends, viewerResultFromState(state)));
 
   // Personal lifetime stats below — less urgent than the round-specific
@@ -763,14 +820,22 @@ function formatTimeUntilReset(): string {
   return `Next puzzle in ${minutes}m`;
 }
 
+// Tracks the live countdown ticker so each render() can clear the previous one.
+// This matters here because the board re-renders on every keystroke — without
+// it, active typing would leave one pending interval per letter (each living up
+// to 60s until its detached element is noticed).
+let resetTimeInterval: number | undefined;
+
 function renderResetTime(): HTMLElement {
   const el = document.createElement('p');
   el.className = 'reset-time';
   el.textContent = formatTimeUntilReset();
 
-  const interval = window.setInterval(() => {
+  if (resetTimeInterval !== undefined) window.clearInterval(resetTimeInterval);
+  resetTimeInterval = window.setInterval(() => {
     if (!el.isConnected) {
-      window.clearInterval(interval);
+      window.clearInterval(resetTimeInterval);
+      resetTimeInterval = undefined;
       return;
     }
     el.textContent = formatTimeUntilReset();
@@ -832,6 +897,9 @@ function showInstructions(onClose?: () => void): void {
   document.body.appendChild(backdrop);
 
   const close = (): void => {
+    // Remove the key listener here (not only on the Escape path) so a button or
+    // backdrop dismissal can't leave it attached and fire onClose a second time.
+    document.removeEventListener('keydown', onKey);
     backdrop.remove();
     if (onClose) onClose();
   };
@@ -841,10 +909,7 @@ function showInstructions(onClose?: () => void): void {
   });
   // ESC to dismiss
   const onKey = (e: KeyboardEvent): void => {
-    if (e.key === 'Escape') {
-      close();
-      document.removeEventListener('keydown', onKey);
-    }
+    if (e.key === 'Escape') close();
   };
   document.addEventListener('keydown', onKey);
 }
@@ -927,10 +992,10 @@ async function submitGuess(state: State, raw: string): Promise<void> {
   await writeJson('today', state);
 
   if (state.status !== 'in_progress') {
-    // Submit the score first so the subsequent friends read sees this
-    // player's row. The community distribution is derived from these same
-    // score rows (see loadCommunityData), so there's no separate aggregate
-    // write to keep in sync.
+    // Persist stats/streak and submit the score together; the await barrier
+    // guarantees the score row lands before the friends + distribution reads
+    // below, which are both derived from that same row (see loadCommunityData),
+    // so there's no separate aggregate write to keep in sync.
     const [updatedStats, updatedStreak] = await Promise.all([
       finalizeStats(state),
       finalizeStreak(state),
@@ -940,7 +1005,12 @@ async function submitGuess(state: State, raw: string): Promise<void> {
     currentStreak = updatedStreak;
     void window.OddsRabbit.actions.haptic(state.status === 'won' ? 'success' : 'error');
 
-    currentFriends = await loadFriends(state.puzzleIndex);
+    const [friends, community] = await Promise.all([
+      loadFriends(state.puzzleIndex),
+      loadCommunityData(state.puzzleIndex),
+    ]);
+    currentFriends = friends;
+    currentCommunity = community;
   }
 
   render();
@@ -980,12 +1050,21 @@ async function submitScoreToServer(state: State): Promise<void> {
   try {
     await window.OddsRabbit.scores.submit({
       roundKey: `puzzle-${state.puzzleIndex}`,
-      score: won ? ROW_COUNT + 1 - guessCount : 0,
+      score: scoreForState(state),
       metadata: { won, guessCount },
     });
   } catch {
     /* best-effort — see jsdoc above */
   }
+}
+
+/**
+ * Map a finished game to a leaderboard score (higher = better), the inverse of
+ * `bucketForScore`. A win scores `ROW_COUNT + 1 - guessCount` (1-guess = 6,
+ * 6-guess = 1); a loss (or unfinished game) scores 0.
+ */
+function scoreForState(state: State): number {
+  return state.status === 'won' ? ROW_COUNT + 1 - state.guesses.length : 0;
 }
 
 /**
@@ -1293,14 +1372,18 @@ async function buildShareImage(state: State): Promise<Blob> {
 
   // Tile grid — only render guessed rows (matches emoji-text convention).
   const rows = state.guesses.length;
-  const TILE = 130;
   const GAP = 14;
+  const subtitleBottom = 290;
+  const footerTop = SIZE - 140;
+  // Shrink tiles so a full 6-guess grid fits between the subtitle and footer
+  // instead of running underneath the footer text (6×130 + gaps overflows the
+  // available band otherwise).
+  const availH = footerTop - subtitleBottom;
+  const TILE = Math.min(130, Math.max(0, (availH - (rows - 1) * GAP) / Math.max(rows, 1)));
   const gridW = COL_COUNT * TILE + (COL_COUNT - 1) * GAP;
   const gridH = rows * TILE + (rows - 1) * GAP;
   const startX = (SIZE - gridW) / 2;
-  const subtitleBottom = 290;
-  const footerTop = SIZE - 140;
-  const startY = subtitleBottom + Math.max(0, (footerTop - subtitleBottom - gridH) / 2);
+  const startY = subtitleBottom + Math.max(0, (availH - gridH) / 2);
 
   const RADIUS = 10;
   for (let row = 0; row < rows; row++) {
@@ -1561,7 +1644,12 @@ async function bootstrap(): Promise<void> {
     // expected here and ignored inside submitScoreToServer.
     await submitScoreToServer(state);
 
-    currentFriends = await loadFriends(state.puzzleIndex);
+    const [friends, community] = await Promise.all([
+      loadFriends(state.puzzleIndex),
+      loadCommunityData(state.puzzleIndex),
+    ]);
+    currentFriends = friends;
+    currentCommunity = community;
   }
 
   window.OddsRabbit.lifecycle.on('pause', () => {

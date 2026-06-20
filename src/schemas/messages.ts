@@ -90,6 +90,18 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
       roundKey: RoundKey,
     }),
   }),
+  // Server-authored daily content for a round (e.g. today's puzzle / answer).
+  // Public read — guests can fetch it without auth. The server date-gates by
+  // round, so a host can only ever serve the current or past rounds, never a
+  // future one. The `content` shape is app-specific; the SDK forwards it as an
+  // opaque object and each app validates its own fields.
+  z.object({
+    type: z.literal('content.daily'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      roundKey: RoundKey,
+    }),
+  }),
   z.object({
     type: z.literal('actions.share'),
     correlationId: CorrelationId,
@@ -192,6 +204,18 @@ export const ScoreDistributionEntrySchema = z.object({
 });
 
 export type ScoreDistributionEntry = z.infer<typeof ScoreDistributionEntrySchema>;
+
+// Result of `content.daily`: the server-authored content for one round. `content`
+// is an opaque, app-specific object (e.g. rabbit-words: `{ answer }`) — the
+// platform does not interpret it. Apps validate their own
+// shape after the bridge returns. A round that isn't available yet (future
+// `available_at`) resolves to `null` rather than this object.
+export const DailyContentSchema = z.object({
+  roundKey: z.string().min(1),
+  content: z.record(z.unknown()),
+});
+
+export type DailyContent = z.infer<typeof DailyContentSchema>;
 
 export const BridgeInitSchema = z.object({
   type: z.literal('init'),

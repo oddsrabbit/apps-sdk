@@ -16,9 +16,14 @@
 //     looked up the answer list anywhere online). The shuffle is reproducible
 //     from this file's array, so every player gets the same daily word.
 //
-// Spoiler caveat: this file is shipped to the client. Anyone with browser
-// devtools can read every future answer. Closing that gap requires a
-// server-side daily-answer endpoint and is deferred to a future iteration.
+// Source-of-truth note: the daily answer now comes from the server via the
+// `content.daily` bridge method. This `ANSWERS` pool is the
+// OFFLINE / UNSUPPORTED-HOST FALLBACK — `pickAnswer(index)` is used only when the
+// server fetch fails or the round isn't published. The full spoiler gap (this
+// file is shipped to the client, so devtools can still read it) is only closed in
+// Phase 2, once the mobile host implements `content.daily` and this pool can be
+// removed. The NON_ANSWER_GUESSES validation dictionary is NOT a spoiler (it never
+// contains the answer) and stays bundled regardless.
 //
 // Counts: 2309 answers + 10638 non-answer guesses
 // = 12947 total valid guesses.

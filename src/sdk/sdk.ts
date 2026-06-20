@@ -1,16 +1,18 @@
 import {
   FriendScoreSchema,
   ScoreDistributionEntrySchema,
+  DailyContentSchema,
   type BridgeUser,
   type AppColorScheme,
   type AppHapticType,
   type AppLifecycleEvent,
   type FriendScore,
   type ScoreDistributionEntry,
+  type DailyContent,
 } from '../schemas/messages';
 import { BridgeTransport, type LifecycleHandler } from './transport';
 
-export type { FriendScore, ScoreDistributionEntry } from '../schemas/messages';
+export type { FriendScore, ScoreDistributionEntry, DailyContent } from '../schemas/messages';
 
 export interface ScoreSubmitPayload {
   roundKey: string;
@@ -20,6 +22,11 @@ export interface ScoreSubmitPayload {
 
 const FriendScoresArraySchema = FriendScoreSchema.array();
 const ScoreDistributionArraySchema = ScoreDistributionEntrySchema.array();
+
+// Boot-path cap for content.daily: if the host never answers (silent drop of an
+// unknown message type — the transport has no global timeout), resolve null so
+// the app can fall back to bundled content instead of hanging.
+const CONTENT_DAILY_TIMEOUT_MS = 4000;
 
 export interface OddsRabbitGlobal {
   readonly user: BridgeUser | null;
@@ -99,6 +106,21 @@ export interface OddsRabbitGlobal {
      * disagree with the recorded results.
      */
     distribution(payload: { roundKey: string }): Promise<ScoreDistributionEntry[]>;
+  };
+
+  readonly content: {
+    /**
+     * Fetch the server-authored content for a round (e.g. today's puzzle or
+     * answer). Public — works for signed-out viewers, since content isn't
+     * user-scoped. The server date-gates by round: a round whose `available_at`
+     * is still in the future resolves to `null`, so the client can never read a
+     * future answer. Also resolves `null` on transport failure or an
+     * unrecognized shape — callers should fall back to bundled content.
+     *
+     * The returned `content` is opaque and app-specific; validate its fields
+     * before use.
+     */
+    daily(payload: { roundKey: string }): Promise<DailyContent | null>;
   };
 
   readonly actions: {
@@ -195,6 +217,28 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
           const parsed = ScoreDistributionArraySchema.safeParse(result);
           return parsed.success ? parsed.data : [];
         }),
+  };
+
+  readonly content = {
+    // Validate the inbound shape — a missing/old host handler or a malformed
+    // response resolves to null so the app falls back to bundled content rather
+    // than rendering a broken board. A host that drops the message silently
+    // (no response at all — the transport has no global timeout) would hang the
+    // promise forever; since this sits on the fresh-game boot path, race it
+    // against a timeout so boot can always fall back to bundled content.
+    daily: (payload: { roundKey: string }): Promise<DailyContent | null> => {
+      const fetched = this.transport
+        .request<unknown>('content.daily', payload)
+        .then((result) => {
+          const parsed = DailyContentSchema.safeParse(result);
+          return parsed.success ? parsed.data : null;
+        })
+        .catch(() => null);
+      const timeout = new Promise<null>((resolve) => {
+        setTimeout(() => resolve(null), CONTENT_DAILY_TIMEOUT_MS);
+      });
+      return Promise.race([fetched, timeout]);
+    },
   };
 
   readonly actions = {

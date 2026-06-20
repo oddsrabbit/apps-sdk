@@ -1,8 +1,10 @@
 {
   "extends": "../tsconfig.json",
   "compilerOptions": {
-    "rootDir": "./src",
-    "outDir": "./dist",
+    // Widen rootDir to the SDK root: this game imports from ../../src, which
+    // sits outside the parent tsconfig's rootDir (./src) and would otherwise
+    // trip TS6059. Under noEmit it only affects that source-tree check.
+    "rootDir": "..",
     "noEmit": true,
     "declaration": false,
     "declarationMap": false
