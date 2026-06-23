@@ -4,11 +4,6 @@
 
 (function () {
   var LANDING_URL = "https://www.oddsrabbit.com/games/snake/";
-  // Floor below which the community note is suppressed — at sub-50 scores
-  // the player is still learning the controls and "you reached the 0-49
-  // range" reads as a sneer, not a leaderboard.
-  var COMMUNITY_MIN_SCORE = 50;
-  var WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
   // Touch-vs-keyboard branch for the idle overlay text. `maxTouchPoints` is
   // the modern signal (handles desktops with touchscreens correctly); the
@@ -29,24 +24,6 @@
   var storage = new SnakeStorageManager();
 
   function noop() {}
-
-  // Score → band. Bands are coarse on purpose — finer bands fragment the
-  // population and push individual buckets below the k=5 anonymity floor,
-  // hiding the community line for everyone.
-  function scoreBand(score) {
-    if (score < 50) return "0-49";
-    if (score < 100) return "50-99";
-    if (score < 200) return "100-199";
-    if (score < 500) return "200-499";
-    return "500+";
-  }
-
-  // 7-day rolling bucket. Aligned to UTC epoch (not local Monday) so all
-  // clients agree on which "week" a play belongs to without having to round-
-  // trip through the host. Resets weekly so old data doesn't dominate.
-  function currentWeek() {
-    return Math.floor(Date.now() / WEEK_MS);
-  }
 
   function showFatalError(message) {
     if (document.querySelector(".bootstrap-error")) return;
@@ -93,16 +70,14 @@
   // having to manage button visibility imperatively.
   var overlayEl = document.querySelector(".game-message");
   var overlayTextEl = document.querySelector(".game-message-text");
-  var communityNoteEl = document.querySelector(".community-note");
   var newBestNoteEl = document.querySelector(".new-best-note");
   var shareButtonEl = document.querySelector(".share-button");
   function setOverlay(state) {
     overlayEl.setAttribute("data-state", state);
-    // Community note + new-best banner only apply to game-over; clear both
-    // when leaving that state so a restarted game doesn't carry stale text
-    // into the next idle/over cycle.
+    // The new-best banner only applies to game-over; clear it when leaving
+    // that state so a restarted game doesn't carry stale text into the next
+    // idle/over cycle.
     if (state !== "over") {
-      communityNoteEl.textContent = "";
       newBestNoteEl.textContent = "";
     }
     if (state === "playing") {
@@ -113,33 +88,6 @@
     if (state === "idle") overlayTextEl.textContent = IDLE_TEXT;
     else if (state === "paused") overlayTextEl.textContent = "PAUSED";
     else if (state === "over") overlayTextEl.textContent = "GAME OVER";
-  }
-
-  // Decorates the game-over overlay with a community-context line. Async
-  // because aggregate.count is a bridge round-trip; if the player restarts
-  // before it resolves we drop the result (gated on the overlay still
-  // showing 'over'). All failures are silent — the community note is a
-  // nice-to-have, not load-bearing.
-  function fetchCommunityNote(score) {
-    if (score < COMMUNITY_MIN_SCORE) return;
-    if (!OR.aggregate || !OR.aggregate.count) return;
-    var band = scoreBand(score);
-    var key = "weekly-score-" + currentWeek();
-    try {
-      OR.aggregate
-        .count(key, "band-" + band)
-        .then(function (count) {
-          if (overlayEl.getAttribute("data-state") !== "over") return;
-          if (count == null) {
-            communityNoteEl.textContent =
-              "Community stats unlock once a few more players finish a run.";
-          } else {
-            communityNoteEl.textContent =
-              count.toLocaleString() + " players reached the " + band + " range this week.";
-          }
-        })
-        .catch(noop);
-    } catch (_) {}
   }
 
   // -------- Share modal --------
@@ -352,10 +300,6 @@
               // *feels* the achievement.
               try { OR.actions.haptic("success").catch(noop); } catch (_) {}
             }
-            // Aggregate-driven community line on the game-over overlay.
-            // Fire-and-decorate: don't await before showing GAME OVER (the
-            // overlay flips synchronously via onState above).
-            fetchCommunityNote(info.score);
           },
         },
       });

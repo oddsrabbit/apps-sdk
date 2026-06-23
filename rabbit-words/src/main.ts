@@ -3,7 +3,7 @@ import type {
   OddsRabbitGlobal,
   ScoreDistributionEntry,
 } from '../../src/sdk/sdk';
-import { ANSWERS, isValidGuess } from './words';
+import { isValidGuess } from './words';
 
 declare global {
   interface Window {
@@ -80,10 +80,6 @@ function todayPuzzleIndex(): number {
   return Math.floor((Date.now() - EPOCH_MS) / DAY_MS);
 }
 
-function pickAnswer(index: number): string {
-  return ANSWERS[index % ANSWERS.length] ?? ANSWERS[0]!;
-}
-
 function scoreGuess(guess: string, answer: string): TileColor[] {
   const result: TileColor[] = Array.from({ length: COL_COUNT }, () => 'gray');
   const remaining = answer.split('');
@@ -114,25 +110,24 @@ function buildShareGrid(state: State): string {
     .join('\n');
 }
 
-function freshState(answerOverride?: string | null): State {
-  const index = todayPuzzleIndex();
+function freshState(answer: string): State {
   return {
-    puzzleIndex: index,
-    // Prefer the server-authored answer; fall back to the bundled pool when the
-    // host has no content endpoint, the round isn't published yet, or we're
-    // offline. Once chosen it's persisted in state, so the game is stable for
-    // the rest of the round regardless of which source produced it.
-    answer: answerOverride ?? pickAnswer(index),
+    puzzleIndex: todayPuzzleIndex(),
+    // The answer comes only from the server (`content.daily`); it's persisted in
+    // state so the game is stable for the rest of the round. No client fallback —
+    // the answer pool is no longer bundled, so an unavailable round yields no
+    // game rather than a spoiler-readable local answer.
+    answer,
     guesses: [],
     status: 'in_progress',
   };
 }
 
 /**
- * Fetch today's answer from the server (bridge `content.daily`). Returns null —
- * so the caller uses the bundled pool — when the host doesn't implement the
- * method, the round isn't available yet, or the payload is malformed. Guests
- * included: content is public, so we don't gate on `user`.
+ * Fetch today's answer from the server (bridge `content.daily`). Returns null
+ * when the host doesn't implement the method, the round isn't published yet, or
+ * the payload is malformed — in which case there is no playable game (the answer
+ * is server-only). Guests included: content is public, so we don't gate on `user`.
  */
 async function loadDailyAnswer(puzzleIndex: number): Promise<string | null> {
   const daily = await window.OddsRabbit.content.daily({
@@ -170,12 +165,19 @@ async function readStoredState(): Promise<State | null> {
   }
 }
 
-async function loadState(): Promise<State> {
+/**
+ * Today's game, or null when it can't be played — no stored game AND the server
+ * has no published answer for today (old/unsupported host, unseeded round,
+ * offline). Null drives the "unavailable" screen; there's no local answer to
+ * fall back to.
+ */
+async function loadState(): Promise<State | null> {
   // A game already in progress keeps its persisted answer — only a brand-new
   // round needs the server fetch, so we don't pay the round-trip on every load.
   const stored = await readStoredState();
   if (stored) return stored;
-  return freshState(await loadDailyAnswer(todayPuzzleIndex()));
+  const answer = await loadDailyAnswer(todayPuzzleIndex());
+  return answer ? freshState(answer) : null;
 }
 
 async function readJson<T>(key: string, fallback: T): Promise<T> {
@@ -1624,6 +1626,23 @@ async function showLeaderboardModal(puzzleIndex: number): Promise<void> {
 
 // ---------- Bootstrap ----------
 
+/** Holding screen when today's server answer isn't available (no local fallback). */
+function renderUnavailable(): void {
+  root.innerHTML = '';
+  const wrap = document.createElement('div');
+  wrap.className = 'end-game';
+  wrap.setAttribute('role', 'status');
+  const verdict = document.createElement('p');
+  verdict.className = 'verdict';
+  verdict.textContent = "Today's puzzle isn't available yet.";
+  const sub = document.createElement('p');
+  sub.textContent = 'Check back in a moment, or make sure you have a connection.';
+  wrap.appendChild(verdict);
+  wrap.appendChild(sub);
+  wrap.appendChild(renderResetTime());
+  root.appendChild(wrap);
+}
+
 async function bootstrap(): Promise<void> {
   await window.OddsRabbit.whenReady();
 
@@ -1634,9 +1653,19 @@ async function bootstrap(): Promise<void> {
     readJson<boolean>('seen_intro', false),
   ]);
 
-  currentState = state;
   currentStats = stats;
   currentStreak = streak;
+
+  // No playable game: the answer is server-only and today's isn't available
+  // (unsupported host, unseeded round, or offline). Show a holding screen rather
+  // than a spoiler-readable local fallback.
+  if (!state) {
+    renderUnavailable();
+    window.OddsRabbit.ready();
+    return;
+  }
+
+  currentState = state;
 
   if (state.status !== 'in_progress') {
     // Retry score submission in case the original game-over submit failed

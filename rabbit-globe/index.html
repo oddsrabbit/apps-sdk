@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>RabbitWords</title>
+    <title>RabbitGlobe</title>
     <script>
       // Apply the host-passed colorScheme before the stylesheet loads so the
       // first paint is already in the correct theme — no flash of the wrong
@@ -16,13 +16,15 @@
         }
       })();
     </script>
+    <!-- Leaflet's stylesheet, copied from the bundled package at build time. -->
+    <link rel="stylesheet" href="./leaflet.css?v=__BUILD_ID__" />
     <link rel="stylesheet" href="./styles.css?v=__BUILD_ID__" />
     <script src="../sdk-v1.js?v=__SDK_VERSION__"></script>
   </head>
   <body>
     <header>
-      <h1>RabbitWords</h1>
-      <p class="tagline">Guess the 5-letter word in 6 tries.</p>
+      <h1>RabbitGlobe</h1>
+      <p class="tagline">Guess where the photo was taken. Three rounds, one pin each.</p>
     </header>
     <main id="root" aria-live="polite"></main>
     <script type="module" src="./main.js?v=__BUILD_ID__"></script>

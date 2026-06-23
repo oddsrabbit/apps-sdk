@@ -11,7 +11,7 @@ A daily 5-letter word puzzle in the Wordle tradition. Beyond being a real game, 
 - `scores.submit` — one result per `(round, user)`; `score = ROW_COUNT + 1 - guessCount` for a win, `0` for a loss.
 - `scores.friends` — the end-of-round + leaderboard "Friends" comparison panel.
 - `scores.distribution` — community histogram, derived from the scores table (the source of truth; no separate `aggregate` write).
-- `content.daily` — fetch the day's answer (`{ answer }`) from the server, date-gated so future answers aren't shipped to the client; the bundled `ANSWERS` pool is the offline/unsupported-host fallback.
+- `content.daily` — fetch the day's answer (`{ answer }`) from the server, date-gated so future answers aren't shipped to the client. The answer is **server-only**: there's no bundled answer pool, so an unavailable round shows a holding screen rather than a spoiler-readable local answer. (`words.ts` keeps only the merged, sorted *guess-validation* dictionary — no answer list, no day→answer order.)
 - `actions.share` — emoji result string.
 - `actions.haptic` — tile/win/loss feedback (no-op on web).
 - `actions.requestSignIn` — sign-in CTA in the friends panel for guests.

@@ -17,8 +17,8 @@
 //                      otherwise it restarts at 1. A missed day therefore
 //                      surfaces as a reset on the next win, never sooner.
 //   lastDailyId      — most recent daily seed the player engaged with.
-//   lastDailyWon     — whether they won it (for streak math + aggregate
-//                      dedup so refreshing a won deal doesn't double-count).
+//   lastDailyWon     — whether they won it (for streak math — refreshing a
+//                      won deal doesn't re-increment the streak).
 //   savedGame        — JSON blob of in-progress state (deal + history).
 //                      Cleared on win/loss/new-deal.
 

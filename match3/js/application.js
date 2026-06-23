@@ -5,11 +5,6 @@
 
 (function () {
   var LANDING_URL = "https://www.oddsrabbit.com/games/match3/";
-  // Floor below which the community note is suppressed — at sub-100 scores
-  // the player is just learning the swap mechanic and the leaderboard line
-  // adds noise rather than signal.
-  var COMMUNITY_MIN_SCORE = 100;
-  var WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
   var IS_TOUCH = (typeof navigator !== "undefined" && navigator.maxTouchPoints > 0)
     || ("ontouchstart" in window);
@@ -32,21 +27,6 @@
   var MUTED_KEY = "soundMuted";
 
   function noop() {}
-
-  // Coarse score bands. Same shape as snake's, scaled for the much larger
-  // match-3 score range. Coarse bands keep each bucket densely populated
-  // so the weekly community readout has meaningful counts to compare.
-  function scoreBand(score) {
-    if (score < 200) return "0-199";
-    if (score < 500) return "200-499";
-    if (score < 1000) return "500-999";
-    if (score < 2000) return "1000-1999";
-    return "2000+";
-  }
-
-  function currentWeek() {
-    return Math.floor(Date.now() / WEEK_MS);
-  }
 
   function showFatalError(message) {
     if (document.querySelector(".bootstrap-error")) return;
@@ -198,7 +178,6 @@
   // Overlay -----------------------------------------------------------
   var overlayEl = document.querySelector(".game-message");
   var overlayTextEl = document.querySelector(".game-message-text");
-  var communityNoteEl = document.querySelector(".community-note");
   var newBestNoteEl = document.querySelector(".new-best-note");
   var finalScoreEl = document.querySelector(".final-score");
   var shareButtonEl = document.querySelector(".share-button");
@@ -206,7 +185,6 @@
   function setOverlay(state) {
     overlayEl.setAttribute("data-state", state);
     if (state !== "over") {
-      communityNoteEl.textContent = "";
       newBestNoteEl.textContent = "";
       finalScoreEl.textContent = "";
     }
@@ -222,64 +200,6 @@
     if (state === "idle") overlayTextEl.textContent = IDLE_TEXT;
     else if (state === "paused") overlayTextEl.textContent = "PAUSED";
     else if (state === "over") overlayTextEl.textContent = "TIME'S UP";
-  }
-
-  // Community note ----------------------------------------------------
-  // High-water-mark dedup: each band counts at most once per player per
-  // week. A player who hits "200-499" then later "1000-1999" registers in
-  // both (matches the "reached the X range" wording — they did reach both).
-  // A player who replays in the same band doesn't double-count. We store
-  // the set of already-counted bands as a CSV under "counted-bands-<W>"
-  // because there's no decrement on the aggregate API and band names
-  // happen to contain no commas.
-  function renderCommunityCount(count, band) {
-    if (overlayEl.getAttribute("data-state") !== "over") return;
-    if (count == null) {
-      communityNoteEl.textContent =
-        "Community stats unlock once a few more players finish a run.";
-    } else {
-      communityNoteEl.textContent =
-        count.toLocaleString() + " players reached the " + band + " range this week.";
-    }
-  }
-
-  function fetchCommunityNote(score) {
-    if (score < COMMUNITY_MIN_SCORE) return;
-    if (!OR.aggregate || !OR.aggregate.count) return;
-    var band = scoreBand(score);
-    var week = currentWeek();
-    var aggregateKey = "weekly-score-" + week;
-    var bucket = "band-" + band;
-    var dedupKey = "counted-bands-" + week;
-
-    var storageGet = OR.storage && OR.storage.get
-      ? OR.storage.get(dedupKey).catch(function () { return null; })
-      : Promise.resolve(null);
-
-    storageGet.then(function (raw) {
-      var counted = raw ? String(raw).split(",") : [];
-      var already = counted.indexOf(band) >= 0;
-
-      if (already) {
-        // Already in this band this week — read without bumping. If the
-        // host doesn't expose .read, fall through to a null count (renders
-        // the "unlock once more players finish" copy, which is the safer
-        // failure than re-counting).
-        if (OR.aggregate.read) {
-          return OR.aggregate.read(aggregateKey, bucket).catch(function () { return null; });
-        }
-        return null;
-      }
-
-      // First finish in this band this week: count + persist the new band.
-      counted.push(band);
-      if (OR.storage && OR.storage.set) {
-        OR.storage.set(dedupKey, counted.join(",")).catch(noop);
-      }
-      return OR.aggregate.count(aggregateKey, bucket).catch(function () { return null; });
-    }).then(function (count) {
-      renderCommunityCount(count, band);
-    }).catch(noop);
   }
 
   // -------- Share modal --------
@@ -529,7 +449,6 @@
               sound.newBest();
               try { OR.actions.haptic("success").catch(noop); } catch (_) {}
             }
-            fetchCommunityNote(info.score);
           },
         },
       });

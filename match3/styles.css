@@ -405,20 +405,6 @@ h1.title {
 .game-message[data-state="idle"] .final-score,
 .game-message[data-state="paused"] .final-score { display: none; }
 
-/* Community note (e.g. "12 players reached the 200-499 range this week").
-   Empty by default; populated on game-over once the aggregate call lands. */
-.community-note {
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--accent);
-  opacity: 0.82;
-  margin: 0;
-  max-width: 90%;
-}
-.community-note:empty { display: none; }
-.game-message[data-state="idle"] .community-note,
-.game-message[data-state="paused"] .community-note { display: none; }
-
 .game-message .lower {
   display: flex;
   gap: 10px;

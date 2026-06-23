@@ -25,8 +25,8 @@
   var STATE_PLAYING = "playing";
   var STATE_WON = "won";
 
-  // Deal modes. Daily = today's UTC seed, contributes to streak + community
-  // aggregate. Random = freeplay; results don't affect the streak.
+  // Deal modes. Daily = today's UTC seed, contributes to streak + daily
+  // leaderboard. Random = freeplay; results don't affect the streak.
   var MODE_DAILY = "daily";
   var MODE_RANDOM = "random";
 

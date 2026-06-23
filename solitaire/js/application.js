@@ -36,7 +36,6 @@
   var overlay = document.querySelector(".game-message");
   var overlayText = document.querySelector(".game-message-text");
   var overlaySub = document.querySelector(".game-message-sub");
-  var communityNote = document.querySelector(".community-note");
   var friendsPanelEl = document.querySelector(".friends-panel");
   var startDailyBtn = document.querySelector(".start-daily-button");
   var startRandomBtn = document.querySelector(".start-random-button");
@@ -94,10 +93,6 @@
   function setOverlayText(main, sub) {
     overlayText.textContent = main || "";
     overlaySub.textContent = sub || "";
-  }
-
-  function setCommunityNote(text) {
-    communityNote.textContent = text || "";
   }
 
   // --- Stats chips ---
@@ -217,18 +212,11 @@
     var alreadyWon = game.isDailyWonAlready();
     var mainText = alreadyWon ? "TODAY'S DEAL SOLVED" : "PICK A DEAL";
     setOverlayText(mainText, subParts.join("   ·   "));
-    setCommunityNote("");
     clearFriendsPanel();
     // Daily-button labelling: when we've already solved today, the
     // primary button becomes a replay (won't double-count, won't move
     // the streak). The Random button stays as-is for fresh boards.
     startDailyBtn.textContent = alreadyWon ? "Replay daily" : "Daily deal";
-    // Surface the current community count on idle when applicable —
-    // gives the player a teaser of "you solved a deal X others also
-    // beat" without waiting until they tap into a board.
-    if (alreadyWon) {
-      readDailyAggregate(Deck.dailyId(), "idle");
-    }
   }
 
   // --- Daily solvable-seed cache ---
@@ -296,7 +284,6 @@
   }
 
   function startDeal(mode) {
-    setCommunityNote("");
     clearFriendsPanel();
     storage.clearSavedGame();
     if (mode === GameClass.MODE_DAILY) {
@@ -320,8 +307,8 @@
     var isNewBest = bestMs === 0 || ms < bestMs;
     if (isNewBest) storage.setBestFor(game.getMode(), ms);
 
-    // Streak + aggregate are daily-only. Random wins are still celebrated
-    // but don't move the community-comparison numbers.
+    // Streak is daily-only. Random wins are still celebrated but don't move
+    // the streak or the daily leaderboard.
     if (isDaily) {
       var dailyId = game.getDailyId();
       var lastId = storage.getLastDailyId();
@@ -334,12 +321,6 @@
         var nextStreak = (lastId === dailyId - 1 && lastWon) ? storage.getStreak() + 1 : 1;
         storage.setStreak(nextStreak);
         storage.setLastDaily(dailyId, true);
-        countDailyWin(dailyId);
-      } else {
-        // Replay of an already-counted daily — use the read-only API so
-        // the player still sees the community total without us
-        // double-counting them into the bucket.
-        readDailyAggregate(dailyId, "won");
       }
       // Submit to the daily leaderboard + populate the friends panel. The
       // submit is idempotent server-side (a replay 409s on already-submitted
@@ -748,50 +729,6 @@
       if (action === "cancel") { close(); return; }
       if (action === "ok") { close(); onConfirm(); }
     });
-  }
-
-  // --- Aggregate (community completion count) ---
-  //
-  // OR.aggregate.count(key, bucket) registers the caller into the bucket
-  // and returns the post-write count — use exactly once per first win of
-  // a daily deal.
-  //
-  // OR.aggregate.read(key, bucket) is the read-only counterpart used for
-  // already-solved replays + the idle overlay's "you solved today" line,
-  // so refreshing the page (or replaying for fun) doesn't double-count
-  // the same player in the bucket.
-
-  function dailyAggregateKey(id) { return "daily-" + id; }
-
-  function setNoteFromCount(count, expectedOverlayState) {
-    if (expectedOverlayState && overlay.getAttribute("data-state") !== expectedOverlayState) return;
-    if (count == null) {
-      setCommunityNote("Stats unlock once a few more players finish today's deal.");
-    } else {
-      setCommunityNote(
-        count.toLocaleString() + " " + (count === 1 ? "player has" : "players have") + " solved today's deal so far."
-      );
-    }
-  }
-
-  function countDailyWin(id) {
-    if (!OR.aggregate || typeof OR.aggregate.count !== "function") return;
-    try {
-      OR.aggregate
-        .count(dailyAggregateKey(id), "won")
-        .then(function (count) { setNoteFromCount(count, "won"); })
-        .catch(function () {});
-    } catch (_) {}
-  }
-
-  function readDailyAggregate(id, expectedOverlayState) {
-    if (!OR.aggregate || typeof OR.aggregate.read !== "function") return;
-    try {
-      OR.aggregate
-        .read(dailyAggregateKey(id), "won")
-        .then(function (count) { setNoteFromCount(count, expectedOverlayState); })
-        .catch(function () {});
-    } catch (_) {}
   }
 
   // --- Input wiring ---

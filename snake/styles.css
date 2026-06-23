@@ -217,25 +217,6 @@ h1.title {
   text-shadow: 2px 2px 0 var(--gb-darkest);
 }
 
-/* Community note (e.g. "12 players reached the 100-199 range this week").
-   Empty by default; application.js fills it on game-over once the aggregate
-   call resolves. Hidden when empty so the overlay doesn't grow a blank line
-   on idle/paused. */
-.community-note {
-  font-size: 10px;
-  line-height: 1.6;
-  letter-spacing: 1px;
-  color: var(--gb-mint);
-  opacity: 0.85;
-  margin: 0;
-  max-width: 80%;
-}
-.community-note:empty { display: none; }
-/* Community note is meaningful only on game-over — hide on idle/paused even
-   if the text wasn't cleared yet (e.g. response lands after restart). */
-.game-message[data-state="idle"] .community-note,
-.game-message[data-state="paused"] .community-note { display: none; }
-
 .game-message .lower {
   display: flex;
   gap: 12px;

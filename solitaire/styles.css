@@ -275,20 +275,6 @@ h1.title {
 }
 .game-message-sub:empty { display: none; }
 
-.community-note {
-  font-size: 10px;
-  line-height: 1.6;
-  letter-spacing: 1px;
-  color: var(--card-cream);
-  opacity: 0.85;
-  margin: 0;
-  max-width: 80%;
-}
-.community-note:empty { display: none; }
-/* The community note is meaningful on both idle (when today's deal has
-   already been solved) and won states. Empty content hides itself via the
-   :empty selector above, so we don't need to gate it per-state anymore. */
-
 .game-message .lower {
   display: flex;
   gap: 10px;

@@ -27,7 +27,6 @@ Grid is 24×16 cells of 20px each. Wall is 1 cell thick around the perimeter, le
 
 - `bridge:storage` — best score (`bestScore` key). In-progress runs are not persisted by design (real-time game with no meaningful resume point).
 - `bridge:share` — fires once per page load on a new personal best ≥ 100.
-- `bridge:aggregate` — on game over, increments a weekly score-band bucket (`weekly-score-{weekIndex}` / `band-{0-49|50-99|100-199|200-499|500+}`) and decorates the GAME OVER overlay with the count for the player's band. Suppressed below score 50 so beginners don't see "you reached the 0-49 range" as a sneer. k=5 anonymity floor handled — returns `null` and we show "stats unlock once a few more players finish".
 - Haptics: `light` per food, `error` on death, `success` on a new personal best that triggers the share.
 - `OR.lifecycle.on('pause')` auto-pauses the game so backgrounding doesn't crash the snake.
 
@@ -35,7 +34,6 @@ Grid is 24×16 cells of 20px each. Wall is 1 cell thick around the perimeter, le
 
 - `bridge:storage`
 - `bridge:share`
-- `bridge:aggregate`
 
 ## License
 

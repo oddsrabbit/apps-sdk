@@ -10,6 +10,7 @@
 import * as esbuild from 'esbuild';
 import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { execSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 
 const watch = process.argv.includes('--watch');
 
@@ -19,6 +20,16 @@ const watch = process.argv.includes('--watch');
 // The HTML files themselves still need a short cache TTL (configured at the
 // CDN layer) so the new IDs reach clients.
 const BUILD_ID = process.env.BUILD_ID || String(Date.now());
+
+// Separate cache-bust token for the SHARED `sdk-v1.js`, which every game's
+// index.html loads. Using BUILD_ID for it is fragile: a game stamps its OWN
+// build id, so when the SDK changes you must rebuild + redeploy every game (and
+// any game still on an old id keeps loading the cached old SDK). Instead we
+// stamp the SDK reference with a hash of the SDK's CONTENT (`__SDK_VERSION__`):
+// the URL changes iff the SDK actually changes, so all games bust together and
+// stay cached otherwise — and the public `sdk-v1.js` filename stays stable.
+// Computed from dist/sdk-v1.js after the bundle is built (see computeSdkVersion).
+let SDK_VERSION = BUILD_ID;
 
 // Per-build cache policy, dropped into dist/ so it travels with every manual
 // upload (Apache reads .htaccess from the served directory tree — no separate
@@ -103,6 +114,7 @@ const GAME_SOLITAIRE_JS = [
 await rm('dist', { recursive: true, force: true });
 await mkdir('dist/host', { recursive: true });
 await mkdir('dist/rabbit-words', { recursive: true });
+await mkdir('dist/rabbit-globe', { recursive: true });
 await mkdir('dist/2048/js', { recursive: true });
 await mkdir('dist/snake/js', { recursive: true });
 await mkdir('dist/snake/fonts', { recursive: true });
@@ -173,6 +185,14 @@ const buildTargets = [
     format: 'esm',
     minify: true,
   },
+  // RabbitGlobe — daily photo-pin geo-guess game (bundles Leaflet)
+  {
+    ...browserOpts,
+    entryPoints: ['rabbit-globe/src/main.ts'],
+    outfile: 'dist/rabbit-globe/main.js',
+    format: 'esm',
+    minify: true,
+  },
 ];
 
 if (watch) {
@@ -190,12 +210,19 @@ if (watch) {
 }
 
 async function copyHostAssets() {
+  // The SDK bundle exists by now (built before this runs), so hash it for the
+  // `__SDK_VERSION__` cache-bust stamped into every game's index.html.
+  SDK_VERSION = await computeSdkVersion();
   await Promise.all([
     writeFile('dist/.htaccess', APPS_HTACCESS),
     copyHtmlWithBuildId('src/host/host.html', 'dist/host/index.html'),
     copyFile('src/host/host.css', 'dist/host/host.css'),
     copyHtmlWithBuildId('rabbit-words/index.html', 'dist/rabbit-words/index.html'),
     copyFile('rabbit-words/styles.css', 'dist/rabbit-words/styles.css'),
+    // RabbitGlobe — geo-guess game. Ships Leaflet's stylesheet alongside ours.
+    copyHtmlWithBuildId('rabbit-globe/index.html', 'dist/rabbit-globe/index.html'),
+    copyFile('rabbit-globe/styles.css', 'dist/rabbit-globe/styles.css'),
+    copyFile('node_modules/leaflet/dist/leaflet.css', 'dist/rabbit-globe/leaflet.css'),
     copyHtmlWithBuildId('2048/index.html', 'dist/2048/index.html'),
     copyFile('2048/styles.css', 'dist/2048/styles.css'),
     ...GAME_2048_JS.map((name) =>
@@ -238,11 +265,29 @@ async function copyHostAssets() {
   ]);
 }
 
-// Substitutes `__BUILD_ID__` placeholders so HTML references like
-// `<script src="./host.js?v=__BUILD_ID__">` point at unique URLs per build.
+// Substitutes cache-bust placeholders in HTML:
+//   __BUILD_ID__     — per-build id, for the game's OWN assets (main.js, css).
+//   __SDK_VERSION__  — content hash of the shared sdk-v1.js (see SDK_VERSION).
 async function copyHtmlWithBuildId(src, dest) {
   const content = await readFile(src, 'utf8');
-  await writeFile(dest, content.replaceAll('__BUILD_ID__', BUILD_ID));
+  await writeFile(
+    dest,
+    content
+      .replaceAll('__BUILD_ID__', BUILD_ID)
+      .replaceAll('__SDK_VERSION__', SDK_VERSION)
+  );
+}
+
+// Short content hash of the built SDK bundle. Falls back to BUILD_ID when the
+// file isn't present yet (e.g. the first pass of `--watch` before esbuild has
+// emitted it) — a stale stamp in dev is harmless since there's no CDN there.
+async function computeSdkVersion() {
+  try {
+    const buf = await readFile('dist/sdk-v1.js');
+    return createHash('sha256').update(buf).digest('hex').slice(0, 12);
+  } catch {
+    return BUILD_ID;
+  }
 }
 
 function generateDeclarations() {

@@ -20,9 +20,9 @@ Court cards are pixel rabbits in the OddsRabbit voice: J's ear is bent jester-st
 
 ## Daily deal
 
-Every UTC day, all players see the same shuffle. The seed is the integer number of UTC days since `2026-01-01`, run through a mulberry32 PRNG → Fisher-Yates shuffle. The aggregate completion percentage shown on win/loss ("23% of players finished today's deal") is keyed off this seed, so the comparison is meaningful.
+Every UTC day, all players see the same shuffle. The seed is the integer number of UTC days since `2026-01-01`, run through a mulberry32 PRNG → Fisher-Yates shuffle. The daily leaderboard (`scores.friends`) is keyed off this seed, so comparisons are meaningful.
 
-A **Random deal** button is available too — random deals are playable but do not contribute to the daily aggregate.
+A **Random deal** button is available too — random deals are playable but do not contribute to the streak or the daily leaderboard.
 
 ## Controls
 
@@ -35,7 +35,6 @@ A **Random deal** button is available too — random deals are playable but do n
 - `bridge:storage` — `bestTimeMs`, `winStreak`, `savedGame`, `lastDailyId` + `lastDailyWon` so we don't double-count daily completions. `savedGame` is flushed on **both** `lifecycle.pause` and the browser `pagehide` event, so a backgrounded app *or* a hard tab-close mid-deal is resumable on next launch.
 - `bridge:share` — user-initiated only. The Share button on the won overlay opens a share modal (copy / native-on-touch / X / Threads / Bluesky / Reddit / WhatsApp / Facebook), mirroring snake + rabbit-words. We never auto-fire share on win — the OS sheet would step on the "I solved it" moment.
 - `bridge:scores` — daily deals submit to a per-deal leaderboard (`roundKey = daily-{seed}`). The score inverts solve time (faster = higher; `metadata = { timeMs, moves }`), and the won overlay renders a friends panel from `scores.friends`. Anonymous players get a `requestSignIn` CTA; signed-in players with no friend scores yet get an invite CTA. Random deals have no shared round and skip scores entirely.
-- `bridge:aggregate` — `daily-{seed}` / `won` bucket, incremented on first win of the daily deal, decorates the overlay with the community completion count. k=5 anonymity floor handled — shows "stats unlock once a few more players finish" below k.
 - Haptics: `light` on card pickup and successful drop, `error` on rejected drop, `success` on a card sent to foundation, `success` again on the win.
 - `OR.lifecycle.on('resume')` is a no-op (the saved state is already on screen).
 
@@ -44,7 +43,6 @@ A **Random deal** button is available too — random deals are playable but do n
 - `bridge:storage`
 - `bridge:share`
 - `bridge:scores`
-- `bridge:aggregate`
 
 ## Android touch checklist
 
