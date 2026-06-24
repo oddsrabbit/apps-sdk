@@ -172,6 +172,9 @@ export const FriendScoreSchema = z.object({
   score: z.number().int(),
   metadata: z.record(z.unknown()).nullable(),
   createdAt: z.string(),
+  // Photo avatar URL, or null when the user has none. `.default(null)` keeps
+  // older outer hosts that predate this field parsing cleanly (→ null).
+  avatar: z.string().url().nullable().default(null),
   // True when this row is the viewer themselves. Older outer hosts predate
   // this field; `.default(false)` keeps SDK consumers' types simple while
   // still parsing pre-isSelf responses.

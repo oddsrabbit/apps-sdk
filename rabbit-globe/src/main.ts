@@ -52,7 +52,12 @@ const BUCKET_LABEL: Record<DistributionBucket, string> = {
   low: '<3k',
 };
 
-type CommunityData = { buckets: Record<DistributionBucket, number | null> };
+type CommunityData = {
+  buckets: Record<DistributionBucket, number | null>;
+  // Raw per-score histogram, kept so the headline can show a TRUE percentile
+  // (count scoring below you ÷ total) instead of a coarse bucket-based one.
+  entries: ScoreDistributionEntry[];
+};
 
 // ---------- Types ----------
 
@@ -329,14 +334,29 @@ async function loadCommunityData(puzzleIndex: number): Promise<CommunityData> {
       roundKey: `puzzle-${puzzleIndex}`,
     });
   } catch {
-    return { buckets };
+    return { buckets, entries: [] };
   }
-  // Fold the near-continuous raw scores into our five bands.
+  // Fold the near-continuous raw scores into our five bands (for the chart);
+  // keep the raw entries for the true-percentile headline.
   for (const { score, count } of entries) {
     const bucket = bucketForTotal(score);
     buckets[bucket] = (buckets[bucket] ?? 0) + count;
   }
-  return { buckets };
+  return { buckets, entries };
+}
+
+/**
+ * True percentile: the share of community plays scoring strictly below the
+ * viewer's total. Far more accurate (and less deflating) than the bucket-based
+ * version — a 4,300 mid-pack score reflects everyone it actually beat, not just
+ * the whole worst bucket. Returns null when there's no data or no one below.
+ */
+function truePercentileBelow(entries: ScoreDistributionEntry[], viewerTotal: number): number | null {
+  const total = entries.reduce((sum, e) => sum + e.count, 0);
+  if (total === 0) return null;
+  const below = entries.reduce((sum, e) => sum + (e.score < viewerTotal ? e.count : 0), 0);
+  const pct = Math.round((below / total) * 100);
+  return pct > 0 ? pct : null;
 }
 
 // ---------- Rendering ----------
@@ -365,6 +385,7 @@ function render(): void {
     root.appendChild(
       renderEndGame(currentState, currentStats, currentStreak, currentFriends, currentCommunity)
     );
+    runEndGameAnimations(root);
   }
   root.appendChild(renderResetTime());
 }
@@ -592,7 +613,11 @@ function renderEndGame(
 
   const verdict = document.createElement('p');
   verdict.className = 'verdict';
-  verdict.innerHTML = `<strong>${total.toLocaleString()}</strong> / ${MAX_TOTAL.toLocaleString()}`;
+  // The big total counts up from 0 on reveal (see runEndGameAnimations).
+  const totalEl = document.createElement('strong');
+  totalEl.dataset.countTo = String(total);
+  totalEl.textContent = '0';
+  verdict.append(totalEl, ` / ${MAX_TOTAL.toLocaleString()}`);
   wrap.appendChild(verdict);
 
   // Per-round recap.
@@ -611,7 +636,7 @@ function renderEndGame(
   wrap.appendChild(recap);
 
   if (community) {
-    wrap.appendChild(renderCommunityDistribution(community, bucketForTotal(total)));
+    wrap.appendChild(renderCommunityDistribution(community, total));
   }
   wrap.appendChild(renderFriendsPanel(friends, { total }));
 
@@ -644,7 +669,7 @@ function renderEndGame(
 
 function renderCommunityDistribution(
   community: CommunityData,
-  userBucket: DistributionBucket | null,
+  viewerTotal: number | null,
   title = "Today's Scores"
 ): HTMLElement {
   const wrap = document.createElement('section');
@@ -664,16 +689,18 @@ function renderCommunityDistribution(
     return wrap;
   }
 
-  if (userBucket !== null) {
-    const userIndex = DISTRIBUTION_BUCKETS.indexOf(userBucket);
-    let worse = 0;
-    for (let i = userIndex + 1; i < counts.length; i++) worse += counts[i] ?? 0;
-    const beatPct = Math.round((worse / total) * 100);
-    if (beatPct > 0) {
+  const userBucket = viewerTotal !== null ? bucketForTotal(viewerTotal) : null;
+
+  // TRUE percentile from the raw scores, not the coarse buckets — so it never
+  // contradicts the bar the viewer is standing in.
+  if (viewerTotal !== null) {
+    const beatPct = truePercentileBelow(community.entries, viewerTotal);
+    if (beatPct !== null) {
       const headline = document.createElement('p');
       headline.className = 'dist-headline';
       const strong = document.createElement('strong');
-      strong.textContent = `${beatPct}%`;
+      strong.dataset.countTo = String(beatPct);
+      strong.textContent = '0%';
       headline.append('You did better than ', strong, ' of players');
       wrap.appendChild(headline);
     }
@@ -694,7 +721,9 @@ function renderCommunityDistribution(
     label.textContent = BUCKET_LABEL[bucket];
     const fill = document.createElement('div');
     fill.className = 'hist-fill';
-    fill.style.width = `${Math.max(8, (count / max) * 100)}%`;
+    // Animate from 0 → target on next frame (CSS transitions width).
+    fill.style.width = '0%';
+    fill.dataset.fillTo = String(Math.max(8, (count / max) * 100));
     fill.textContent = `${pct}%`;
     bar.appendChild(label);
     bar.appendChild(fill);
@@ -740,46 +769,147 @@ function renderFriendsPanel(
     return wrap;
   }
 
-  const list = document.createElement('ul');
-  list.className = 'friends-list';
-  const appendRow = (name: string, score: number, isViewer: boolean): void => {
-    const li = document.createElement('li');
-    li.className = isViewer ? 'friends-row friends-row-you' : 'friends-row';
-    const nameEl = document.createElement('span');
-    nameEl.className = 'friends-name';
-    nameEl.textContent = isViewer ? `${name} (you)` : name;
-    const scoreEl = document.createElement('span');
-    scoreEl.className = 'friends-result';
-    scoreEl.textContent = score.toLocaleString();
-    li.appendChild(nameEl);
-    li.appendChild(scoreEl);
-    list.appendChild(li);
-  };
-
-  // Viewer's own row first. Two sources, in priority order: the live end-of-game
-  // result (synchronous), else the backend's own `isSelf` row (past-round modal).
+  // Build one combined, ranked list: the viewer + the friends they follow.
+  // Viewer entry comes from the live end-of-game result, else the backend's own
+  // `isSelf` row (past-round modal).
   const selfFromBackend = (friends ?? []).find((f) => f.isSelf) ?? null;
   const others = (friends ?? []).filter((f) => !f.isSelf);
 
+  type Row = { name: string; score: number; isViewer: boolean; avatar: string | null };
+  const rows: Row[] = others.map((f) => ({
+    name: `@${f.username}`,
+    score: f.score,
+    isViewer: false,
+    avatar: f.avatar ?? null,
+  }));
   if (viewerResult) {
     const me = window.OddsRabbit.user ? `@${window.OddsRabbit.user.username}` : 'You';
-    appendRow(me, viewerResult.total, true);
+    rows.push({
+      name: me,
+      score: viewerResult.total,
+      isViewer: true,
+      avatar: window.OddsRabbit.user?.avatar ?? null,
+    });
   } else if (selfFromBackend) {
-    appendRow(`@${selfFromBackend.username}`, selfFromBackend.score, true);
-  }
-  for (const f of others) {
-    appendRow(`@${f.username}`, f.score, false);
+    rows.push({
+      name: `@${selfFromBackend.username}`,
+      score: selfFromBackend.score,
+      isViewer: true,
+      avatar: selfFromBackend.avatar ?? null,
+    });
   }
 
-  if (!viewerResult && !selfFromBackend && others.length === 0) {
+  if (rows.length === 0 || (rows.length === 1 && rows[0]!.isViewer)) {
     const blurb = document.createElement('p');
     blurb.className = 'friends-cta-blurb';
     blurb.textContent = 'Follow other players on OddsRabbit to compare scores here.';
     wrap.appendChild(blurb);
     return wrap;
   }
+
+  // Rank by score desc (ties: viewer wins, then stable). Standard competition
+  // ranking — equal scores share a rank.
+  rows.sort((a, b) => b.score - a.score || (a.isViewer ? -1 : b.isViewer ? 1 : 0));
+
+  const list = document.createElement('ul');
+  list.className = 'friends-list';
+  const medals = ['🥇', '🥈', '🥉'];
+  let prevScore: number | null = null;
+  let prevRank = 0;
+  rows.forEach((row, i) => {
+    const rank = prevScore !== null && row.score === prevScore ? prevRank : i + 1;
+    prevScore = row.score;
+    prevRank = rank;
+
+    const li = document.createElement('li');
+    li.className = row.isViewer ? 'lb-row lb-row-you' : 'lb-row';
+
+    const rankEl = document.createElement('span');
+    rankEl.className = 'lb-rank';
+    rankEl.textContent = rank <= 3 ? medals[rank - 1]! : String(rank);
+
+    const avatar = rowAvatar(row.name, row.avatar);
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'lb-name';
+    nameEl.textContent = row.isViewer ? `${row.name} (you)` : row.name;
+
+    const scoreEl = document.createElement('span');
+    scoreEl.className = 'lb-score';
+    scoreEl.textContent = row.score.toLocaleString();
+
+    li.append(rankEl, avatar, nameEl, scoreEl);
+    list.appendChild(li);
+  });
   wrap.appendChild(list);
   return wrap;
+}
+
+/** Leaderboard avatar: the user's photo when available, else a colored initial
+ * circle (deterministic per name). Falls back to initials if the photo 404s. */
+function rowAvatar(name: string, avatarUrl: string | null): HTMLElement {
+  const clean = name.replace(/^@/, '');
+  const el = document.createElement('span');
+  el.className = 'lb-avatar';
+  let h = 0;
+  for (let i = 0; i < clean.length; i++) h = (h * 31 + clean.charCodeAt(i)) >>> 0;
+  el.style.background = `hsl(${h % 360} 55% 52%)`;
+  el.textContent = (clean[0] ?? '?').toUpperCase();
+
+  if (avatarUrl) {
+    const img = document.createElement('img');
+    img.className = 'lb-avatar-img';
+    img.alt = '';
+    img.src = avatarUrl;
+    // Keep the initials underneath; reveal the photo only once it loads, and
+    // drop it on error so the initials remain.
+    img.addEventListener('load', () => el.classList.add('lb-avatar-has-img'));
+    img.addEventListener('error', () => img.remove());
+    el.appendChild(img);
+  }
+  return el;
+}
+
+/**
+ * Run the end-screen reveal animations on a freshly-rendered subtree:
+ *  - count up any `[data-count-to]` number (verdict total, percentile)
+ *  - grow any `[data-fill-to]` distribution bar from 0 to its width
+ * Idempotent per element (cleared after running). Respects reduced-motion.
+ */
+function runEndGameAnimations(root: HTMLElement): void {
+  const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
+  root.querySelectorAll<HTMLElement>('[data-fill-to]').forEach((el) => {
+    const to = el.dataset.fillTo!;
+    delete el.dataset.fillTo;
+    if (reduce) {
+      el.style.width = `${to}%`;
+      return;
+    }
+    requestAnimationFrame(() => {
+      el.style.width = `${to}%`;
+    });
+  });
+
+  root.querySelectorAll<HTMLElement>('[data-count-to]').forEach((el) => {
+    const target = Number(el.dataset.countTo);
+    const suffix = el.textContent?.includes('%') ? '%' : '';
+    delete el.dataset.countTo;
+    if (reduce || !Number.isFinite(target)) {
+      el.textContent = target.toLocaleString() + suffix;
+      return;
+    }
+    const durationMs = 800;
+    let startTs: number | null = null;
+    const step = (ts: number): void => {
+      if (startTs === null) startTs = ts;
+      const p = Math.min(1, (ts - startTs) / durationMs);
+      const eased = 1 - Math.pow(1 - p, 3); // easeOutCubic
+      el.textContent = Math.round(target * eased).toLocaleString() + suffix;
+      if (p < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  });
 }
 
 function nextResetMs(): number {
@@ -1347,10 +1477,11 @@ async function showLeaderboardModal(puzzleIndex: number): Promise<void> {
     if (myToken !== requestToken) return;
 
     const self = friends.find((f) => f.isSelf);
-    const userBucket = self ? bucketForTotal(self.score) : null;
+    const viewerTotal = self ? self.score : null;
     body.innerHTML = '';
-    body.appendChild(renderCommunityDistribution(community, userBucket, 'How everyone did'));
+    body.appendChild(renderCommunityDistribution(community, viewerTotal, 'How everyone did'));
     body.appendChild(renderFriendsPanel(friends, null));
+    runEndGameAnimations(body);
   };
 
   prevBtn.addEventListener('click', () => {
