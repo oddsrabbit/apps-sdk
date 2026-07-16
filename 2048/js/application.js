@@ -31,6 +31,7 @@
   function attachBridgeEffects(actuator) {
     var origActuate = actuator.actuate.bind(actuator);
     var sharedThisLoad = false;
+    var submittedWinThisLoad = false;
     var prevScore = null;
     var prevWon = false;
     var prevOver = false;
@@ -56,6 +57,13 @@
         }
       } catch (_) {}
 
+      // On game over, record the player's all-time best to the "highscore" board
+      // (keep-best: the server keeps the max, so submitting each game is safe).
+      // Separate from the "win" round below, which drives achievements.
+      if (overTransition) {
+        submitHighScore();
+      }
+
       if (wonTransition && !sharedThisLoad) {
         sharedThisLoad = true;
         try {
@@ -68,6 +76,33 @@
         } catch (_) {}
       }
 
+      // Record the win to the platform so it lands in the app_scores table
+      // (metadata.won === true sets the backend's won_flag). roundKey is the
+      // constant "win", so scores.submit's (app, roundKey, user) uniqueness
+      // means each player's FIRST 2048 win is recorded once — repeat wins
+      // reject with 409 already-submitted, which we swallow. Guests can't
+      // submit (the endpoint requires a signed-in user) and there'd be no one
+      // to credit in a post, so we skip them. Once-per-load flag mirrors the
+      // share guard above.
+      if (
+        wonTransition &&
+        !submittedWinThisLoad &&
+        OR.user &&
+        OR.scores &&
+        typeof OR.scores.submit === "function"
+      ) {
+        submittedWinThisLoad = true;
+        try {
+          OR.scores
+            .submit({
+              roundKey: "win",
+              score: metadata.score,
+              metadata: { won: true, tile: 2048 },
+            })
+            .catch(noop); // 409 on a repeat win (already-submitted) is expected.
+        } catch (_) {}
+      }
+
       prevScore = metadata.score;
       prevWon = metadata.won;
       prevOver = metadata.over;
@@ -75,6 +110,24 @@
   }
 
   function noop() {}
+
+  // Submit the player's all-time best to the global "highscore" leaderboard.
+  // Uses keepBest so the server keeps the max under this constant roundKey — a
+  // rising best can't be frozen by the one-submission 409. Signed-in only (the
+  // endpoint requires a user, and there'd be no one to rank). Skips redundant
+  // resubmits within a load; the server dedups the rest.
+  var lastSubmittedBest = 0;
+  function submitHighScore() {
+    if (!OR.user || !OR.scores || typeof OR.scores.submit !== "function") return;
+    var best = storage.getBestScore();
+    if (!best || best <= 0 || best === lastSubmittedBest) return;
+    lastSubmittedBest = best;
+    try {
+      OR.scores
+        .submit({ roundKey: "highscore", score: best, keepBest: true, metadata: { best: true } })
+        .catch(noop);
+    } catch (_) {}
+  }
 
   // Surface fatal errors to the user instead of leaving them on a half-painted
   // (or empty) game. role="alert" auto-announces to assistive tech without
@@ -105,6 +158,9 @@
       try {
         OR.lifecycle.on("pause", function () {
           storage.flushStateWrite();
+          // Also flush the best score to the leaderboard on background/close —
+          // covers players who set a new best and leave without a game-over.
+          submitHighScore();
         });
       } catch (_) {}
 

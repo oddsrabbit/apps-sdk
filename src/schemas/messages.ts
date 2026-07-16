@@ -57,6 +57,12 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
           { message: `metadata exceeds ${SCORE_METADATA_MAX_BYTES}-byte cap` }
         )
         .optional(),
+      // Opt-in "keep the highest score": a resubmit under a CONSTANT roundKey
+      // updates the row only when the new score beats the stored one, and never
+      // rejects as already-submitted. For all-time high-score boards (2048).
+      // Omitted/false keeps the default one-submission-per-round behaviour that
+      // the daily games rely on.
+      keepBest: z.boolean().optional(),
     }),
   }),
   z.object({
@@ -74,6 +80,19 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
     correlationId: CorrelationId,
     payload: z.object({
       roundKey: RoundKey,
+    }),
+  }),
+  // Global top-N leaderboard for a round — all players, not follow-graph
+  // restricted. Public read (guests see the board). `order`: 'top' (default, by
+  // score) or 'first' (earliest submitters / hall-of-fame). `limit` clamped
+  // server-side to 1..100.
+  z.object({
+    type: z.literal('scores.top'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      roundKey: RoundKey,
+      limit: z.number().int().min(1).max(100).optional(),
+      order: z.enum(['top', 'first']).optional(),
     }),
   }),
   // Server-authored daily content for a round (e.g. today's puzzle / answer).
@@ -182,6 +201,13 @@ export const FriendScoreSchema = z.object({
 });
 
 export type FriendScore = z.infer<typeof FriendScoreSchema>;
+
+// One row of a global top-N leaderboard (`scores.top`). Same shape as a friend
+// score minus `isSelf` — a public board has no single viewer, so the app
+// highlights its own row by matching `uuid` against `OddsRabbit.user`.
+export const TopScoreEntrySchema = FriendScoreSchema.omit({ isSelf: true });
+
+export type TopScoreEntry = z.infer<typeof TopScoreEntrySchema>;
 
 // One bucket of a round's community score distribution. `score` is the raw
 // integer the app submitted; the app maps it back to its own buckets (e.g.

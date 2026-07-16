@@ -1,5 +1,6 @@
 import {
   FriendScoreSchema,
+  TopScoreEntrySchema,
   ScoreDistributionEntrySchema,
   DailyContentSchema,
   type BridgeUser,
@@ -7,20 +8,37 @@ import {
   type AppHapticType,
   type AppLifecycleEvent,
   type FriendScore,
+  type TopScoreEntry,
   type ScoreDistributionEntry,
   type DailyContent,
 } from '../schemas/messages';
 import { BridgeTransport, type LifecycleHandler } from './transport';
 
-export type { FriendScore, ScoreDistributionEntry, DailyContent } from '../schemas/messages';
+export type { FriendScore, TopScoreEntry, ScoreDistributionEntry, DailyContent } from '../schemas/messages';
 
 export interface ScoreSubmitPayload {
   roundKey: string;
   score: number;
   metadata?: Record<string, unknown>;
+  /**
+   * Opt into "keep the highest score" for a constant `roundKey` (all-time
+   * boards, e.g. 2048): a resubmit updates the stored row only when this score
+   * beats it, and never rejects as already-submitted. Omit (or false) for the
+   * default one-submission-per-round behaviour.
+   */
+  keepBest?: boolean;
+}
+
+export interface TopScoresPayload {
+  roundKey: string;
+  /** Max rows to return, clamped server-side to 1..100 (default 20). */
+  limit?: number;
+  /** 'top' (default) ranks by score; 'first' ranks by earliest submission. */
+  order?: 'top' | 'first';
 }
 
 const FriendScoresArraySchema = FriendScoreSchema.array();
+const TopScoresArraySchema = TopScoreEntrySchema.array();
 const ScoreDistributionArraySchema = ScoreDistributionEntrySchema.array();
 
 // Boot-path cap for content.daily: if the host never answers (silent drop of an
@@ -85,6 +103,15 @@ export interface OddsRabbitGlobal {
      * disagree with the recorded results.
      */
     distribution(payload: { roundKey: string }): Promise<ScoreDistributionEntry[]>;
+    /**
+     * Fetch the global top-N leaderboard for a round — all players, not just the
+     * people the viewer follows. Public (works signed-out). `order: 'top'`
+     * (default) ranks by score DESC; `order: 'first'` ranks by earliest
+     * submission (a "who did it first" hall-of-fame). Returns an empty array when
+     * nobody has played or on a malformed response. Rows carry no `isSelf`; match
+     * `uuid` against `OddsRabbit.user` to highlight the viewer.
+     */
+    top(payload: TopScoresPayload): Promise<TopScoreEntry[]>;
   };
 
   readonly content: {
@@ -183,6 +210,13 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
         .request<unknown>('scores.distribution', payload)
         .then((result) => {
           const parsed = ScoreDistributionArraySchema.safeParse(result);
+          return parsed.success ? parsed.data : [];
+        }),
+    top: (payload: TopScoresPayload): Promise<TopScoreEntry[]> =>
+      this.transport
+        .request<unknown>('scores.top', payload)
+        .then((result) => {
+          const parsed = TopScoresArraySchema.safeParse(result);
           return parsed.success ? parsed.data : [];
         }),
   };

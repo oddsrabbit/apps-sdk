@@ -75,6 +75,7 @@ const GAME_2048_JS = [
   'storage_manager.js',
   'game_manager.js',
   'application.js',
+  'leaderboard.js',
 ];
 
 // Game files for the vanilla-JS Snake game. Same shape as 2048 — vanilla JS
