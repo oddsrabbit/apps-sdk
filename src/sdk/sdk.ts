@@ -3,6 +3,11 @@ import {
   TopScoreEntrySchema,
   ScoreDistributionEntrySchema,
   DailyContentSchema,
+  SeasonBoardEnvelopeSchema,
+  SeasonEntrySchema,
+  type SeasonBoard,
+  type SeasonEntry,
+  type SeasonMetric,
   type BridgeRequest,
   type BridgeUser,
   type AppColorScheme,
@@ -15,7 +20,24 @@ import {
 } from '../schemas/messages';
 import { BridgeTransport, type LifecycleHandler } from './transport';
 
-export type { FriendScore, TopScoreEntry, ScoreDistributionEntry, DailyContent } from '../schemas/messages';
+export type {
+  FriendScore,
+  TopScoreEntry,
+  ScoreDistributionEntry,
+  DailyContent,
+  SeasonBoard,
+  SeasonEntry,
+  SeasonMetric,
+} from '../schemas/messages';
+
+export interface SeasonPayload {
+  /** Calendar month, `YYYY-MM`, in UTC. See `currentPeriod()` in the UI package. */
+  period: string;
+  /** Override the app's configured aggregation. */
+  metric?: SeasonMetric;
+  /** Max rows, clamped server-side to 1..100 (default 20). */
+  limit?: number;
+}
 
 export interface ScoreSubmitPayload {
   roundKey: string;
@@ -185,6 +207,28 @@ export interface OddsRabbitGlobal {
      * `uuid` against `OddsRabbit.user` to highlight the viewer.
      */
     top(payload: TopScoresPayload): Promise<TopScoreEntry[]>;
+    /**
+     * Fetch the season board — every player's daily rows across one calendar
+     * month, aggregated into a single ranked number. Public (works signed-out).
+     *
+     * The point of a season board is that a daily game's global board wipes at
+     * midnight: nothing a player did yesterday counts, which is a strange
+     * reward for a game whose whole design is coming back tomorrow. A month
+     * accumulates.
+     *
+     * `period` is `YYYY-MM`. `metric` defaults to whatever the app is
+     * configured for server-side — pass it only to override. The result carries
+     * `puzzleDays` and `qualifyingDays` so the UI can state the rule it's
+     * ranking by without re-deriving it.
+     *
+     * Resolves `null` — not `[]` — when the host doesn't implement the verb, so
+     * a game can tell "no season board here" apart from "the season board is
+     * empty" and hide the tab rather than showing an empty one. A malformed
+     * envelope REJECTS instead, so a server-side break surfaces as an error
+     * rather than as a month nobody played. Individual malformed entries are
+     * still dropped rather than fatal, as with the other reads.
+     */
+    season(payload: SeasonPayload): Promise<SeasonBoard | null>;
   };
 
   readonly content: {
@@ -364,6 +408,31 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
       ),
     top: (payload: TopScoresPayload): Promise<TopScoreEntry[]> =>
       this.requestRows<TopScoreEntry>('scores.top', payload, TopScoreEntrySchema),
+    // Returns an envelope rather than a row list, so it can't use requestRows.
+    // Same two principles though: an unsupported host degrades instead of
+    // rejecting, and one bad row drops itself rather than the whole board.
+    season: (payload: SeasonPayload): Promise<SeasonBoard | null> =>
+      this.request<unknown>('scores.season', payload)
+        .then((result): SeasonBoard => {
+          const parsed = SeasonBoardEnvelopeSchema.safeParse(result);
+          // A malformed envelope REJECTS; it does not resolve null. `null` means
+          // exactly one thing — "this host has no season board" — which the UI
+          // renders as an empty month. Folding a broken response into that says
+          // "nobody played this month" to the player and logs nothing, so a
+          // server-side regression looks like a quiet season. A rejection puts
+          // the tab in its error state, which is at least visible.
+          if (!parsed.success) {
+            throw new Error('scores.season: malformed season board');
+          }
+          return {
+            ...parsed.data,
+            entries: parseRows<SeasonEntry>(SeasonEntrySchema, parsed.data.entries),
+          };
+        })
+        .catch((error: unknown) => {
+          if (isUnsupportedError(error)) return null;
+          throw error;
+        }),
   };
 
   readonly content = {

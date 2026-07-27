@@ -9,6 +9,7 @@ import {
   type LeaderboardRow,
   type LeaderboardTab,
 } from '../../src/ui/leaderboard';
+import { createSeasonTab, currentPeriod } from '../../src/ui/season';
 import * as L from 'leaflet';
 
 declare global {
@@ -836,6 +837,18 @@ function renderLeaderboardPanel(
         }),
       formatValue: formatScore,
     });
+  }
+
+  // Monthly board — total points, since globe's 0–15,000 range separates
+  // players on its own and needs no qualifier rule to explain (§3.7). Unlike
+  // the daily boards this one accumulates, which is the point: a daily game
+  // whose leaderboard wipes at midnight never remembers that you came back.
+  if (OR.capabilities.has('scores.season')) {
+    tabs.push(
+      createSeasonTab({
+        load: () => OR.scores.season({ period: currentPeriod(), limit: 20 }),
+      })
+    );
   }
 
   const wrap = document.createElement('section');

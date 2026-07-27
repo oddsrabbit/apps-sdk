@@ -6,7 +6,9 @@ import type {
 import {
   createLeaderboardPanel,
   type LeaderboardRow,
+  type LeaderboardTab,
 } from '../../src/ui/leaderboard';
+import { createSeasonTab, currentPeriod } from '../../src/ui/season';
 import { isValidGuess } from './words';
 
 declare global {
@@ -682,18 +684,17 @@ function renderFriendsPanel(
   const wrap = document.createElement('section');
   wrap.className = 'friends-panel';
 
-  const title = document.createElement('h3');
-  title.className = 'hist-title';
-  title.textContent = 'Friends';
-  wrap.appendChild(title);
-
   const OR = window.OddsRabbit;
   const signedIn = Boolean(OR.user);
+  const hasSeason = OR.capabilities.has('scores.season');
 
-  wrap.appendChild(
-    createLeaderboardPanel({
-      tabs: [
-        {
+  const title = document.createElement('h3');
+  title.className = 'hist-title';
+  title.textContent = hasSeason ? 'Leaderboard' : 'Friends';
+  wrap.appendChild(title);
+
+  const tabs: LeaderboardTab[] = [
+    {
           id: 'friends',
           label: 'Friends',
           // One empty state for both "you follow nobody" and "they follow
@@ -730,9 +731,36 @@ function renderFriendsPanel(
                   void OR.actions.requestSignIn('See how your friends did today');
                 },
               },
-        },
-      ],
+    },
+  ];
+
+  // rabbit-words' global board, at last — and a *season* board specifically.
+  // A daily global board here is hundreds of players tied across seven possible
+  // values, separated only by who submitted first, which is a clock rather than
+  // a ranking. Ranked by qualified average: play enough of the month to
+  // qualify, then your mean score places you (§3.7). Still no `scores.top` tab.
+  if (hasSeason) {
+    tabs.push(
+      createSeasonTab({
+        load: () =>
+          OR.scores.season({
+            period: currentPeriod(),
+            metric: 'qualified_avg',
+            limit: 20,
+          }),
+        emptyText: 'Nobody has qualified this month yet — keep playing.',
+      })
+    );
+  }
+
+  wrap.appendChild(
+    createLeaderboardPanel({
+      tabs,
       viewerUuid: OR.user?.uuid ?? null,
+      // Season leads where it exists: it is the board that actually means
+      // something for this game, and Friends is empty for anyone who follows
+      // nobody. Without a season board there is only one tab anyway.
+      defaultTab: hasSeason ? 'season' : undefined,
     }).element
   );
   return wrap;

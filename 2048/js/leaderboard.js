@@ -168,4 +168,15 @@
       ]
     });
   }
+
+  // No season tab here, deliberately. `scores.season` aggregates a month of
+  // DAILY rows, and 2048 has none: its only round keys are the constants
+  // "highscore" (submitted with keepBest, so the server holds one row per
+  // player, updated in place) and "win" (once per player, ever). There is
+  // nothing per-day to collapse, and 2048 isn't in DailyGameRegistry.
+  //
+  // The motivation was real — all-time boards ossify, and a monthly window
+  // would give new players a live target — but it needs a monthly best tracked
+  // game-side and submitted under a per-month round key, not a season
+  // aggregation. See §3.7 of docs/proposals/unified-leaderboard.md.
 })();

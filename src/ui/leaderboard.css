@@ -162,9 +162,36 @@
   white-space: nowrap;
 }
 
+/* Season-row signals (days played, streak). Deliberately quiet: these are shown
+   so the habit is visible, not so it competes with the ranked value. */
+.lb-badges {
+  flex: none;
+  display: flex;
+  gap: 4px;
+}
+
+.lb-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 999px;
+  color: var(--lb-muted, #8a8279);
+  background: var(--lb-badge-bg, rgba(127, 127, 127, 0.14));
+  white-space: nowrap;
+}
+
 .lb-value {
   flex: none;
   font-variant-numeric: tabular-nums;
+}
+
+/* Explains what the board is ranking by — the qualifier line on a season board.
+   Sits above the list, under the tabs. */
+.lb-note {
+  margin: 8px 0 0;
+  font-size: 0.8rem;
+  color: var(--lb-muted, #8a8279);
 }
 
 /* ---- Signed-out call to action ---- */

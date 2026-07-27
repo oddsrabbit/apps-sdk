@@ -15,6 +15,22 @@ export const COLOR_SCHEMES = ['light', 'dark'] as const;
 export const AppColorSchemeSchema = z.enum(COLOR_SCHEMES);
 export type AppColorScheme = z.infer<typeof AppColorSchemeSchema>;
 
+/**
+ * Season aggregations a game may ASK for. Closed on purpose: a client should
+ * only ever send a metric it was built to understand, and an unknown value here
+ * is a caller bug worth rejecting.
+ *
+ * Note this is the request side only — `SeasonBoardSchema.metric`, what the
+ * server sends back, is deliberately open. `best_n` is designed (§3.7) but
+ * unbuilt; adding it means a host redeploy before any game can send it.
+ */
+export const SEASON_METRICS = ['sum', 'max', 'qualified_avg'] as const;
+export const SeasonMetricSchema = z.enum(SEASON_METRICS);
+export type SeasonMetric = z.infer<typeof SeasonMetricSchema>;
+
+/** Calendar month, `YYYY-MM`. */
+const SeasonPeriod = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/);
+
 const StorageKey = z.string().min(1).max(STORAGE_KEY_MAX_LENGTH);
 const StorageValue = z.string().max(STORAGE_VALUE_MAX_BYTES);
 const CorrelationId = z.string().min(1).max(128);
@@ -93,6 +109,30 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
       roundKey: RoundKey,
       limit: z.number().int().min(1).max(100).optional(),
       order: z.enum(['top', 'first']).optional(),
+    }),
+  }),
+  // Monthly season board for the app — every player's daily rows across one
+  // calendar month, aggregated server-side into a single ranked number. Public
+  // read, like `scores.top`.
+  //
+  // No `roundKey`: a season spans a month of them, and only the server can
+  // expand `period` into the app's actual key list (DailyGameRegistry holds each
+  // daily game's epoch). No client can compute this board either way — a game
+  // can read its own storage and aggregate endpoints, never other users' round
+  // history.
+  z.object({
+    type: z.literal('scores.season'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      // Calendar month, `YYYY-MM`. Deliberately not a rolling 30-day window:
+      // seasons reset on month boundaries, and month length varies. UTC, like
+      // every other day boundary in these games (each daily app derives its
+      // puzzle index from a `Date.UTC` epoch).
+      period: SeasonPeriod,
+      // How the month's rows collapse into one number. Omit to take the app's
+      // own server-side default.
+      metric: SeasonMetricSchema.optional(),
+      limit: z.number().int().min(1).max(100).optional(),
     }),
   }),
   // Server-authored daily content for a round (e.g. today's puzzle / answer).
@@ -242,6 +282,79 @@ export const ScoreDistributionEntrySchema = z.object({
 });
 
 export type ScoreDistributionEntry = z.infer<typeof ScoreDistributionEntrySchema>;
+
+// One player's row on a season board.
+export const SeasonEntrySchema = z.object({
+  uuid: z.string().uuid(),
+  username: z.string().min(1).max(64),
+  avatar: z.string().url().nullable().default(null),
+  // The ranked number, whichever metric produced it. Generic because the metric
+  // varies per app: a points total for rabbit-globe, a mean for rabbit-words, a
+  // single best score for 2048.
+  value: z.number(),
+  // Days in the period with a recorded score. Both the qualifier input for
+  // `qualified_avg` and a row badge in its own right.
+  daysPlayed: z.number().int().nonnegative(),
+  // Mean score across days played. The tie-break under `qualified_avg`, and a
+  // secondary figure elsewhere. Null when the server didn't compute one.
+  average: z.number().nullable().default(null),
+  // Longest run of consecutive played days. Displayed as a badge and NEVER a
+  // sort key — as a ranking it is ties all the way down with no skill component
+  // (§3.7).
+  streak: z.number().int().nonnegative().default(0),
+  isSelf: z.boolean().default(false),
+});
+
+export type SeasonEntry = z.infer<typeof SeasonEntrySchema>;
+
+// A season board plus the context needed to explain it on screen.
+//
+// Richer than the other reads (which return a bare array) because a season
+// ranking isn't self-evident the way "top 20 by score" is: the UI has to be able
+// to say what the number means and what it took to qualify.
+export const SeasonBoardSchema = z.object({
+  period: SeasonPeriod,
+  // Open, unlike the request's `SeasonMetricSchema`. This field is descriptive:
+  // it tells the UI what it is looking at so it can caption the board. Pinning
+  // it to an enum makes every metric the platform adds later a BREAKING change
+  // for bundles already in the wild — and a silent one, because a rejected
+  // envelope renders as an empty month, not an error. rabbit-globe and solitaire
+  // send no `metric` at all and take the app's server-side default, so a config
+  // change alone would be enough to blank their boards. `best_n` is already
+  // designed (§3.7). A metric the bundle doesn't recognise still has a correctly
+  // ranked board behind it; the UI just captions it generically.
+  metric: z.string().min(1),
+  // Puzzle days the server actually expanded for this period — NOT calendar
+  // days. A game's launch month is partial (rabbit-globe's epoch is 2026-06-20,
+  // so June 2026 holds 11), and anything derived from window length has to use
+  // this or it misreports that month.
+  puzzleDays: z.number().int().nonnegative(),
+  // Minimum days played to appear on a `qualified_avg` board, computed server-
+  // side as `ceil(puzzleDays * 2/3)` and sent so the client can state the rule
+  // without re-deriving it — two implementations of one formula will drift.
+  // Null for metrics that have no qualifier.
+  qualifyingDays: z.number().int().nonnegative().nullable().default(null),
+  entries: z.array(SeasonEntrySchema),
+});
+
+export type SeasonBoard = z.infer<typeof SeasonBoardSchema>;
+
+/**
+ * Wire-tolerant twin of `SeasonBoardSchema`, used by the SDK to parse an
+ * inbound board.
+ *
+ * `entries` is left unvalidated here on purpose so the SDK can check rows one
+ * at a time and drop only the bad ones. Validating the array inside the
+ * envelope makes it all-or-nothing: a single user with a null `uuid` — which
+ * the backend's LEFT JOIN can still produce (§2.3) — would empty the entire
+ * season board. That is the exact failure per-row parsing was introduced to
+ * fix, and nesting the array quietly reintroduces it.
+ *
+ * `SeasonBoardSchema` stays strict: it is the contract the server writes to.
+ */
+export const SeasonBoardEnvelopeSchema = SeasonBoardSchema.extend({
+  entries: z.array(z.unknown()),
+});
 
 // Result of `content.daily`: the server-authored content for one round. `content`
 // is an opaque, app-specific object (e.g. rabbit-words: `{ answer }`) — the

@@ -238,16 +238,19 @@ Still to build:
   scores become publicly crawlable, hence the opt-out below; (b) the RN/web
   hosts must not gate the verb behind a session, and the SDK must not gate it
   behind `OR.user` the way `friends` does.
-- Per-user opt-out of *public* boards (friends boards are unaffected — those are
-  shared only with people the user chose to connect with). **Decided: boards
-  ship before the opt-out exists**; it lands as a later configuration step
-  rather than blocking Phase 2. Worth being explicit about what that accepts:
-  between launch and the opt-out shipping, a signed-in user's username and score
-  are publicly readable with no way to decline, and search engines may index the
-  WP game pages in that window. Two things follow — the opt-out should ship
-  early in Phase 3 rather than at the end of it, and it needs to suppress
-  *existing* rows on the public board, not just future submissions, or users who
-  opt out later stay visible for scores already recorded.
+- ~~Per-user opt-out of *public* boards~~ — **removed from scope 2026‑07‑27.**
+  First deferred behind Phase 2, then dropped from Phase 3 entirely; it is not
+  scheduled against any phase.
+
+  Recorded rather than deleted, because the consequence is standing rather than
+  temporary: a signed-in player's username and score are publicly readable with
+  no way to decline, and the WP game pages carrying those boards are indexable.
+  Friends boards are unaffected — those are shared only with people the user
+  chose to connect with.
+
+  If it is ever picked up, the design note that mattered still holds: it has to
+  suppress **existing** rows, not just future submissions, or a player who opts
+  out stays visible for everything already recorded.
 
 ### 3.6 Follow-from-board (the community-building payoff)
 
@@ -318,18 +321,46 @@ skill, or both?" Each option has a specific failure mode:
   not 30. A fixed "miss up to 10 days" rule collapses to `Q = 1` there;
   proportional degrades to 8 and stays meaningful.
 - **solitaire → total points.** Its daily score is already speed-based.
-- **2048 → not a season but a *monthly best*** (MAX within the window) alongside
-  the all-time board. Different aggregation, same board shape.
-  This matters more than it sounds: **all-time boards ossify.** After a few
-  months the top 20 is frozen and no new player can ever appear on it, which
-  destroys exactly the discovery/follow value that justifies making boards
-  public. A monthly-best board gives everyone a live target.
+- **2048 → out of scope for seasons.** ~~Monthly best (MAX within the window)
+  alongside the all-time board.~~ **Cut 2026‑07‑27, before shipping.**
 
-**Implementation**: one endpoint with a `metric` param — `sum`, `max`,
-`qualified_avg`, `best_n`, `wins`, `streak` — and each app declares which it
-uses. Ship `sum` (globe, solitaire), `max` (2048) and `qualified_avg` (words);
-between them they cover all four games that get boards (§5.3). `best_n` stays
-unbuilt until mid-month drop-off shows up in the data.
+  The motivation was and remains real: **all-time boards ossify.** After a few
+  months 2048's top 20 is frozen, no new player can ever appear on it, and that
+  destroys exactly the discovery/follow value that justifies making boards
+  public. A monthly window would give everyone a live target.
+
+  It cannot be delivered by this endpoint, because 2048 has **no daily rows to
+  aggregate**. Its only round keys are the constants `highscore` — submitted
+  with `keepBest`, so the server holds exactly one row per player, updated in
+  place — and `win`, once per player ever. `period` expands through
+  `DailyGameRegistry`, which 2048 is not in and cannot join. Aggregating the
+  `highscore` row by its timestamp instead wouldn't rescue it: one row per
+  player means the board would rank players by their **all-time** best filtered
+  to whoever improved it this month, which is a subset of the all-time board
+  next to it, still dominated by the same veterans, and ossified in exactly the
+  way the tab was meant to fix.
+
+  What it actually needs is a game-side change, not an aggregation: track the
+  month's best in 2048's own storage and submit it under a per-month round key
+  (`highscore-YYYY-MM`, `keepBest: true`), then read the board with the existing
+  `scores.top`. No season endpoint, no registry entry, no new verb. Worth doing
+  — but it is 2048 feature work, not Phase 3.
+
+**Implementation**: one endpoint with a `metric` param — `sum`,
+`qualified_avg`, `max`, `best_n`, `wins`, `streak` — and each app declares which
+it uses. Ship `sum` (globe, solitaire) and `qualified_avg` (words); between them
+they cover every game that gets a season board. `max` is specified but has no
+caller now that 2048 is out, so it need not ship in the first cut. `best_n`
+stays unbuilt until mid-month drop-off shows up in the data.
+
+**Adding a metric later is a server-only change, by construction.** The response's
+`metric` field is an open string in `SeasonBoardSchema`, not an enum — a bundle
+that meets a metric it predates captions the board generically and renders the
+rows normally, because the server did the ranking. Had it been closed, shipping
+`best_n` would have silently blanked the boards of every deployed globe and
+solitaire bundle, since neither sends a `metric` and both take the app's
+server-side default. The *request* enum stays closed: a client should only ask
+for what it understands.
 
 Note `qualified_avg` needs `puzzle_days` for the period to compute `Q`, which the
 endpoint already derives when it expands `period` into the key list — so the cap
@@ -406,18 +437,45 @@ Two things the shared module changed on the way through, both worth knowing:
   makes `dist/leaderboard-v1.js` a new deploy artifact — see Phase 4, it ships
   with the games, not with the SDK.
 
-**Phase 3 — season boards**
-1. Opt-out setting surfaced wherever account settings live, suppressing existing
-   rows and not just future ones (§3.5). First, not last: Phase 2 ships public
-   boards without it, so every day it slips is a day users can't decline.
-2. Backend aggregation endpoint + covering index + transient cache (§3.5);
-   register solitaire in `DailyGameRegistry` first.
-3. SDK verb `scores.season` + schema.
-4. Season tab in the shared UI; make it the default global board for
-   rabbit-words, where a daily global board is meaningless.
+**Phase 3 — season boards** — client side ✅ **implemented 2026‑07‑27**; backend
+outstanding.
+1. ~~Opt-out setting~~ — removed from scope (§3.5).
+2. ⛔ **Backend, not in this repo.** Aggregation endpoint + covering index +
+   transient cache (§3.5), and register solitaire in `DailyGameRegistry` first.
+   Everything below is built against the contract in §3.5/§3.7 and returns empty
+   boards until this lands. What the server owes, precisely:
+   `GET /apps/{slug}/scores/season?period=YYYY-MM&metric=sum|qualified_avg&limit=`
+   → `{ period, metric, puzzleDays, qualifyingDays, entries[] }`, each entry
+   `{ uuid, username, avatar, value, daysPlayed, average, streak, isSelf }`.
+   `puzzleDays` is the count of keys `DailyGameRegistry` expands for the period —
+   **not** calendar days — and `qualifyingDays` is `ceil(puzzleDays * 2/3)` for
+   `qualified_avg`, null otherwise. It is computed server-side and sent rather
+   than re-derived client-side, because two implementations of one formula
+   drift. `period` is a **UTC** month, matching the UTC boundary every daily app
+   already rolls its puzzle on.
+3. ✅ `scores.season` verb in `BridgeRequestSchema`, `SeasonEntry`/`SeasonBoard`
+   result schemas, and `OR.scores.season()` in the SDK. Resolves `null` (not
+   `[]`) on a host without the verb, so a game can hide the tab rather than show
+   an empty board; a **malformed** board rejects instead, so a server break
+   reaches the player as an error state and not as a month nobody played.
+   Correctly **absent from `LEGACY_CAPABILITIES`** — that list is a historical
+   snapshot (§3.1), and a pre-handshake host has no season board.
+4. ✅ Season presentation shared in `src/ui/season.ts` (`createSeasonTab`), so
+   the three call sites carry only their metric. Days played and streak render as
+   row badges via the panel's `badges` hook — visible, never sort keys (§3.7).
+   Ranks share on `sum` (a plain `value` order, so equal values are real ties)
+   and stay positional on `qualified_avg` (ordered by capped attendance first, so
+   equal values are not).
+5. ✅ Adopted: rabbit-words (`qualified_avg`, **default tab** — this is words'
+   first global board of any kind), rabbit-globe (`sum`), solitaire (`sum`).
+   2048 is **not** adopted — it has no daily rows to aggregate, see §3.7.
 
 **Phase 4 — deploy discipline**
-Ship order is forced: **backend → SDK + sandbox host → games → RN app.** The RN
+Ship order is forced: **backend → SDK + sandbox host → games → RN app.** Two
+artifacts joined the list in Phase 2: `dist/leaderboard-v1.js` and
+`dist/leaderboard-v1.css`. 2048 and solitaire load them as script/link tags (no
+bundler), so those two games hide their boards entirely if the pair doesn't ship
+with them. They travel with the games, not with the SDK. The RN
 release trails by App Store review, so games must tolerate a host without the new
 verbs for weeks — which is exactly what Phase 1.3 buys. Note `dist/` is untracked
 and the local build predates rabbit-globe entirely (June 1 vs June 23), so a

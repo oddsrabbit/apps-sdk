@@ -81,6 +81,16 @@ export interface LeaderboardTab {
    */
   valueClass?(row: LeaderboardRow, index: number): string | null | undefined;
   /**
+   * Small labels between the name and the value — "18 days", "🔥 7".
+   *
+   * This is where a signal belongs when it should be visible without steering
+   * the ranking. Season boards show days played and streak here precisely
+   * because neither survives being a sort key: streak is ties all the way down,
+   * and attendance as a primary ranking is farmable by opening the game and
+   * losing (§3.7).
+   */
+  badges?(row: LeaderboardRow, index: number): string[] | null | undefined;
+  /**
    * Standard competition ranking, where equal scores share a rank (1, 2, 2, 4).
    * Default `true`. Set `false` for boards ordered by something other than the
    * score — a hall of fame ordered by earliest submission is positional, and
@@ -213,6 +223,13 @@ function renderList(
     const name = row.username ? `@${row.username}` : 'player';
     li.appendChild(leaderboardAvatar(name, row.avatar));
     li.appendChild(el('span', 'lb-name', mine ? `${name} (you)` : name));
+
+    const badges = tab.badges?.(row, i);
+    if (badges && badges.length > 0) {
+      const strip = el('span', 'lb-badges');
+      badges.forEach((badge) => strip.appendChild(el('span', 'lb-badge', badge)));
+      li.appendChild(strip);
+    }
 
     const value = tab.formatValue(row, i);
     if (value !== '') {

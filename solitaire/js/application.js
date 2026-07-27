@@ -511,6 +511,21 @@
       });
     }
 
+    // Monthly board — total points, which for solitaire means total speed
+    // across the month's deals (the daily score is already speed-derived, see
+    // dailyScore). Unlike the daily board this one accumulates, so a run of
+    // good solves adds up to something instead of resetting at midnight.
+    if (OR.capabilities.has("scores.season") && typeof UI.createSeasonTab === "function") {
+      tabs.push(
+        UI.createSeasonTab({
+          load: function () {
+            return OR.scores.season({ period: UI.currentPeriod(), limit: 20 });
+          },
+          emptyText: "No solves this month yet — win a deal to get on the board."
+        })
+      );
+    }
+
     currentPanel = UI.createLeaderboardPanel({
       tabs: tabs,
       viewerUuid: OR.user && OR.user.uuid ? OR.user.uuid : null
