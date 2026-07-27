@@ -1,3 +1,17 @@
+/* Theme for the shared leaderboard component (src/ui/leaderboard.css), which
+   reads --lb-*. 2048's palette is hardcoded rather than variable-driven, so
+   these are literals matching the board colors above. */
+:root {
+  --lb-surface: #faf8ef;
+  --lb-text: #776e65;
+  --lb-muted: #a29a8f;
+  --lb-border: rgba(119, 110, 101, 0.18);
+  --lb-accent: #8f7a66;
+  --lb-accent-text: #f9f6f2;
+  --lb-scrim: rgba(60, 55, 50, 0.55);
+  --lb-you-bg: rgba(237, 194, 46, 0.22);
+}
+
 html, body {
   margin: 0;
   padding: 0;
@@ -454,122 +468,10 @@ hr {
   float: right;
   margin-left: 8px; }
 
-.lb-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(60, 55, 50, 0.55);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 16px;
-  z-index: 1000;
-  animation: fade-in 150ms ease; }
-
-.lb-modal {
-  background: #faf8ef;
-  color: #776e65;
-  border-radius: 8px;
-  width: 100%;
-  max-width: 420px;
-  max-height: 85vh;
-  overflow-y: auto;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
-  padding: 20px; }
-
-.lb-modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 8px; }
-
-.lb-modal-title {
-  font-size: 24px;
-  font-weight: bold;
-  margin: 0; }
-
-.lb-close {
-  background: none;
-  border: 0;
-  color: #776e65;
-  font-size: 28px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0 4px; }
-
-.lb-loading, .lb-empty {
-  text-align: center;
-  color: #a29a8f;
-  padding: 16px 0; }
-
-.lb-section {
-  margin-top: 18px; }
-
-.lb-section-title {
-  font-size: 16px;
-  font-weight: bold;
-  margin: 0 0 8px; }
-
-.lb-count {
-  text-align: center;
-  margin: 14px 0 0; }
-  .lb-count strong {
-    color: #8f7a66; }
-
-.lb-list {
-  list-style: none;
-  margin: 0;
-  padding: 0; }
-
-.lb-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 7px 8px;
-  border-radius: 6px; }
-  .lb-row + .lb-row {
-    margin-top: 2px; }
-
-.lb-row-you {
-  background: rgba(237, 194, 46, 0.22); }
-
-.lb-rank {
-  min-width: 24px;
-  text-align: center;
-  font-weight: bold; }
-
-.lb-avatar {
-  position: relative;
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  flex: 0 0 auto;
-  color: #fff;
-  font-size: 13px;
-  font-weight: bold;
-  line-height: 28px;
-  text-align: center;
-  overflow: hidden; }
-
-.lb-avatar-img {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  opacity: 0; }
-
-.lb-avatar-has-img .lb-avatar-img {
-  opacity: 1; }
-
-.lb-name {
-  flex: 1 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap; }
-
-.lb-value {
-  font-weight: bold;
-  flex: 0 0 auto; }
+/* The leaderboard modal, rows, avatars and medals are the shared component
+   (src/ui/leaderboard.css), themed via the --lb-* variables at the top of this
+   file. The ~120 lines of .lb-* rules that used to sit here were a fork of
+   rabbit-globe’s copy; do not re-add them locally. */
 
 @media screen and (max-width: 520px), screen and (max-height: 720px) {
   .game-intro {

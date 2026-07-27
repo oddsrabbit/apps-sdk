@@ -4,8 +4,14 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
     <title>2048</title>
+    <!-- Shared leaderboard component. Stylesheet first so our own styles.css
+         keeps the last word; the script installs window.OddsRabbitUI, which
+         js/leaderboard.js reads. This game has no bundler, so both arrive as
+         plain tags rather than an import. -->
+    <link rel="stylesheet" href="../leaderboard-v1.css?v=__UI_VERSION__" />
     <link rel="stylesheet" href="./styles.css?v=__BUILD_ID__" />
     <script src="../sdk-v1.js?v=__SDK_VERSION__"></script>
+    <script src="../leaderboard-v1.js?v=__UI_VERSION__"></script>
   </head>
   <body>
     <div class="container">

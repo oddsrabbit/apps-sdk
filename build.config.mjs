@@ -4,6 +4,8 @@
 //   - dist/sdk-v1.esm.js   ESM bundle for npm consumers
 //   - dist/sdk-v1.cjs      CJS bundle for legacy Node consumers
 //   - dist/schemas.*       Same three formats for the schemas-only export
+//   - dist/leaderboard-v1.js   IIFE bundle for CDN script tag (installs window.OddsRabbitUI)
+//   - dist/leaderboard-v1.esm.js + .css   Shared leaderboard UI for bundler consumers
 //   - dist/host/           Sandbox host page (index.html, host.js, host.css)
 //   - dist/**/*.d.ts       TypeScript declarations (via tsc) + thin wrappers for stable entry paths
 
@@ -30,6 +32,13 @@ const BUILD_ID = process.env.BUILD_ID || String(Date.now());
 // stay cached otherwise — and the public `sdk-v1.js` filename stays stable.
 // Computed from dist/sdk-v1.js after the bundle is built (see computeSdkVersion).
 let SDK_VERSION = BUILD_ID;
+
+// Same treatment for the shared leaderboard UI (`__UI_VERSION__`), which the
+// vanilla games load as a second script tag alongside the SDK. Hashed over the
+// JS *and* the CSS together: they are one component and always ship as a pair,
+// so a token that moved for only one of them would let a game pick up new
+// markup against cached styles.
+let UI_VERSION = BUILD_ID;
 
 // Per-build cache policy, dropped into dist/ so it travels with every manual
 // upload (Apache reads .htaccess from the served directory tree — no separate
@@ -170,6 +179,23 @@ const buildTargets = [
     outfile: 'dist/schemas.cjs',
     format: 'cjs',
   },
+  // Shared leaderboard UI. Deliberately a separate bundle rather than part of
+  // sdk-v1.js: every game loads the SDK, but only the four with boards need
+  // this, and a transport library should not carry DOM rendering.
+  {
+    ...browserOpts,
+    entryPoints: ['src/ui/index.ts'],
+    outfile: 'dist/leaderboard-v1.js',
+    format: 'iife',
+    globalName: '__OddsRabbitUI',
+    minify: true,
+  },
+  {
+    ...browserOpts,
+    entryPoints: ['src/ui/index.ts'],
+    outfile: 'dist/leaderboard-v1.esm.js',
+    format: 'esm',
+  },
   // Sandbox host page
   {
     ...browserOpts,
@@ -214,6 +240,9 @@ async function copyHostAssets() {
   // The SDK bundle exists by now (built before this runs), so hash it for the
   // `__SDK_VERSION__` cache-bust stamped into every game's index.html.
   SDK_VERSION = await computeSdkVersion();
+  // The leaderboard CSS has to land before the version is hashed over it.
+  await copyFile('src/ui/leaderboard.css', 'dist/leaderboard-v1.css');
+  UI_VERSION = await computeUiVersion();
   await Promise.all([
     writeFile('dist/.htaccess', APPS_HTACCESS),
     copyHtmlWithBuildId('src/host/host.html', 'dist/host/index.html'),
@@ -269,6 +298,7 @@ async function copyHostAssets() {
 // Substitutes cache-bust placeholders in HTML:
 //   __BUILD_ID__     — per-build id, for the game's OWN assets (main.js, css).
 //   __SDK_VERSION__  — content hash of the shared sdk-v1.js (see SDK_VERSION).
+//   __UI_VERSION__   — content hash of the shared leaderboard-v1.js + .css.
 async function copyHtmlWithBuildId(src, dest) {
   const content = await readFile(src, 'utf8');
   await writeFile(
@@ -276,6 +306,7 @@ async function copyHtmlWithBuildId(src, dest) {
     content
       .replaceAll('__BUILD_ID__', BUILD_ID)
       .replaceAll('__SDK_VERSION__', SDK_VERSION)
+      .replaceAll('__UI_VERSION__', UI_VERSION)
   );
 }
 
@@ -291,6 +322,20 @@ async function computeSdkVersion() {
   }
 }
 
+// Content hash over the leaderboard bundle AND its stylesheet, so the two can
+// never be versioned apart. Same watch-mode fallback as computeSdkVersion.
+async function computeUiVersion() {
+  try {
+    const [js, css] = await Promise.all([
+      readFile('dist/leaderboard-v1.js'),
+      readFile('dist/leaderboard-v1.css'),
+    ]);
+    return createHash('sha256').update(js).update(css).digest('hex').slice(0, 12);
+  } catch {
+    return BUILD_ID;
+  }
+}
+
 function generateDeclarations() {
   // tsc emits to dist/<rootDir-mirror>/, e.g. dist/sdk/index.d.ts. Wrap with stable entries.
   execSync('tsc --emitDeclarationOnly --outDir dist', { stdio: 'inherit' });
@@ -300,4 +345,5 @@ function generateDeclarations() {
 if (!watch) {
   await writeFile('dist/sdk-v1.d.ts', "export * from './sdk/index';\n");
   await writeFile('dist/schemas.d.ts', "export * from './schemas/index';\n");
+  await writeFile('dist/leaderboard-v1.d.ts', "export * from './ui/index';\n");
 }

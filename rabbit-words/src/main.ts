@@ -3,6 +3,10 @@ import type {
   OddsRabbitGlobal,
   ScoreDistributionEntry,
 } from '../../src/sdk/sdk';
+import {
+  createLeaderboardPanel,
+  type LeaderboardRow,
+} from '../../src/ui/leaderboard';
 import { isValidGuess } from './words';
 
 declare global {
@@ -657,34 +661,19 @@ function viewerResultFromState(state: State): ViewerResult | null {
   return null;
 }
 
-function appendResultRow(
-  list: HTMLElement,
-  name: string,
-  won: boolean,
-  guessCount: number | undefined,
-  isViewer: boolean
-): void {
-  const li = document.createElement('li');
-  li.className = isViewer ? 'friends-row friends-row-you' : 'friends-row';
-
-  const nameEl = document.createElement('span');
-  nameEl.className = 'friends-name';
-  nameEl.textContent = isViewer ? `${name} (you)` : name;
-  li.appendChild(nameEl);
-
-  const result = document.createElement('span');
-  result.className = 'friends-result';
-  if (won && typeof guessCount === 'number') {
-    result.textContent = `Solved in ${guessCount}`;
-  } else if (won) {
-    result.textContent = 'Solved';
-  } else {
-    result.textContent = "Didn't solve";
-    result.classList.add('friends-result-lost');
-  }
-  li.appendChild(result);
-  list.appendChild(li);
-}
+/**
+ * Today's friends board, rendered by the shared leaderboard component
+ * (`src/ui/leaderboard.ts`). Replaces this game's own row and CTA rendering.
+ *
+ * **Friends only — no Global tab.** rabbit-words scores 0, or 1–6 by guess
+ * count, so a daily global board is hundreds of players tied on seven possible
+ * values, separated only by who submitted first. That's a clock, not a ranking.
+ * Words gets its global board in Phase 3 as a *season* board (qualified average
+ * over the month) — see §3.7 and §5.3 of docs/proposals/unified-leaderboard.md.
+ * Do not add a `scores.top` tab here in the meantime.
+ */
+const FRIENDS_EMPTY =
+  'Invite friends or follow other players on OddsRabbit to see how they did here.';
 
 function renderFriendsPanel(
   friends?: FriendScore[],
@@ -698,109 +687,115 @@ function renderFriendsPanel(
   title.textContent = 'Friends';
   wrap.appendChild(title);
 
-  // Anonymous: sign-in CTA. Use requestSignIn — the host shows the prompt at
-  // a natural friction moment (end-of-round), per the SDK guidance.
-  if (!window.OddsRabbit.user) {
-    const cta = document.createElement('div');
-    cta.className = 'friends-cta';
+  const OR = window.OddsRabbit;
+  const signedIn = Boolean(OR.user);
 
-    const blurb = document.createElement('p');
-    blurb.className = 'friends-cta-blurb';
-    blurb.textContent = 'Sign in to see how people you follow are doing today.';
-    cta.appendChild(blurb);
-
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'friends-cta-btn';
-    btn.textContent = 'Sign in';
-    btn.addEventListener('click', () => {
-      void window.OddsRabbit.actions.requestSignIn(
-        'See how your friends did today'
-      );
-    });
-    cta.appendChild(btn);
-    wrap.appendChild(cta);
-    return wrap;
-  }
-
-  if (!friends || friends.length === 0) {
-    // Single empty state for both "you follow nobody" and "follows but nobody
-    // played today" — we can't distinguish them client-side (scores.friends
-    // returns [] in both cases), so the copy covers both paths.
-    const cta = document.createElement('div');
-    cta.className = 'friends-cta';
-
-    const blurb = document.createElement('p');
-    blurb.className = 'friends-cta-blurb';
-    blurb.textContent =
-      'Invite friends or follow other players on OddsRabbit to see how they did here.';
-    cta.appendChild(blurb);
-
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'friends-cta-btn';
-    btn.textContent = 'Invite a friend';
-    btn.addEventListener('click', () => {
-      void runInviteShare();
-    });
-    cta.appendChild(btn);
-    wrap.appendChild(cta);
-    return wrap;
-  }
-
-  const list = document.createElement('ul');
-  list.className = 'friends-list';
-
-  // Viewer's own row at the top, so the friends list reads as a comparison
-  // rather than an out-group leaderboard. Two sources, in priority order:
-  //   1. `viewerResult` (end-of-game flow) — synchronously available, so the
-  //      row paints without waiting on the scores.friends round-trip.
-  //   2. The `isSelf: true` row in `friends` (past-day modal) — viewer state
-  //      isn't archived locally there, so the backend's own entry is what
-  //      tells us the viewer played this round.
-  // The other branch is filtered out of the rest-of-friends loop below, so
-  // the viewer never renders twice.
-  const selfFromBackend = friends.find((f) => f.isSelf) ?? null;
-  const otherFriends = friends.filter((f) => !f.isSelf);
-
-  if (viewerResult) {
-    const viewerName = window.OddsRabbit.user
-      ? `@${window.OddsRabbit.user.username}`
-      : 'You';
-    appendResultRow(
-      list,
-      viewerName,
-      viewerResult.won,
-      viewerResult.guessCount,
-      true
-    );
-  } else if (selfFromBackend) {
-    const meta = selfFromBackend.metadata as
-      | { won?: boolean; guessCount?: number }
-      | null;
-    const won = meta?.won ?? selfFromBackend.score > 0;
-    appendResultRow(
-      list,
-      `@${selfFromBackend.username}`,
-      won,
-      meta?.guessCount,
-      true
-    );
-  }
-
-  for (const friend of otherFriends) {
-    // App-specific metadata shape — rabbit-words submits `{ won, guessCount }`.
-    // Falling back to score-based inference keeps this resilient if a future
-    // migration drops the metadata.
-    const meta = friend.metadata as
-      | { won?: boolean; guessCount?: number }
-      | null;
-    const won = meta?.won ?? friend.score > 0;
-    appendResultRow(list, `@${friend.username}`, won, meta?.guessCount, false);
-  }
-  wrap.appendChild(list);
-
+  wrap.appendChild(
+    createLeaderboardPanel({
+      tabs: [
+        {
+          id: 'friends',
+          label: 'Friends',
+          // One empty state for both "you follow nobody" and "they follow
+          // people but nobody played today" — `scores.friends` returns [] in
+          // either case, so the client genuinely can't tell them apart.
+          // `emptyPrompt` wins whenever it is set; `emptyText` is the same copy
+          // without the button, for a future caller that drops the prompt.
+          emptyText: FRIENDS_EMPTY,
+          emptyPrompt: {
+            blurb: FRIENDS_EMPTY,
+            label: 'Invite a friend',
+            onClick: () => {
+              void runInviteShare();
+            },
+          },
+          load: () => Promise.resolve(friendsRows(friends, viewerResult)),
+          formatValue: (row) => {
+            const meta = resultMeta(row);
+            if (meta.won && typeof meta.guessCount === 'number') {
+              return `Solved in ${meta.guessCount}`;
+            }
+            return meta.won ? 'Solved' : "Didn't solve";
+          },
+          valueClass: (row) =>
+            resultMeta(row).won ? null : 'friends-result-lost',
+          // Anonymous: requestSignIn rather than a link, so the host raises the
+          // prompt at a natural friction moment (end of round), per SDK guidance.
+          signInPrompt: signedIn
+            ? null
+            : {
+                blurb: 'Sign in to see how people you follow are doing today.',
+                label: 'Sign in',
+                onClick: () => {
+                  void OR.actions.requestSignIn('See how your friends did today');
+                },
+              },
+        },
+      ],
+      viewerUuid: OR.user?.uuid ?? null,
+    }).element
+  );
   return wrap;
+}
+
+/**
+ * App-specific metadata shape — rabbit-words submits `{ won, guessCount }`.
+ * Falls back to inferring the win from the score so the board survives a future
+ * migration that drops the metadata.
+ */
+function resultMeta(row: LeaderboardRow): { won: boolean; guessCount?: number } {
+  const meta = row.metadata as { won?: boolean; guessCount?: number } | null;
+  return {
+    won: meta?.won ?? row.score > 0,
+    ...(typeof meta?.guessCount === 'number' ? { guessCount: meta.guessCount } : {}),
+  };
+}
+
+/**
+ * The viewer plus the friends they follow, best result first.
+ *
+ * The viewer's own entry has two sources: `viewerResult` from the live
+ * end-of-round flow, available before the `scores.friends` round-trip returns,
+ * and the backend's own `isSelf` row on the past-day modal, where local state
+ * isn't archived. The other branch is filtered out, so the viewer never renders
+ * twice.
+ */
+function friendsRows(
+  friends: FriendScore[] | undefined,
+  viewerResult: ViewerResult | null | undefined
+): LeaderboardRow[] {
+  const all = friends ?? [];
+  const selfFromBackend = all.find((f) => f.isSelf) ?? null;
+  const rows: LeaderboardRow[] = all.filter((f) => !f.isSelf);
+
+  const user = window.OddsRabbit.user;
+  if (viewerResult && user) {
+    rows.push({
+      uuid: user.uuid,
+      username: user.username,
+      // Same formula as the submit path: 1 guess = ROW_COUNT, a loss = 0.
+      score:
+        viewerResult.won && typeof viewerResult.guessCount === 'number'
+          ? ROW_COUNT + 1 - viewerResult.guessCount
+          : 0,
+      createdAt: '',
+      avatar: user.avatar,
+      metadata: { won: viewerResult.won, guessCount: viewerResult.guessCount },
+      isSelf: true,
+    });
+  } else if (selfFromBackend) {
+    rows.push(selfFromBackend);
+  }
+
+  // Nobody but the viewer isn't a comparison — hand back empty so the invite
+  // prompt shows instead of a leaderboard of one.
+  if (rows.every((row) => row.isSelf)) return [];
+
+  // Higher score = solved in fewer guesses. Ties are the norm here (seven
+  // possible values), which is why the shared component ranks them as ties
+  // rather than ordering them arbitrarily.
+  rows.sort((a, b) => b.score - a.score || (a.isSelf ? -1 : b.isSelf ? 1 : 0));
+  return rows;
 }
 
 function nextResetMs(): number {

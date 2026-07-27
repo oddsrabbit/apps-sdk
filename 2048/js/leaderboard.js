@@ -4,12 +4,17 @@
 //   • Hall of Fame — players who've beaten 2048, earliest first (roundKey "win",
 //     order "first"), plus a "N players have beaten 2048" line from the win
 //     distribution.
+//
+// The modal, rows, avatars, medals and ranking come from the shared leaderboard
+// component (src/ui/leaderboard.ts, loaded as window.OddsRabbitUI). What's left
+// here is the 2048-specific part: which rounds, how a value reads, and the
+// capability gating on the entry point.
+//
 // ES5-style vanilla JS to match the rest of 2048 (copied static, not bundled).
-// Rows are built with createElement + textContent (never innerHTML) so a
-// username can never inject markup.
 
 (function () {
   var OR = window.OddsRabbit;
+  var UI = window.OddsRabbitUI;
   var button = document.querySelector(".leaderboard-button");
 
   // Hide the entry point on a host that can't serve a global board, rather than
@@ -21,18 +26,18 @@
   // review). Ask the host via capabilities instead; `has()` also flips to false
   // once a call has been rejected as unsupported, which covers hosts too old to
   // declare capabilities at all.
-  if (!OR || !OR.scores || !OR.capabilities || !OR.whenReady) {
+  if (!OR || !OR.scores || !OR.capabilities || !OR.whenReady || !UI) {
     if (button) button.style.display = "none";
     return;
   }
   if (!button) return;
 
+  var HIGHSCORE_ROUND = "highscore";
+  var WIN_ROUND = "win";
+  var LIMIT = 20;
+
   function hideButton() {
     button.style.display = "none";
-  }
-
-  function showButton() {
-    button.style.display = "";
   }
 
   function hostSupportsGlobalBoard() {
@@ -49,97 +54,22 @@
   hideButton();
   OR.whenReady().then(function () {
     if (!hostSupportsGlobalBoard()) return;
-    showButton();
+    button.style.display = "";
     button.addEventListener("click", openLeaderboard);
   });
 
-  var HIGHSCORE_ROUND = "highscore";
-  var WIN_ROUND = "win";
-  var LIMIT = 20;
-
-  function noop() {}
-
-  function el(tag, className, text) {
-    var node = document.createElement(tag);
-    if (className) node.className = className;
-    if (text !== undefined && text !== null) node.textContent = String(text);
-    return node;
+  function formatScore(row) {
+    return Number(row.score).toLocaleString();
   }
 
-  function viewerUuid() {
-    return OR.user && OR.user.uuid ? OR.user.uuid : null;
-  }
-
-  function formatDate(iso) {
+  function formatDate(row) {
     try {
-      var d = new Date(iso);
+      var d = new Date(row.createdAt);
       if (isNaN(d.getTime())) return "";
       return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
     } catch (_) {
       return "";
     }
-  }
-
-  // Colored-initial avatar with an optional photo layered on top (revealed only
-  // once it loads, dropped on error) — mirrors the RabbitGlobe leaderboard.
-  function avatarEl(name, url) {
-    var clean = (name || "?").replace(/^@/, "");
-    var node = el("span", "lb-avatar");
-    var h = 0;
-    for (var i = 0; i < clean.length; i++) h = (h * 31 + clean.charCodeAt(i)) >>> 0;
-    node.style.background = "hsl(" + (h % 360) + " 55% 52%)";
-    node.textContent = (clean.charAt(0) || "?").toUpperCase();
-    if (url) {
-      var img = document.createElement("img");
-      img.className = "lb-avatar-img";
-      img.alt = "";
-      img.src = url;
-      img.addEventListener("load", function () { node.classList.add("lb-avatar-has-img"); });
-      img.addEventListener("error", function () { if (img.parentNode) img.parentNode.removeChild(img); });
-      node.appendChild(img);
-    }
-    return node;
-  }
-
-  var MEDALS = ["🥇", "🥈", "🥉"]; // 🥇🥈🥉
-
-  // Render one board's rows into `listEl`. `valueFn(row)` returns the right-hand
-  // text (a score, or a date for the hall of fame). Rank is positional (rows
-  // arrive pre-ordered from the server).
-  function renderRows(listEl, rows, valueFn) {
-    var me = viewerUuid();
-    for (var i = 0; i < rows.length; i++) {
-      var row = rows[i];
-      var isSelf = me !== null && row.uuid === me;
-      var li = el("li", isSelf ? "lb-row lb-row-you" : "lb-row");
-
-      var rank = i + 1;
-      var rankEl = el("span", "lb-rank", rank <= 3 ? MEDALS[rank - 1] : String(rank));
-
-      var name = row.username ? "@" + row.username : "player";
-      var nameEl = el("span", "lb-name", isSelf ? name + " (you)" : name);
-
-      var valueEl = el("span", "lb-value", valueFn(row));
-
-      li.appendChild(rankEl);
-      li.appendChild(avatarEl(name, row.avatar || null));
-      li.appendChild(nameEl);
-      li.appendChild(valueEl);
-      listEl.appendChild(li);
-    }
-  }
-
-  function renderBoard(container, title, rows, valueFn, emptyText) {
-    var section = el("section", "lb-section");
-    section.appendChild(el("h3", "lb-section-title", title));
-    if (!rows || rows.length === 0) {
-      section.appendChild(el("p", "lb-empty", emptyText));
-    } else {
-      var list = el("ul", "lb-list");
-      renderRows(list, rows, valueFn);
-      section.appendChild(list);
-    }
-    container.appendChild(section);
   }
 
   function sumCounts(distribution) {
@@ -150,104 +80,92 @@
     return total;
   }
 
+  // Fetch a board, and retire the entry point if this call is what reveals the
+  // host can't serve it. Reaching that branch means the host declared
+  // `scores.top` at init and then rejected it anyway — a host too old to declare
+  // capabilities, corrected by the SDK's runtime detection. Rejecting (rather
+  // than resolving []) keeps the modal from claiming nobody has ever played.
+  function loadBoard(roundKey, order) {
+    return OR.scores
+      .top({ roundKey: roundKey, order: order, limit: LIMIT })
+      .then(function (rows) {
+        if (!hostSupportsGlobalBoard()) {
+          hideButton();
+          var err = new Error("scores.top is unsupported on this host");
+          err.unsupported = true;
+          throw err;
+        }
+        return rows;
+      });
+  }
+
+  // "Try again" is the wrong thing to say about a host that will never serve
+  // this board — the button is being retired underneath the user as they read
+  // it. Distinguish that from a transient failure, which genuinely is worth a
+  // retry. Passed to both tabs, since either can be the call that finds out.
+  function boardErrorText(error) {
+    return error && error.unsupported
+      ? "Leaderboards aren't available in this version of the app."
+      : "Couldn't load the leaderboard. Try again.";
+  }
+
   function openLeaderboard() {
-    // Only one modal at a time.
-    var existing = document.querySelector(".lb-backdrop");
-    if (existing) existing.parentNode.removeChild(existing);
+    // Count of everyone who has ever won, from the win-round distribution.
+    // Stashed by the Hall of Fame tab's load() and read by its header, which the
+    // shared component only calls after that load has resolved.
+    var winnerCount = 0;
 
-    var backdrop = el("div", "lb-backdrop");
-    backdrop.setAttribute("role", "dialog");
-    backdrop.setAttribute("aria-modal", "true");
-    backdrop.setAttribute("aria-label", "2048 leaderboard");
-
-    var modal = el("div", "lb-modal");
-    var header = el("div", "lb-modal-header");
-    header.appendChild(el("h2", "lb-modal-title", "Leaderboard"));
-    var closeBtn = el("button", "lb-close", "×"); // ×
-    closeBtn.type = "button";
-    closeBtn.setAttribute("aria-label", "Close");
-    header.appendChild(closeBtn);
-    modal.appendChild(header);
-
-    var body = el("div", "lb-modal-body");
-    body.appendChild(el("p", "lb-loading", "Loading…"));
-    modal.appendChild(body);
-
-    backdrop.appendChild(modal);
-    document.body.appendChild(backdrop);
-
-    function close() {
-      document.removeEventListener("keydown", onKey);
-      if (backdrop.parentNode) backdrop.parentNode.removeChild(backdrop);
-    }
-    function onKey(e) { if (e.key === "Escape") close(); }
-    document.addEventListener("keydown", onKey);
-    backdrop.addEventListener("click", function (e) { if (e.target === backdrop) close(); });
-    closeBtn.addEventListener("click", close);
-
-    // Fetch all three in parallel. An UNSUPPORTED verb resolves to [] rather
-    // than rejecting (the SDK swallows those), so a host missing one of the
-    // three still renders the rest. Every other failure — network, auth, a
-    // malformed request — still rejects, and the .catch below blanks the modal
-    // with a retry message, which is the honest answer for a transient fault.
-    Promise.all([
-      OR.scores.top({ roundKey: HIGHSCORE_ROUND, order: "top", limit: LIMIT }),
-      OR.scores.top({ roundKey: WIN_ROUND, order: "first", limit: LIMIT }),
-      OR.capabilities.has("scores.distribution")
-        ? OR.scores.distribution({ roundKey: WIN_ROUND })
-        : Promise.resolve([])
-    ]).then(function (results) {
-      if (!backdrop.parentNode) return; // closed while loading
-
-      // The reads resolve to [] rather than rejecting when the host doesn't
-      // implement the verb, so re-check afterwards. Reaching here means the
-      // host declared scores.top at init and then rejected it anyway (a host
-      // too old to declare capabilities, corrected by runtime detection), so
-      // retire the button instead of claiming nobody has played. Say why rather
-      // than yanking the modal shut — an unexplained disappearance reads as a
-      // crash, and the button is about to vanish too.
-      if (!hostSupportsGlobalBoard()) {
-        hideButton();
-        body.textContent = "";
-        body.appendChild(el("p", "lb-empty", "Leaderboards aren't available in this version of the app."));
-        return;
-      }
-
-      var highScores = results[0] || [];
-      var winners = results[1] || [];
-      var winnerCount = sumCounts(results[2] || []);
-
-      body.textContent = "";
-
-      renderBoard(
-        body,
-        "High Scores",
-        highScores,
-        function (row) { return Number(row.score).toLocaleString(); },
-        "No scores yet — play a game to get on the board."
-      );
-
-      if (winnerCount > 0) {
-        var count = el("p", "lb-count");
-        var strong = el("strong", null, winnerCount.toLocaleString());
-        count.appendChild(strong);
-        count.appendChild(document.createTextNode(
-          winnerCount === 1 ? " player has beaten 2048" : " players have beaten 2048"
-        ));
-        body.appendChild(count);
-      }
-
-      renderBoard(
-        body,
-        "Hall of Fame",
-        winners,
-        function (row) { return formatDate(row.createdAt); },
-        "Nobody has reached the 2048 tile yet — be the first!"
-      );
-    }).catch(function () {
-      if (!backdrop.parentNode) return;
-      body.textContent = "";
-      body.appendChild(el("p", "lb-empty", "Couldn't load the leaderboard. Try again."));
+    UI.openLeaderboardModal({
+      title: "Leaderboard",
+      viewerUuid: OR.user && OR.user.uuid ? OR.user.uuid : null,
+      tabs: [
+        {
+          id: "highscores",
+          label: "High Scores",
+          emptyText: "No scores yet — play a game to get on the board.",
+          load: function () {
+            return loadBoard(HIGHSCORE_ROUND, "top");
+          },
+          errorText: boardErrorText,
+          formatValue: formatScore
+        },
+        {
+          id: "halloffame",
+          label: "Hall of Fame",
+          emptyText: "Nobody has reached the 2048 tile yet — be the first!",
+          // Ordered by who got there first, not by score — so ranks are
+          // positional. Sharing a rank between two 2048-tile wins would claim a
+          // tie that the board isn't actually expressing.
+          rankTies: false,
+          load: function () {
+            var rows = loadBoard(WIN_ROUND, "first");
+            // The histogram is a nice-to-have next to the board itself: if the
+            // host lacks the verb it resolves [] (count 0, line omitted), and a
+            // genuine failure shouldn't take the winners list down with it.
+            var counts = OR.capabilities.has("scores.distribution")
+              ? OR.scores.distribution({ roundKey: WIN_ROUND }).catch(function () { return []; })
+              : Promise.resolve([]);
+            return Promise.all([rows, counts]).then(function (results) {
+              winnerCount = sumCounts(results[1]);
+              return results[0];
+            });
+          },
+          errorText: boardErrorText,
+          formatValue: formatDate,
+          renderHeader: function () {
+            if (winnerCount <= 0) return null;
+            var p = document.createElement("p");
+            p.className = "lb-count";
+            var strong = document.createElement("strong");
+            strong.textContent = winnerCount.toLocaleString();
+            p.appendChild(strong);
+            p.appendChild(document.createTextNode(
+              winnerCount === 1 ? " player has beaten 2048" : " players have beaten 2048"
+            ));
+            return p;
+          }
+        }
+      ]
     });
   }
 })();

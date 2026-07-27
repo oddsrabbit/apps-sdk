@@ -1,5 +1,16 @@
 :root {
   color-scheme: light;
+  /* Theme the shared leaderboard component (src/ui/leaderboard.css), which
+     reads --lb-*. Aliases, not copies: `var()` in a custom property resolves at
+     use, so the dark-mode blocks below only redefine the source variables and
+     these follow automatically. */
+  --lb-text: var(--fg);
+  --lb-muted: var(--muted);
+  --lb-border: var(--border);
+  --lb-accent: var(--green);
+  --lb-accent-text: #fff;
+  --lb-surface: var(--bg);
+  --lb-you-bg: color-mix(in srgb, var(--green) 8%, transparent);
   --tile: 56px;
   --gap: 6px;
   --bg: #fff;
@@ -432,80 +443,23 @@ header h1 {
   gap: 6px;
 }
 
-.community-empty,
-.friends-empty {
+/* `.friends-empty` retired with the local friends renderer — the shared
+   component's empty state is `.lb-empty`. */
+.community-empty {
   margin: 0;
   font-size: 13px;
   color: var(--muted);
   text-align: center;
 }
 
-.friends-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.friends-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  font-size: 13px;
-}
-
-.friends-row-you {
-  border-color: var(--accent, var(--fg));
-  background: color-mix(in srgb, var(--accent, var(--fg)) 8%, transparent);
-}
-
-.friends-name {
-  font-weight: 700;
-}
-
-.friends-result {
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-
+/* Rows, avatars, ranks and both CTA states are the shared leaderboard component
+   (src/ui/leaderboard.css), themed by the --lb-* aliases at the top of this
+   file. Only the loss color stays local: it is applied via the tab's
+   valueClass() hook, because "did not solve" is a rabbit-words concept the
+   shared module has no reason to know about. */
 .friends-result-lost {
   color: var(--gray);
 }
-
-.friends-cta {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  padding: 12px;
-  border: 1px dashed var(--border);
-  border-radius: 4px;
-}
-
-.friends-cta-blurb {
-  margin: 0;
-  font-size: 13px;
-  color: var(--muted);
-  text-align: center;
-}
-
-.friends-cta-btn {
-  padding: 8px 14px;
-  background: var(--green);
-  color: #fff;
-  border: 0;
-  border-radius: 4px;
-  font-size: 13px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.friends-cta-btn:hover { filter: brightness(1.05); }
 
 .share-btn {
   margin-top: 4px;

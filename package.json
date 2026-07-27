@@ -26,6 +26,11 @@
       "import": "./dist/schemas.esm.js",
       "require": "./dist/schemas.cjs"
     },
+    "./ui": {
+      "types": "./dist/leaderboard-v1.d.ts",
+      "import": "./dist/leaderboard-v1.esm.js"
+    },
+    "./ui/leaderboard.css": "./dist/leaderboard-v1.css",
     "./host": "./dist/host/index.html"
   },
   "files": [

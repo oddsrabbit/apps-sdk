@@ -37,6 +37,10 @@
   var overlayText = document.querySelector(".game-message-text");
   var overlaySub = document.querySelector(".game-message-sub");
   var friendsPanelEl = document.querySelector(".friends-panel");
+  // Shared leaderboard component (dist/leaderboard-v1.js). Absent on a stale
+  // cached bundle, which renderFriendsPanel treats as "no panel" rather than
+  // failing.
+  var UI = window.OddsRabbitUI;
   var startDailyBtn = document.querySelector(".start-daily-button");
   var startRandomBtn = document.querySelector(".start-random-button");
   var finishBtn = document.querySelector(".finish-button");
@@ -377,121 +381,146 @@
     } catch (_) {}
   }
 
-  // Fetch the people-you-follow leaderboard for this daily and render the
-  // panel. Async + best-effort: the win overlay is already up, so a slow or
-  // failed fetch just leaves the panel in its CTA/empty state. Guarded on the
-  // overlay still showing "won" so a fetch that resolves after the player has
-  // moved on (New Deal, replay) doesn't paint a stale list.
+  // Render the boards for this daily. The fetching now belongs to the shared
+  // panel — each tab loads itself, shows its own loading and error states, and
+  // a board that fails leaves the others usable. Staleness is handled by
+  // clearFriendsPanel() destroying the panel when a new deal starts, rather
+  // than by re-checking the overlay state after every resolve.
   function loadAndRenderFriends(id, viewerResult) {
-    renderFriendsPanel(null, viewerResult); // optimistic: viewer row + CTA immediately
-    if (!OR.user) return;                    // anon: CTA only, no fetch
-    if (!OR.scores || typeof OR.scores.friends !== "function") return;
-    try {
-      OR.scores
-        .friends({ roundKey: dailyRoundKey(id) })
-        .then(function (friends) {
-          if (overlay.getAttribute("data-state") !== "won") return;
-          renderFriendsPanel(friends, viewerResult);
-        })
-        .catch(function () {});
-    } catch (_) {}
+    renderFriendsPanel(id, viewerResult);
   }
 
+  // Live panel, so a new deal can tear the old one down before its fetches
+  // land. Without this, a board that resolves after the player has moved on
+  // would still be holding listeners on detached nodes.
+  var currentPanel = null;
+
   function clearFriendsPanel() {
+    if (currentPanel) {
+      currentPanel.destroy();
+      currentPanel = null;
+    }
     friendsPanelEl.innerHTML = "";
   }
 
-  // Build the friends panel for the won overlay. Three shapes, mirroring
-  // rabbit-words: signed-out → sign-in CTA; signed-in but no friends played →
-  // invite CTA; otherwise the viewer's own row on top of the followed-players
-  // list. `friends` is null on the optimistic first paint (before the fetch
-  // resolves) and an array afterward.
-  function renderFriendsPanel(friends, viewerResult) {
+  // Friends + Global boards for today's deal, rendered by the shared
+  // leaderboard component (src/ui/leaderboard.ts, loaded as window.OddsRabbitUI).
+  // Replaces this game's own row/CTA rendering; what stays here is solitaire's
+  // part — which rounds, and that a "score" reads back as a solve time.
+  //
+  // Rows carry `metadata.timeMs`, which is what the player actually cares about;
+  // the stored score is a derived speed value (see dailyScore) and would be
+  // meaningless on screen.
+  function renderFriendsPanel(id, viewerResult) {
     clearFriendsPanel();
+    // Nothing to render the boards with (an old cached bundle, a page that
+    // didn't get the script tag, or an SDK too old to expose scores.friends):
+    // leave the container empty. `.friends-panel:empty` hides it, so the win
+    // overlay loses a section rather than gaining a broken one. Checked here
+    // rather than left to load() because this runs BEFORE setOverlayState —
+    // anything that throws out of here costs the player their win screen.
+    if (!UI || !OR.capabilities) return;
+    if (!OR.scores || typeof OR.scores.friends !== "function") return;
+
+    var roundKey = dailyRoundKey(id);
+
+    function formatResult(row) {
+      var meta = row.metadata || null;
+      var timeMs = meta && typeof meta.timeMs === "number" ? meta.timeMs : null;
+      return timeMs != null ? formatTime(timeMs) : "Solved";
+    }
+
+    // The viewer's own row comes from the just-finished game, so it can be shown
+    // without waiting on the backend to have recorded it.
+    function withViewer(friends) {
+      var rows = [];
+      var i;
+      for (i = 0; i < friends.length; i++) {
+        if (!friends[i].isSelf) rows.push(friends[i]);
+      }
+      if (viewerResult && OR.user) {
+        rows.push({
+          uuid: OR.user.uuid,
+          username: OR.user.username,
+          score: dailyScore(viewerResult.timeMs),
+          createdAt: "",
+          avatar: OR.user.avatar || null,
+          metadata: { timeMs: viewerResult.timeMs },
+          isSelf: true
+        });
+      } else {
+        for (i = 0; i < friends.length; i++) {
+          if (friends[i].isSelf) rows.push(friends[i]);
+        }
+      }
+      // Nobody but the viewer isn't a comparison — fall through to the invite
+      // prompt instead of rendering a leaderboard of one.
+      var others = 0;
+      for (i = 0; i < rows.length; i++) if (!rows[i].isSelf) others++;
+      if (others === 0) return [];
+      // Higher score = faster solve, so this is fastest-first.
+      rows.sort(function (a, b) {
+        return b.score - a.score || (a.isSelf ? -1 : b.isSelf ? 1 : 0);
+      });
+      return rows;
+    }
+
+    var tabs = [
+      {
+        id: "friends",
+        label: "Friends",
+        emptyText: "None of your friends have solved today's deal yet.",
+        emptyPrompt: {
+          blurb: "None of your friends have solved today's deal yet. Invite one?",
+          label: "Invite a friend",
+          onClick: runInviteShare
+        },
+        load: function () {
+          return OR.scores.friends({ roundKey: roundKey }).then(withViewer);
+        },
+        formatValue: formatResult,
+        signInPrompt: OR.user
+          ? null
+          : {
+              blurb: "Sign in to see how people you follow did on today's deal.",
+              label: "Sign in",
+              onClick: function () {
+                try {
+                  if (OR.actions && OR.actions.requestSignIn) {
+                    OR.actions
+                      .requestSignIn("See how your friends did on today's deal")
+                      .catch(function () {});
+                  }
+                } catch (_) {}
+              }
+            }
+      }
+    ];
+
+    // Public read, so guests get this board too — but only where the host
+    // implements the verb and the loaded SDK can call it.
+    if (OR.capabilities.has("scores.top") && typeof OR.scores.top === "function") {
+      tabs.push({
+        id: "global",
+        label: "Global",
+        emptyText: "Nobody has solved today's deal yet — be the first!",
+        load: function () {
+          return OR.scores.top({ roundKey: roundKey, order: "top", limit: 20 });
+        },
+        formatValue: formatResult
+      });
+    }
+
+    currentPanel = UI.createLeaderboardPanel({
+      tabs: tabs,
+      viewerUuid: OR.user && OR.user.uuid ? OR.user.uuid : null
+    });
 
     var title = document.createElement("h3");
     title.className = "friends-title";
-    title.textContent = "Friends";
+    title.textContent = "Leaderboard";
     friendsPanelEl.appendChild(title);
-
-    if (!OR.user) {
-      appendFriendsCta(
-        "Sign in to see how people you follow did on today's deal.",
-        "Sign in",
-        function () {
-          try {
-            if (OR.actions && OR.actions.requestSignIn) {
-              OR.actions.requestSignIn("See how your friends did on today's deal").catch(function () {});
-            }
-          } catch (_) {}
-        }
-      );
-      return;
-    }
-
-    var list = document.createElement("ul");
-    list.className = "friends-list";
-    if (viewerResult) {
-      var viewerName = OR.user.username ? "@" + OR.user.username : "You";
-      appendFriendRow(list, viewerName, viewerResult.timeMs, true);
-    }
-
-    if (friends && friends.length) {
-      for (var i = 0; i < friends.length; i++) {
-        var f = friends[i];
-        var meta = f.metadata || null;
-        var timeMs = meta && typeof meta.timeMs === "number" ? meta.timeMs : null;
-        appendFriendRow(list, "@" + f.username, timeMs, false);
-      }
-      friendsPanelEl.appendChild(list);
-      return;
-    }
-
-    // Signed in, but nobody we follow has a score yet (or the fetch hasn't
-    // landed). Show the viewer's row plus an invite nudge so the panel still
-    // reads as social rather than empty.
-    friendsPanelEl.appendChild(list);
-    appendFriendsCta(
-      "None of your friends have solved today's deal yet. Invite one?",
-      "Invite a friend",
-      runInviteShare
-    );
-  }
-
-  function appendFriendRow(list, name, timeMs, isViewer) {
-    var li = document.createElement("li");
-    li.className = isViewer ? "friends-row friends-row-you" : "friends-row";
-
-    var nameEl = document.createElement("span");
-    nameEl.className = "friends-name";
-    nameEl.textContent = isViewer ? name + " (you)" : name;
-    li.appendChild(nameEl);
-
-    var resultEl = document.createElement("span");
-    resultEl.className = "friends-result";
-    resultEl.textContent = (timeMs != null) ? formatTime(timeMs) : "Solved";
-    li.appendChild(resultEl);
-
-    list.appendChild(li);
-  }
-
-  function appendFriendsCta(blurbText, btnText, onClick) {
-    var cta = document.createElement("div");
-    cta.className = "friends-cta";
-
-    var blurb = document.createElement("p");
-    blurb.className = "friends-cta-blurb";
-    blurb.textContent = blurbText;
-    cta.appendChild(blurb);
-
-    var btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "friends-cta-btn";
-    btn.textContent = btnText;
-    btn.addEventListener("click", onClick);
-    cta.appendChild(btn);
-
-    friendsPanelEl.appendChild(cta);
+    friendsPanelEl.appendChild(currentPanel.element);
   }
 
   function runInviteShare() {

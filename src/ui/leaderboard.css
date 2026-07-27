@@ -1,0 +1,258 @@
+/* Shared leaderboard styles for OddsRabbit mini-apps.
+ *
+ * Merged from the two implementations that had drifted apart: 2048's modal
+ * chrome and rabbit-globe's row/avatar rules. The `lb-*` names were already
+ * identical in both — only the colors differed, because 2048 hardcoded its
+ * board palette and globe used CSS custom properties.
+ *
+ * Every color here is `var(--lb-*, fallback)`. A game themes the board by
+ * setting the `--lb-*` variables on any ancestor (usually `:root`), and gets a
+ * neutral, readable default if it sets nothing. Do NOT hardcode a game's
+ * palette into this file — that is what forced the fork the first time.
+ *
+ * Layout deliberately follows globe: separator lines between rows, with the
+ * viewer's row lifted out as a rounded highlight. 2048's fully-rounded rows
+ * read as a list of buttons once there are twenty of them.
+ */
+
+/* `--lb-text` has to be applied HERE, not only on `.lb-modal`. An inline panel
+   (solitaire's win overlay, globe's end-game screen) sits on the game's own
+   surface, and if the panel just inherits, a game whose body text is dark and
+   whose panel surface is dark renders names and values invisible — which is
+   exactly what solitaire did, `#5c3a1e` on `rgba(92,58,30,.92)`. Falling back
+   to `inherit` keeps a game that sets no variables looking as before. */
+.lb-panel {
+  text-align: left;
+  color: var(--lb-text, inherit);
+}
+
+.lb-body:focus-visible {
+  outline: 2px solid var(--lb-accent, #8f7a66);
+  outline-offset: 2px;
+}
+
+/* ---- Tab strip (only rendered when a panel has more than one board) ---- */
+
+.lb-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 0 0 4px;
+  border-bottom: 1px solid var(--lb-border, rgba(0, 0, 0, 0.12));
+}
+
+.lb-tab {
+  appearance: none;
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 8px 12px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--lb-muted, #8a8279);
+  cursor: pointer;
+}
+
+.lb-tab:hover {
+  color: var(--lb-text, #3b3733);
+}
+
+.lb-tab-active {
+  color: var(--lb-text, #3b3733);
+  border-bottom-color: var(--lb-accent, #8f7a66);
+}
+
+.lb-tab:focus-visible {
+  outline: 2px solid var(--lb-accent, #8f7a66);
+  outline-offset: -2px;
+}
+
+/* ---- Board body ---- */
+
+.lb-loading,
+.lb-empty {
+  color: var(--lb-muted, #8a8279);
+  font-size: 0.9rem;
+  padding: 16px 0;
+  margin: 0;
+}
+
+.lb-count {
+  margin: 14px 0 0;
+}
+
+.lb-count strong {
+  color: var(--lb-accent, #8f7a66);
+}
+
+.lb-list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+}
+
+.lb-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--lb-border, rgba(0, 0, 0, 0.12));
+}
+
+.lb-row:last-child {
+  border-bottom: 0;
+}
+
+.lb-row-you {
+  background: var(--lb-you-bg, rgba(237, 194, 46, 0.22));
+  border-radius: 10px;
+  border-bottom-color: transparent;
+  font-weight: 700;
+}
+
+.lb-rank {
+  flex: none;
+  width: 26px;
+  text-align: center;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--lb-muted, #8a8279);
+}
+
+/* The viewer's rank should not be greyed out like everyone else's. */
+.lb-row-you .lb-rank {
+  color: inherit;
+}
+
+.lb-avatar {
+  flex: none;
+  position: relative;
+  overflow: hidden;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+/* Photo sits over the colored initial and is revealed only once it loads, so a
+ * 404 or a slow CDN leaves the initial visible instead of a hole. */
+.lb-avatar-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.lb-avatar-has-img .lb-avatar-img {
+  opacity: 1;
+}
+
+.lb-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lb-value {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Signed-out call to action ---- */
+
+.lb-cta {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.lb-cta-blurb {
+  color: var(--lb-muted, #8a8279);
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.lb-cta-btn {
+  padding: 8px 16px;
+  border-radius: 10px;
+  border: none;
+  font: inherit;
+  font-weight: 600;
+  background: var(--lb-accent, #8f7a66);
+  color: var(--lb-accent-text, #fff);
+  cursor: pointer;
+}
+
+/* ---- Modal wrapper (openLeaderboardModal) ---- */
+
+.lb-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--lb-scrim, rgba(60, 55, 50, 0.55));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 1000;
+  animation: lb-fade-in 150ms ease;
+}
+
+@keyframes lb-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.lb-modal {
+  background: var(--lb-surface, #faf8ef);
+  color: var(--lb-text, #3b3733);
+  border-radius: 8px;
+  width: 100%;
+  max-width: 420px;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+  padding: 20px;
+}
+
+.lb-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.lb-modal-title {
+  font-size: 1.5rem;
+  font-weight: bold;
+  margin: 0;
+}
+
+.lb-close {
+  background: none;
+  border: 0;
+  color: inherit;
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lb-avatar-img {
+    transition: none;
+  }
+
+  .lb-backdrop {
+    animation: none;
+  }
+}

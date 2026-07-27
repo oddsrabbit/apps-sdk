@@ -4,8 +4,13 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
     <title>Solitaire</title>
+    <!-- Shared leaderboard component. Stylesheet first so styles.css keeps the
+         last word on the 8-bit overrides; the script installs
+         window.OddsRabbitUI, which js/application.js reads. -->
+    <link rel="stylesheet" href="../leaderboard-v1.css?v=__UI_VERSION__" />
     <link rel="stylesheet" href="./styles.css?v=__BUILD_ID__" />
     <script src="../sdk-v1.js?v=__SDK_VERSION__"></script>
+    <script src="../leaderboard-v1.js?v=__UI_VERSION__"></script>
   </head>
   <body>
     <div class="container">

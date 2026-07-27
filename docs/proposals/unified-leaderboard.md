@@ -1,8 +1,10 @@
 # Unified leaderboard system (global + friends)
 
-Status: proposal. Covers `apps-sdk` (SDK, sandbox host, games), `oddsrabbit-app`
-(RN host), and the OddsRabbit WordPress backend — the `oddsrabbit` WP site
-(`rest-routes/`, `cron/`), reviewed against a local checkout on 2026‑07‑26.
+Status: **accepted** — every open question closed 2026‑07‑27 (§5); Phase 1
+implemented but **not yet deployed** (§4). Covers `apps-sdk` (SDK, sandbox host,
+games), `oddsrabbit-app` (RN host), and the OddsRabbit WordPress backend — the
+`oddsrabbit` WP site (`rest-routes/`, `cron/`), reviewed against a local
+checkout on 2026‑07‑26.
 
 ## 1. Where things actually stand
 
@@ -84,8 +86,11 @@ than reject. Any new verb shipped to games before the host is redeployed hangs.
 The SDK's `FriendScoreSchema.uuid` is `z.string().uuid()`, so a user with no
 `user_uuid` row fails validation. Until `src/sdk/sdk.ts` was changed to per-row
 parsing, one such user emptied the **entire** board (`Schema.array().safeParse`
-is all-or-nothing). Now it drops just that row. Server side, either backfill
-`user_uuid` or make the join `INNER` so uuid-less users never ship.
+is all-or-nothing). Now it drops just that row. **Decided: backfill `user_uuid`
+server side.** Making the join `INNER` is the smaller change but it permanently
+hides those users rather than fixing them — they would stay invisible on boards
+they have earned a place on. No longer urgent now that per-row parsing contains
+the blast radius to the affected row.
 
 ### 2.4 The globe friends panel is not broken
 
@@ -107,8 +112,17 @@ every new verb is a coin flip.
 
 - Outer hosts add `capabilities: string[]` to the `init` message.
 - SDK exposes `OR.capabilities.has('scores.top')`.
-- Absent `capabilities` (older hosts) → SDK infers a conservative baseline set
-  (`storage.*`, `scores.submit|friends|distribution`, `content.daily`, actions).
+- Absent `capabilities` (older hosts) → SDK falls back to `LEGACY_CAPABILITIES`
+  (`src/sdk/sdk.ts`), which currently lists **every** verb in
+  `BRIDGE_REQUEST_TYPES`. **Decided: optimistic, not conservative.** A wrong
+  entry costs one rejected call, which runtime detection then corrects for the
+  rest of the session; a wrong omission is a feature that never appears on a
+  host that does support it. Accepted cost: on a pre-handshake host — in
+  practice the RN app during App Store review — 2048 shows the leaderboard
+  button, the first `scores.top` call is rejected, and the button retires
+  mid-session. Note the list is a **historical snapshot, not a mirror of the
+  schema**: do not add new verbs to it, or every pre-handshake host will be
+  assumed to implement them.
 - Games hide UI when the capability is absent, instead of feature-detecting the
   SDK surface.
 - Belt and braces: SDK treats a `bridge/unknown-action` rejection as
@@ -132,7 +146,7 @@ A single "global leaderboard" doesn't fit all seven apps. There are three shapes
 
 | Shape | Fits | roundKey | Ordering |
 | --- | --- | --- | --- |
-| **All-time best** | 2048, snake, match3 | `alltime` (+ `keepBest: true`) | score DESC |
+| **All-time best** | 2048 | `highscore` (+ `keepBest: true`) | score DESC |
 | **Today's round** | words, globe, solitaire | `puzzle-N` / `daily-<id>` | score DESC, `createdAt` ASC |
 | **Season (new)** | words, globe, solitaire | aggregate over `season-YYYY-MM` | SUM(score) or streak DESC |
 
@@ -221,11 +235,19 @@ Still to build:
 - **Decided: `scores.top` is a public read** — guests can fetch it without auth,
   same as `distribution` and `content.daily`. This makes boards usable as a
   marketing surface on the WP game pages. Two consequences: (a) usernames +
-  scores become publicly crawlable, so the per-user opt-out below is required,
-  not optional; (b) the RN/web hosts must not gate the verb behind a session,
-  and the SDK must not gate it behind `OR.user` the way `friends` does.
+  scores become publicly crawlable, hence the opt-out below; (b) the RN/web
+  hosts must not gate the verb behind a session, and the SDK must not gate it
+  behind `OR.user` the way `friends` does.
 - Per-user opt-out of *public* boards (friends boards are unaffected — those are
-  shared only with people the user chose to connect with).
+  shared only with people the user chose to connect with). **Decided: boards
+  ship before the opt-out exists**; it lands as a later configuration step
+  rather than blocking Phase 2. Worth being explicit about what that accepts:
+  between launch and the opt-out shipping, a signed-in user's username and score
+  are publicly readable with no way to decline, and search engines may index the
+  WP game pages in that window. Two things follow — the opt-out should ship
+  early in Phase 3 rather than at the end of it, and it needs to suppress
+  *existing* rows on the public board, not just future submissions, or users who
+  opt out later stay visible for scores already recorded.
 
 ### 3.6 Follow-from-board (the community-building payoff)
 
@@ -235,11 +257,16 @@ growth, which is what makes every *other* social surface in the games work.
 Needs a new verb (`actions.openProfile` or `social.follow`); no host implements
 one today. Worth scoping as its own slice after Phase 2.
 
-### 3.7 Season metrics — how 30 daily rows collapse into one number
+### 3.7 Season metrics — how a month of daily rows collapses into one number
+
+A season is a **calendar month**, not a rolling 30-day window, so its length
+varies (28–31) and a game's launch month is partial. Anything derived from the
+window length — notably `Q` below — must come from the keys
+`DailyGameRegistry` expands for that `period`, never from an assumed 30.
 
 Daily score ranges as they exist today:
 
-| App | Daily score | Month ceiling |
+| App | Daily score | Month ceiling (~30 days) |
 | --- | --- | --- |
 | rabbit-words | 0 (loss) or 1–6 (`ROW_COUNT + 1 - guessCount`) | 180 |
 | rabbit-globe | 0–15,000 (3 rounds × 5,000, exponential decay) | ~450,000 |
@@ -255,32 +282,65 @@ skill, or both?" Each option has a specific failure mode:
 | **Best N of month** (e.g. sum of best 20 days) | Skill + consistency; forgives ~10 missed days; late joiners can still fill their slots | Once 20 good days are banked, late-month days stop mattering. Needs a sentence of explanation |
 | **Wins / days played** | Nothing but participation | For words, hundreds tied at 28–30. No skill signal |
 | **Longest streak** | Habit, most legible metric | As a *sort key* it's ties all the way down; zero skill component |
+| **Qualified average** (days played capped at `Q`, tie-broken by mean) | Attendance to qualify, then skill; playing more never hurts you | Below `Q` you're invisible however well you play, so it reads as a wall to casual players. Needs the qualifier stated on the board |
 
 **Recommendation**
 
 - **rabbit-globe → total points.** Continuous scores mean effectively no ties, no
   rules to explain, and the number gets satisfyingly large.
-- **rabbit-words → total points, tie-broken by fewest total guesses.** The daily
-  score already encodes efficiency (6 = solved in one guess), so SUM reads as
-  "solved often *and* fast". Do not rank by wins (no skill signal) or by streak
-  (tie-soup) — instead display the streak as a badge on the row, so the habit
-  signal is visible in the UI without being the sort key.
+- **rabbit-words → qualified average.** Rank by `min(days_played, Q)` descending,
+  tie-broken by mean score across days played. Words is the one game where SUM
+  is indefensible: with only seven possible daily values, a monthly total is
+  dominated by how many days you showed up rather than how well you played.
+
+  Reads on the board as one line — *"play 2 days in 3 to qualify, then your
+  average ranks you."* The cap is what makes it work; without it the sort is
+  lexicographic and 31 days at average 2.0 beats 30 days at average 6.0, so a
+  single missed day outranks any amount of skill and the board is unwinnable for
+  most players by the 8th. Capping means missing up to a third of the month
+  costs nothing, everyone committed lands in the same tier, and the average
+  becomes the real sort rather than a rare tie-break.
+
+  It also closes the farming hole: a loss still records a row at score 0, so
+  bare days-played is maximised by opening the puzzle and typing anything. Above
+  `Q` that stops paying, and below `Q` it actively hurts — the zero drags the
+  average that decides your rank.
+
+  Do not rank by wins (no skill signal) or by streak (tie-soup). Show days played
+  and streak as row badges instead, so the habit signal is visible without being
+  the sort key.
+
+  **`Q` is derived from the period, not hardcoded.** `Q = ceil(puzzle_days × 2/3)`
+  where `puzzle_days` is the number of keys `DailyGameRegistry` actually expands
+  for that `period` — not calendar days. Seasons are calendar months, so length
+  varies (Feb 28 → `Q` 19, Jul 31 → `Q` 21), and a game's launch month is
+  partial: rabbit-globe's epoch is 2026‑06‑20, so June 2026 holds 11 puzzle days,
+  not 30. A fixed "miss up to 10 days" rule collapses to `Q = 1` there;
+  proportional degrades to 8 and stays meaningful.
 - **solitaire → total points.** Its daily score is already speed-based.
-- **2048 / snake / match3 → not a season but a *monthly best*** (MAX within the
-  window) alongside the all-time board. Different aggregation, same board shape.
+- **2048 → not a season but a *monthly best*** (MAX within the window) alongside
+  the all-time board. Different aggregation, same board shape.
   This matters more than it sounds: **all-time boards ossify.** After a few
   months the top 20 is frozen and no new player can ever appear on it, which
   destroys exactly the discovery/follow value that justifies making boards
   public. A monthly-best board gives everyone a live target.
 
-**Implementation**: one endpoint with a `metric` param — `sum`, `max`, `best_n`,
-`wins`, `streak` — and each app declares which it uses. Ship `sum` and `max`
-first; between them they cover all six scoring games. Add `best_n` later if
-mid-month drop-off shows up in the data.
+**Implementation**: one endpoint with a `metric` param — `sum`, `max`,
+`qualified_avg`, `best_n`, `wins`, `streak` — and each app declares which it
+uses. Ship `sum` (globe, solitaire), `max` (2048) and `qualified_avg` (words);
+between them they cover all four games that get boards (§5.3). `best_n` stays
+unbuilt until mid-month drop-off shows up in the data.
 
-The one decision underneath all of this: **SUM treats a missed day as a zero.**
-That is precisely what makes it an attendance metric, and it's why it beats
-average for a habit game — just be aware it's the choice being made.
+Note `qualified_avg` needs `puzzle_days` for the period to compute `Q`, which the
+endpoint already derives when it expands `period` into the key list — so the cap
+costs no extra query, just the count it already has.
+
+The decision underneath the daily games: **SUM treats a missed day as a zero.**
+That is precisely what makes it an attendance metric, and for globe and solitaire
+that's the right trade — their scores are continuous enough that skill still
+separates players inside it. Words is where it breaks down, which is why it gets
+a metric that qualifies on attendance and then ranks on skill instead of blending
+the two into one number.
 
 ## 4. Plan
 
@@ -317,21 +377,44 @@ to prompt). Games calling it on mobile hit the switch default. Harmless today
 because the signed-out CTA can't appear there, but it belongs in the capability
 list rather than in tribal knowledge.
 
-**Phase 2 — the shared system**
-1. Build `src/ui/leaderboard.ts` + shared CSS; wire into `build.config.mjs`.
-2. Adopt in rabbit-globe (Global + Friends tabs), then rabbit-words, then
-   solitaire. Delete the per-app duplicates.
-3. Add `alltime` boards to snake and match3 (they already bootstrap the SDK but
-   submit nothing — cheapest new leaderboards on the board).
-4. ~~roundKey convention migration~~ — cancelled (§3.3).
+**Phase 2 — the shared system** ✅ **implemented 2026‑07‑27** (not yet deployed)
+1. ✅ `src/ui/leaderboard.ts` + `src/ui/leaderboard.css`, built by
+   `build.config.mjs` to `dist/leaderboard-v1.{js,esm.js,css}` with a
+   `__UI_VERSION__` content-hash cache-bust hashed over the JS and CSS together.
+   Deliberately NOT folded into `sdk-v1.js`: every game loads the SDK, only four
+   have boards, and a transport library shouldn't carry DOM rendering.
+2. ✅ Adopted in rabbit-globe (Friends + Global), 2048 (High Scores + Hall of
+   Fame, via `openLeaderboardModal`), solitaire (Friends + Global), rabbit-words
+   (Friends). Every per-app copy of the row/avatar/medal/CTA rendering is gone;
+   each game keeps only which rounds it reads and how a value formats.
+3. ✅ rabbit-words takes the shared UI but **no Global tab** — its daily global
+   board is tie-soup (§3.7), so Friends only until the season board lands in
+   Phase 3.
+4. ~~Add `alltime` boards to snake and match3~~ — cancelled (§5.3).
+5. ~~roundKey convention migration~~ — cancelled (§3.3).
+
+Two things the shared module changed on the way through, both worth knowing:
+
+- **The sign-in prompt is per-tab, not per-panel.** `scores.top` is a public
+  read, so a signed-out viewer now gets the Global board with a sign-in prompt
+  on Friends alone. Previously globe and words replaced the *whole* panel with a
+  CTA for guests — which threw away the public board that §3.5 exists to
+  provide.
+- **Both vanilla games load a second script tag.** 2048 and solitaire are copied
+  verbatim by the build with no bundler, so they reach the module through
+  `window.OddsRabbitUI`; globe and words import it and esbuild bundles it. That
+  makes `dist/leaderboard-v1.js` a new deploy artifact — see Phase 4, it ships
+  with the games, not with the SDK.
 
 **Phase 3 — season boards**
-1. Backend aggregation endpoint + covering index + transient cache (§3.5);
+1. Opt-out setting surfaced wherever account settings live, suppressing existing
+   rows and not just future ones (§3.5). First, not last: Phase 2 ships public
+   boards without it, so every day it slips is a day users can't decline.
+2. Backend aggregation endpoint + covering index + transient cache (§3.5);
    register solitaire in `DailyGameRegistry` first.
-2. SDK verb `scores.season` + schema.
-3. Season tab in the shared UI; make it the default global board for
+3. SDK verb `scores.season` + schema.
+4. Season tab in the shared UI; make it the default global board for
    rabbit-words, where a daily global board is meaningless.
-4. Opt-out setting surfaced wherever account settings live.
 
 **Phase 4 — deploy discipline**
 Ship order is forced: **backend → SDK + sandbox host → games → RN app.** The RN
@@ -350,11 +433,33 @@ correctly — 2048 shows the button, the first `scores.top` call is rejected, th
 button retires — but the handshake is inert until the host is redeployed, so the
 ordering above is a correctness requirement, not a preference.
 
-## 5. Open questions
+## 5. Open questions — all closed 2026‑07‑27
 
 1. ~~Backend repo path~~ — reviewed; see header.
 2. ~~Should guests read global boards?~~ **Decided: yes** — and already how
    `/scores/top` is registered, so no work (§3.5).
-3. Season metric per game — recommendation in §3.7, pending sign-off.
-4. Is `highscore` → `alltime` worth a data migration, or should `alltime` just be
-   an alias the backend accepts?
+3. ~~Which games get a global board?~~ **Decided: four — 2048, rabbit-globe,
+   solitaire, rabbit-words.**
+   - 2048 (all-time, exists) and rabbit-globe (0–15,000, effectively no ties)
+     are the clear cases.
+   - solitaire is in: its 0–3,600 speed score is the same continuous shape as
+     globe's, and a *daily* global board needs no backend work at all —
+     `scores.top` on `daily-<id>` works today. The `DailyGameRegistry` gap
+     blocks only its season board.
+   - rabbit-words is in but **season-only** — a daily global board there is
+     hundreds of ties on a 1–6 range broken by timestamp (§3.7). Friends tab in
+     Phase 2, Global tab in Phase 3.
+   - **snake and match3 are out entirely**, not deferred. They submit nothing
+     today, so a board launches empty and the submit path is real work rather
+     than "cheapest on the board". Note this also rules out adding *silent*
+     submission ahead of a board: `scores.top` is a public read and the opt-out
+     ships after Phase 2 (§3.5), so that would publish usernames and scores for
+     a game with no board and no user-facing benefit.
+   Season metric (§3.7) — **all four signed off**: rabbit-words →
+   `qualified_avg` (cap derived from the month's actual puzzle days),
+   rabbit-globe → `sum`, solitaire → `sum`, 2048 → `max`. Both `sum` games have
+   wide continuous ranges, which is precisely the property words lacks.
+4. ~~`highscore` → `alltime`?~~ **Decided: neither — cancelled.** The alias was
+   only ever for snake/match3's new all-time boards; with those out (§5.3)
+   nothing would ever write under `alltime`, so 2048 keeps `highscore` and the
+   backend gains no synonym. Revisit only if a new all-time board appears.

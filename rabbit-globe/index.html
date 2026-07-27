@@ -18,6 +18,10 @@
     </script>
     <!-- Leaflet's stylesheet, copied from the bundled package at build time. -->
     <link rel="stylesheet" href="./leaflet.css?v=__BUILD_ID__" />
+    <!-- Shared leaderboard component styles. Loaded BEFORE our own stylesheet
+         so the game keeps the last word on anything it overrides. Its JS is
+         bundled into main.js (this game has a bundler), so no script tag. -->
+    <link rel="stylesheet" href="../leaderboard-v1.css?v=__UI_VERSION__" />
     <link rel="stylesheet" href="./styles.css?v=__BUILD_ID__" />
     <script src="../sdk-v1.js?v=__SDK_VERSION__"></script>
   </head>

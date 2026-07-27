@@ -16,6 +16,16 @@
    dark wood so it stays legible on a light host bg. */
 :root {
   color-scheme: light;
+  /* Shared leaderboard component (src/ui/leaderboard.css) reads --lb-*. Mapped
+     onto the wood palette below so the boards sit inside the game's own look
+     rather than importing a second one. */
+  --lb-text: var(--card-cream);
+  --lb-muted: var(--wood-pale);
+  --lb-border: var(--wood-mid);
+  --lb-accent: var(--wood-pale);
+  --lb-accent-text: var(--wood-darkest);
+  --lb-surface: var(--wood-darkest);
+  --lb-you-bg: var(--wood-shadow);
   --wood: #d9b483;            /* light-oak felt (mirrors COL_FELT) */
   --wood-dark: #a87a47;       /* shadow beneath cards / mid wood */
   --wood-pale: #f5ecd6;       /* cream — button text on dark button bg */
@@ -351,70 +361,62 @@ strong.important {
   color: var(--wood-pale);
 }
 
-.friends-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  max-height: 132px;
-  overflow-y: auto;
-}
-.friends-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
-  font-size: 10px;
+/* Rows, avatars, medals, ranks and both CTA states are the shared leaderboard
+   component (src/ui/leaderboard.css), themed by the --lb-* variables above.
+   What stays here is the part that is genuinely solitaire: the component
+   defaults to a rounded, system-font look, and this game is 8-bit wood and
+   square borders. These are presentation overrides only — do not re-add layout
+   rules, that is what the shared module exists to hold. */
+.friends-panel .lb-tab,
+.friends-panel .lb-row,
+.friends-panel .lb-empty,
+.friends-panel .lb-cta-blurb {
+  font-size: 9px;
   letter-spacing: 1px;
-  background: var(--wood-darkest);
-  border: 2px solid var(--wood-mid);
-  color: var(--card-cream);
-}
-.friends-row-you {
-  border-color: var(--wood-pale);
-}
-.friends-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.friends-result {
-  color: var(--wood-pale);
-  flex: none;
 }
 
-.friends-cta {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
+.friends-panel .lb-list {
+  max-height: 160px;
+  overflow-y: auto;
 }
-.friends-cta-blurb {
-  margin: 0;
-  font-size: 9px;
-  line-height: 1.6;
-  letter-spacing: 1px;
-  color: var(--card-cream);
-  opacity: 0.85;
+
+.friends-panel .lb-row {
+  padding: 7px 8px;
+  border-bottom: 2px solid var(--wood-mid);
 }
-.friends-cta-btn {
+
+.friends-panel .lb-row-you {
+  border-radius: 0;
+  border-bottom-color: var(--wood-pale);
+}
+
+/* Square, not circular — a round avatar in a game built out of 2px borders
+   reads as a foreign element. */
+.friends-panel .lb-avatar {
+  border-radius: 0;
+  width: 22px;
+  height: 22px;
+  font-size: 10px;
+}
+
+/* Dark bg with cream text, matching every other button in the game
+   (`.game-message button`). `--lb-accent` is cream so the tab underline and
+   focus ring read on the dark overlay, which would otherwise flip this button
+   to cream-on-dark-brown and make it the one odd control on the screen. */
+.friends-panel .lb-cta-btn {
   background: var(--wood-darkest);
   color: var(--wood-pale);
   border: 2px solid var(--wood-mid);
   border-bottom-width: 4px;
   border-right-width: 4px;
+  border-radius: 0;
   padding: 9px 14px;
-  font: inherit;
   font-size: 9px;
   letter-spacing: 1px;
-  cursor: pointer;
-  font-weight: bold;
   text-transform: uppercase;
 }
-.friends-cta-btn:active {
+
+.friends-panel .lb-cta-btn:active {
   border-bottom-width: 2px;
   border-right-width: 2px;
   transform: translate(2px, 2px);

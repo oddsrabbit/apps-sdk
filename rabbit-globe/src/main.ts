@@ -3,6 +3,12 @@ import type {
   OddsRabbitGlobal,
   ScoreDistributionEntry,
 } from '../../src/sdk/sdk';
+import {
+  createLeaderboardPanel,
+  type LeaderboardPanel,
+  type LeaderboardRow,
+  type LeaderboardTab,
+} from '../../src/ui/leaderboard';
 import * as L from 'leaflet';
 
 declare global {
@@ -638,7 +644,9 @@ function renderEndGame(
   if (community) {
     wrap.appendChild(renderCommunityDistribution(community, total));
   }
-  wrap.appendChild(renderFriendsPanel(friends, { total }));
+  wrap.appendChild(
+    renderLeaderboardPanel(endGamePanelSlot, state.puzzleIndex, friends, { total })
+  );
 
   // Personal stats.
   const statsRow = document.createElement('div');
@@ -739,135 +747,160 @@ function renderCommunityDistribution(
   return wrap;
 }
 
-function renderFriendsPanel(
+/**
+ * A place a leaderboard panel lives. Globe mounts panels in two independent
+ * spots — the end-game screen and the past-round modal, which are on screen at
+ * the same time when the modal is opened over a finished game — so each holds
+ * its own slot rather than sharing one "current panel" that would tear down the
+ * other's board.
+ *
+ * Mounting destroys whatever the slot held, which is what stops the Global
+ * tab's `scores.top` from painting into detached nodes after the modal has been
+ * paged to another puzzle or closed.
+ */
+interface PanelSlot {
+  mount(panel: LeaderboardPanel): HTMLElement;
+  clear(): void;
+}
+
+function panelSlot(): PanelSlot {
+  let live: LeaderboardPanel | null = null;
+  return {
+    mount(panel) {
+      live?.destroy();
+      live = panel;
+      return panel.element;
+    },
+    clear() {
+      live?.destroy();
+      live = null;
+    },
+  };
+}
+
+/** The end-game screen's slot; `renderEndGame` rebuilds the screen wholesale. */
+const endGamePanelSlot = panelSlot();
+
+/**
+ * Friends + Global boards for one puzzle, rendered by the shared leaderboard UI
+ * (`src/ui/leaderboard.ts`).
+ *
+ * This used to be `renderFriendsPanel` + `rowAvatar` here, duplicated almost
+ * verbatim in `2048/js/leaderboard.js`. Row markup, the avatar hash, medals and
+ * competition ranking now live in one place; what stays here is the part that is
+ * genuinely globe's — which rows exist, and how a score is formatted.
+ */
+function renderLeaderboardPanel(
+  slot: PanelSlot,
+  puzzleIndex: number,
   friends: FriendScore[] | undefined,
   viewerResult: { total: number } | null
 ): HTMLElement {
+  const OR = window.OddsRabbit;
+  const signedIn = Boolean(OR.user);
+  const friendRows = signedIn ? friendsRows(friends, viewerResult) : [];
+  const formatScore = (row: LeaderboardRow): string => row.score.toLocaleString();
+
+  const tabs: LeaderboardTab[] = [
+    {
+      id: 'friends',
+      label: 'Friends',
+      emptyText: 'Follow other players on OddsRabbit to compare scores here.',
+      load: () => Promise.resolve(friendRows),
+      formatValue: formatScore,
+      signInPrompt: signedIn
+        ? null
+        : {
+            blurb: 'Sign in to see how people you follow are doing today.',
+            label: 'Sign in',
+            onClick: () => {
+              void OR.actions.requestSignIn('See how your friends did today');
+            },
+          },
+    },
+  ];
+
+  // Public read, so guests get this board too — but only where the host
+  // implements the verb. Gate on the capability rather than on the method
+  // existing: every SDK bundle has `scores.top`, hosts are what differ.
+  if (OR.capabilities.has('scores.top')) {
+    tabs.push({
+      id: 'global',
+      label: 'Global',
+      emptyText: 'No scores yet — be the first on the board.',
+      load: () =>
+        OR.scores.top({
+          roundKey: `puzzle-${puzzleIndex}`,
+          order: 'top',
+          limit: 20,
+        }),
+      formatValue: formatScore,
+    });
+  }
+
   const wrap = document.createElement('section');
   wrap.className = 'friends-panel';
-  const title = document.createElement('h3');
-  title.className = 'hist-title';
-  title.textContent = 'Friends';
-  wrap.appendChild(title);
-
-  if (!window.OddsRabbit.user) {
-    const cta = document.createElement('div');
-    cta.className = 'friends-cta';
-    const blurb = document.createElement('p');
-    blurb.className = 'friends-cta-blurb';
-    blurb.textContent = 'Sign in to see how people you follow are doing today.';
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'friends-cta-btn';
-    btn.textContent = 'Sign in';
-    btn.addEventListener('click', () => {
-      void window.OddsRabbit.actions.requestSignIn('See how your friends did today');
-    });
-    cta.appendChild(blurb);
-    cta.appendChild(btn);
-    wrap.appendChild(cta);
-    return wrap;
-  }
-
-  // Build one combined, ranked list: the viewer + the friends they follow.
-  // Viewer entry comes from the live end-of-game result, else the backend's own
-  // `isSelf` row (past-round modal).
-  const selfFromBackend = (friends ?? []).find((f) => f.isSelf) ?? null;
-  const others = (friends ?? []).filter((f) => !f.isSelf);
-
-  type Row = { name: string; score: number; isViewer: boolean; avatar: string | null };
-  const rows: Row[] = others.map((f) => ({
-    name: `@${f.username}`,
-    score: f.score,
-    isViewer: false,
-    avatar: f.avatar ?? null,
-  }));
-  if (viewerResult) {
-    const me = window.OddsRabbit.user ? `@${window.OddsRabbit.user.username}` : 'You';
-    rows.push({
-      name: me,
-      score: viewerResult.total,
-      isViewer: true,
-      avatar: window.OddsRabbit.user?.avatar ?? null,
-    });
-  } else if (selfFromBackend) {
-    rows.push({
-      name: `@${selfFromBackend.username}`,
-      score: selfFromBackend.score,
-      isViewer: true,
-      avatar: selfFromBackend.avatar ?? null,
-    });
-  }
-
-  if (rows.length === 0 || (rows.length === 1 && rows[0]!.isViewer)) {
-    const blurb = document.createElement('p');
-    blurb.className = 'friends-cta-blurb';
-    blurb.textContent = 'Follow other players on OddsRabbit to compare scores here.';
-    wrap.appendChild(blurb);
-    return wrap;
-  }
-
-  // Rank by score desc (ties: viewer wins, then stable). Standard competition
-  // ranking — equal scores share a rank.
-  rows.sort((a, b) => b.score - a.score || (a.isViewer ? -1 : b.isViewer ? 1 : 0));
-
-  const list = document.createElement('ul');
-  list.className = 'friends-list';
-  const medals = ['🥇', '🥈', '🥉'];
-  let prevScore: number | null = null;
-  let prevRank = 0;
-  rows.forEach((row, i) => {
-    const rank = prevScore !== null && row.score === prevScore ? prevRank : i + 1;
-    prevScore = row.score;
-    prevRank = rank;
-
-    const li = document.createElement('li');
-    li.className = row.isViewer ? 'lb-row lb-row-you' : 'lb-row';
-
-    const rankEl = document.createElement('span');
-    rankEl.className = 'lb-rank';
-    rankEl.textContent = rank <= 3 ? medals[rank - 1]! : String(rank);
-
-    const avatar = rowAvatar(row.name, row.avatar);
-
-    const nameEl = document.createElement('span');
-    nameEl.className = 'lb-name';
-    nameEl.textContent = row.isViewer ? `${row.name} (you)` : row.name;
-
-    const scoreEl = document.createElement('span');
-    scoreEl.className = 'lb-score';
-    scoreEl.textContent = row.score.toLocaleString();
-
-    li.append(rankEl, avatar, nameEl, scoreEl);
-    list.appendChild(li);
-  });
-  wrap.appendChild(list);
+  wrap.appendChild(
+    slot.mount(
+      createLeaderboardPanel({
+        tabs,
+        viewerUuid: OR.user?.uuid ?? null,
+        // Naming the tab explicitly matters for more than preference: the
+        // friends rows are already in hand, so this paints immediately instead
+        // of waiting on the global board's fetch. Falling back to Global when
+        // the viewer follows nobody (or isn't signed in) is the §3.4 rule —
+        // land on a populated board rather than on a prompt to go make friends.
+        defaultTab:
+          friendRows.length > 0 || tabs.length === 1 ? 'friends' : 'global',
+      })
+    )
+  );
   return wrap;
 }
 
-/** Leaderboard avatar: the user's photo when available, else a colored initial
- * circle (deterministic per name). Falls back to initials if the photo 404s. */
-function rowAvatar(name: string, avatarUrl: string | null): HTMLElement {
-  const clean = name.replace(/^@/, '');
-  const el = document.createElement('span');
-  el.className = 'lb-avatar';
-  let h = 0;
-  for (let i = 0; i < clean.length; i++) h = (h * 31 + clean.charCodeAt(i)) >>> 0;
-  el.style.background = `hsl(${h % 360} 55% 52%)`;
-  el.textContent = (clean[0] ?? '?').toUpperCase();
+/**
+ * The viewer plus the friends they follow, ranked by score descending.
+ *
+ * The viewer's own entry has two sources, in priority order: `viewerResult` from
+ * the live end-of-game flow, which is available before the `scores.friends`
+ * round-trip returns, and the backend's own `isSelf` row for the past-round
+ * modal, where local state isn't archived. Whichever wins, the other branch is
+ * filtered out, so the viewer never renders twice.
+ */
+function friendsRows(
+  friends: FriendScore[] | undefined,
+  viewerResult: { total: number } | null
+): LeaderboardRow[] {
+  const all = friends ?? [];
+  const selfFromBackend = all.find((f) => f.isSelf) ?? null;
+  const rows: LeaderboardRow[] = all.filter((f) => !f.isSelf);
 
-  if (avatarUrl) {
-    const img = document.createElement('img');
-    img.className = 'lb-avatar-img';
-    img.alt = '';
-    img.src = avatarUrl;
-    // Keep the initials underneath; reveal the photo only once it loads, and
-    // drop it on error so the initials remain.
-    img.addEventListener('load', () => el.classList.add('lb-avatar-has-img'));
-    img.addEventListener('error', () => img.remove());
-    el.appendChild(img);
+  const user = window.OddsRabbit.user;
+  if (viewerResult && user) {
+    rows.push({
+      uuid: user.uuid,
+      username: user.username,
+      score: viewerResult.total,
+      // Not rendered by either board here; the live result has no server
+      // timestamp to quote and inventing one would be worse than an empty
+      // string, which `formatScore` never reads.
+      createdAt: '',
+      avatar: user.avatar,
+      metadata: null,
+      isSelf: true,
+    });
+  } else if (selfFromBackend) {
+    rows.push(selfFromBackend);
   }
-  return el;
+
+  // A list holding nobody but the viewer isn't a comparison — hand back an
+  // empty board so the "follow someone" copy shows instead of a leaderboard of
+  // one.
+  if (rows.every((row) => row.isSelf)) return [];
+
+  // Ties: the viewer sorts first, so they can find themselves.
+  rows.sort((a, b) => b.score - a.score || (a.isSelf ? -1 : b.isSelf ? 1 : 0));
+  return rows;
 }
 
 /**
@@ -1412,6 +1445,9 @@ async function showLeaderboardModal(puzzleIndex: number): Promise<void> {
   const upperBound = today - 1;
   let viewIndex = puzzleIndex;
   let requestToken = 0; // stale-response guard for rapid prev/next
+  // Own slot, not the end-game screen's: this modal opens over a finished game
+  // whose board is still mounted behind it.
+  const modalPanelSlot = panelSlot();
 
   const backdrop = document.createElement('div');
   backdrop.className = 'modal-backdrop leaderboard-modal-backdrop';
@@ -1480,7 +1516,7 @@ async function showLeaderboardModal(puzzleIndex: number): Promise<void> {
     const viewerTotal = self ? self.score : null;
     body.innerHTML = '';
     body.appendChild(renderCommunityDistribution(community, viewerTotal, 'How everyone did'));
-    body.appendChild(renderFriendsPanel(friends, null));
+    body.appendChild(renderLeaderboardPanel(modalPanelSlot, viewIndex, friends, null));
     runEndGameAnimations(body);
   };
 
@@ -1499,6 +1535,7 @@ async function showLeaderboardModal(puzzleIndex: number): Promise<void> {
 
   const close = (): void => {
     document.removeEventListener('keydown', onKey);
+    modalPanelSlot.clear();
     backdrop.remove();
   };
   const onKey = (e: KeyboardEvent): void => {
