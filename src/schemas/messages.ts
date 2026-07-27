@@ -142,6 +142,29 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
 export type BridgeRequest = z.infer<typeof BridgeRequestSchema>;
 export type BridgeRequestType = BridgeRequest['type'];
 
+/**
+ * Every verb the schema above models, as runtime values, derived from the union
+ * so it can't drift out of sync with it.
+ *
+ * A host needs this to tell the two schema failures apart: a request whose
+ * `type` isn't in this list is a verb the host doesn't implement (permanent —
+ * the SDK caches it and `capabilities.has()` goes false), while a request whose
+ * `type` IS here only failed payload validation (a per-call bug in the caller
+ * that must not retire the verb). Both look identical to `safeParse`.
+ */
+export const BRIDGE_REQUEST_TYPES: readonly BridgeRequestType[] =
+  BridgeRequestSchema.options.map((option) => option.shape.type.value);
+
+/** Whether `value` names a verb `BridgeRequestSchema` knows about. */
+export function isBridgeRequestType(
+  value: unknown
+): value is BridgeRequestType {
+  return (
+    typeof value === 'string' &&
+    (BRIDGE_REQUEST_TYPES as readonly string[]).includes(value)
+  );
+}
+
 export const BridgeErrorSchema = z.object({
   code: z.string().min(1),
   message: z.string().min(1),
@@ -246,6 +269,17 @@ export const BridgeInitSchema = z.object({
   // interpret it. Zod default-strips unknown keys, so this field MUST be
   // declared here for it to survive validation and reach the mini-app.
   initialState: z.record(z.unknown()).optional(),
+  // Bridge verbs this OUTER host actually implements, e.g. `['scores.top', …]`.
+  //
+  // Hosts move at different speeds: a verb can ship in the SDK bundle and in
+  // the web host while the mobile app is still in App Store review, so
+  // `typeof OddsRabbit.scores.top === 'function'` is NOT a usable capability
+  // test — the method always exists, the host is what varies. Games should gate
+  // optional UI on `OddsRabbit.capabilities.has(verb)` instead.
+  //
+  // Optional: hosts predating the handshake omit it, and the SDK falls back to
+  // the pre-handshake baseline plus runtime detection (see sdk.ts).
+  capabilities: z.array(z.string().min(1).max(64)).optional(),
 });
 
 export type BridgeInit = z.infer<typeof BridgeInitSchema>;

@@ -3,6 +3,7 @@ import {
   TopScoreEntrySchema,
   ScoreDistributionEntrySchema,
   DailyContentSchema,
+  type BridgeRequest,
   type BridgeUser,
   type AppColorScheme,
   type AppHapticType,
@@ -37,9 +38,81 @@ export interface TopScoresPayload {
   order?: 'top' | 'first';
 }
 
-const FriendScoresArraySchema = FriendScoreSchema.array();
-const TopScoresArraySchema = TopScoreEntrySchema.array();
-const ScoreDistributionArraySchema = ScoreDistributionEntrySchema.array();
+/**
+ * Bridge verbs that existed before the capability handshake. Used only when
+ * `init` carries no `capabilities` array — an older outer host.
+ *
+ * Deliberately optimistic: it lists verbs SOME pre-handshake host implements,
+ * not verbs all of them do. `scores.top` (missing from old mobile builds) and
+ * `actions.requestSignIn` (missing from mobile entirely) are both in here even
+ * though we know a host that lacks them exists. Erring the other way would deny
+ * working features on the web host, where these have always worked, and there
+ * is no way to tell the two apart before asking. The runtime detection below
+ * corrects the guess on first use without needing any host cooperation — so the
+ * cost of a wrong entry is one rejected call, while the cost of a wrong
+ * omission is a feature that never appears on a host that supports it.
+ */
+const LEGACY_CAPABILITIES: readonly string[] = [
+  'storage.get',
+  'storage.set',
+  'storage.delete',
+  'scores.submit',
+  'scores.friends',
+  'scores.distribution',
+  'scores.top',
+  'content.daily',
+  'actions.share',
+  'actions.haptic',
+  'actions.requestSignIn',
+  'session.refresh',
+  'ready',
+];
+
+/**
+ * Error codes meaning "this host does not implement that verb". One per host,
+ * because each names it differently: the mobile host's switch default
+ * (`bridge/unknown-action`, AppHost.tsx), the web host's
+ * (`bridge/unknown-type`, games.js), and the sandbox host rejecting a request
+ * its schema doesn't recognise (`bridge/unsupported-request`, host.ts).
+ *
+ * Membership here is CACHED and permanent for the session — a verb that answers
+ * with one of these is retired and `capabilities.has()` reports it false from
+ * then on. So only codes that describe the HOST belong here. A code describing
+ * one bad call (`bridge/invalid-request`, a payload that failed validation for
+ * a verb the host does implement) must stay out: it's the caller's bug and the
+ * next call can succeed. Caching it would mean one non-integer score retires
+ * `scores.submit` for the session, silently ending score recording.
+ */
+const UNSUPPORTED_CODES = [
+  'bridge/unknown-action',
+  'bridge/unknown-type',
+  'bridge/unsupported-request',
+];
+
+function isUnsupportedError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' && UNSUPPORTED_CODES.includes(code);
+}
+
+/**
+ * Parse a server row list one row at a time, keeping the rows that validate.
+ * Deliberately NOT `Schema.array().safeParse(result)`: array-level validation is
+ * all-or-nothing, so a single malformed row (missing username, a relative avatar
+ * URL) empties the whole board instead of dropping itself.
+ */
+function parseRows<T>(
+  schema: { safeParse: (value: unknown) => { success: true; data: T } | { success: false } },
+  result: unknown
+): T[] {
+  if (!Array.isArray(result)) return [];
+  const rows: T[] = [];
+  for (const row of result) {
+    const parsed = schema.safeParse(row);
+    if (parsed.success) rows.push(parsed.data);
+  }
+  return rows;
+}
 
 // Boot-path cap for content.daily: if the host never answers (silent drop of an
 // unknown message type — the transport has no global timeout), resolve null so
@@ -148,6 +221,32 @@ export interface OddsRabbitGlobal {
     on(event: AppLifecycleEvent, handler: LifecycleHandler): () => void;
   };
 
+  /**
+   * What the CURRENT outer host can do. Gate optional UI on this rather than on
+   * the presence of an SDK method: every method exists in every SDK build, but
+   * the web host, the mobile app, and the dev sandbox each implement a different
+   * subset, and mobile lags by App Store review.
+   *
+   * READ THIS ONLY INSIDE `whenReady()`. Answers come from `init.capabilities`,
+   * which arrives by postMessage — so a `has()` call at script-eval time runs
+   * before any host has spoken and silently gets the pre-handshake baseline
+   * below, not this host's real answer. A `<script>` gate that skips
+   * `whenReady()` is therefore always answered by `LEGACY_CAPABILITIES`, which
+   * is exactly the wrong answer on the newer hosts the handshake exists for.
+   *
+   *     await OddsRabbit.whenReady();
+   *     if (OddsRabbit.capabilities.has('scores.top')) showLeaderboardButton();
+   *
+   * Older hosts declare nothing, so the SDK assumes a pre-handshake baseline and
+   * then narrows it at runtime: any verb the host rejects as unknown is
+   * remembered as unsupported, so a `has()` call after a failed attempt tells
+   * the truth.
+   */
+  readonly capabilities: {
+    has(verb: string): boolean;
+    all(): string[];
+  };
+
   ready(): void;
 
   whenReady(): Promise<void>;
@@ -163,6 +262,10 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
   private readonly transport: BridgeTransport;
   private readonly initPromise: Promise<void>;
   private resolveInit: (() => void) | null = null;
+  /** Host-declared verbs, or null when this host predates the handshake. */
+  private hostCapabilities: Set<string> | null = null;
+  /** Verbs this host has actually rejected as unknown. Always authoritative. */
+  private readonly unsupportedVerbs = new Set<string>();
 
   constructor(transport: BridgeTransport = new BridgeTransport()) {
     this.transport = transport;
@@ -175,50 +278,92 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
       this.expiresAt = init.expiresAt;
       this.colorScheme = init.colorScheme ?? null;
       this.initialState = init.initialState ?? null;
+      this.hostCapabilities = init.capabilities
+        ? new Set(init.capabilities)
+        : null;
       this.resolveInit?.();
     });
   }
 
+  /**
+   * `transport.request` plus capability bookkeeping: a verb the host rejects as
+   * unknown is remembered, so `capabilities.has()` reports it correctly from
+   * then on even when `init` declared nothing.
+   */
+  private request<T = unknown>(
+    type: BridgeRequest['type'],
+    payload?: unknown
+  ): Promise<T> {
+    return this.transport.request<T>(type, payload).catch((error: unknown) => {
+      if (isUnsupportedError(error)) this.unsupportedVerbs.add(type);
+      throw error;
+    });
+  }
+
+  /**
+   * Read helper for the list-returning score verbs: an unsupported host yields
+   * an empty board rather than a rejection, so a game running on a host that
+   * predates the verb degrades to "no scores yet" instead of an error state.
+   * Every other failure still rejects.
+   */
+  private requestRows<T>(
+    type: BridgeRequest['type'],
+    payload: unknown,
+    schema: { safeParse: (value: unknown) => { success: true; data: T } | { success: false } }
+  ): Promise<T[]> {
+    return this.request<unknown>(type, payload)
+      .then((result) => parseRows<T>(schema, result))
+      .catch((error: unknown) => {
+        if (isUnsupportedError(error)) return [];
+        throw error;
+      });
+  }
+
+  readonly capabilities = {
+    has: (verb: string): boolean => {
+      if (this.unsupportedVerbs.has(verb)) return false;
+      return this.hostCapabilities
+        ? this.hostCapabilities.has(verb)
+        : LEGACY_CAPABILITIES.includes(verb);
+    },
+    all: (): string[] => {
+      const declared = this.hostCapabilities
+        ? [...this.hostCapabilities]
+        : [...LEGACY_CAPABILITIES];
+      return declared.filter((verb) => !this.unsupportedVerbs.has(verb));
+    },
+  };
+
   readonly storage = {
     get: (key: string): Promise<string | null> =>
-      this.transport
-        .request<string | null>('storage.get', { key })
-        .then((value) => (value as string | null) ?? null),
+      this.request<string | null>('storage.get', { key }).then(
+        (value) => (value as string | null) ?? null
+      ),
     set: (key: string, value: string): Promise<void> =>
-      this.transport.request<void>('storage.set', { key, value }),
+      this.request<void>('storage.set', { key, value }),
     delete: (key: string): Promise<void> =>
-      this.transport.request<void>('storage.delete', { key }),
+      this.request<void>('storage.delete', { key }),
   };
 
   readonly scores = {
+    // Writes reject on failure — a game may need to know its score didn't land.
     submit: (payload: ScoreSubmitPayload): Promise<void> =>
-      this.transport.request<void>('scores.submit', payload),
-    // Validate inbound entries — a malformed server response (missing
+      this.request<void>('scores.submit', payload),
+    // Reads validate inbound entries — a malformed server response (missing
     // username, wrong types) would otherwise crash the renderer. Drops
-    // bad rows silently rather than failing the whole list.
+    // bad rows silently rather than failing the whole list (see parseRows).
     friends: (payload: { roundKey: string }): Promise<FriendScore[]> =>
-      this.transport
-        .request<unknown>('scores.friends', payload)
-        .then((result) => {
-          const parsed = FriendScoresArraySchema.safeParse(result);
-          return parsed.success ? parsed.data : [];
-        }),
+      this.requestRows<FriendScore>('scores.friends', payload, FriendScoreSchema),
     distribution: (payload: {
       roundKey: string;
     }): Promise<ScoreDistributionEntry[]> =>
-      this.transport
-        .request<unknown>('scores.distribution', payload)
-        .then((result) => {
-          const parsed = ScoreDistributionArraySchema.safeParse(result);
-          return parsed.success ? parsed.data : [];
-        }),
+      this.requestRows<ScoreDistributionEntry>(
+        'scores.distribution',
+        payload,
+        ScoreDistributionEntrySchema
+      ),
     top: (payload: TopScoresPayload): Promise<TopScoreEntry[]> =>
-      this.transport
-        .request<unknown>('scores.top', payload)
-        .then((result) => {
-          const parsed = TopScoresArraySchema.safeParse(result);
-          return parsed.success ? parsed.data : [];
-        }),
+      this.requestRows<TopScoreEntry>('scores.top', payload, TopScoreEntrySchema),
   };
 
   readonly content = {
@@ -229,7 +374,7 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
     // promise forever; since this sits on the fresh-game boot path, race it
     // against a timeout so boot can always fall back to bundled content.
     daily: (payload: { roundKey: string }): Promise<DailyContent | null> => {
-      const fetched = this.transport
+      const fetched = this
         .request<unknown>('content.daily', payload)
         .then((result) => {
           const parsed = DailyContentSchema.safeParse(result);
@@ -245,12 +390,12 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
 
   readonly actions = {
     share: (payload?: { title?: string; text?: string }): Promise<void> =>
-      this.transport.request<void>('actions.share', payload ?? {}),
+      this.request<void>('actions.share', payload ?? {}),
     haptic: (type: AppHapticType): Promise<void> =>
-      this.transport.request<void>('actions.haptic', { type }),
+      this.request<void>('actions.haptic', { type }),
     requestSignIn: (reason?: string): Promise<void> => {
       if (this.user) return Promise.resolve();
-      return this.transport.request<void>(
+      return this.request<void>(
         'actions.requestSignIn',
         reason ? { reason } : undefined
       );
@@ -265,7 +410,10 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
   };
 
   ready(): void {
-    this.transport.request('ready').catch(() => {
+    // Through `this.request`, not the transport, so `ready` is subject to the
+    // same capability bookkeeping as every other verb — otherwise it's the one
+    // verb whose rejection never narrows `capabilities`.
+    this.request('ready').catch(() => {
       // Best-effort signal; ignore failures.
     });
   }

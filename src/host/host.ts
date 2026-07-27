@@ -2,13 +2,24 @@ import {
   BridgeOutboundSchema,
   BridgeRequestSchema,
   AppColorSchemeSchema,
+  isBridgeRequestType,
   type BridgeOutbound,
   type BridgeRequest,
+  type BridgeRequestType,
   type BridgeUser,
   type AppColorScheme,
 } from '../schemas/messages';
 
 const GUEST_STORAGE_PREFIX = 'oddsrabbit:apps';
+
+// Verbs this host answers itself when there's no signed-in user, without ever
+// forwarding them to the outer host (see handleGuestStorageRequest). They are
+// therefore supported for a guest regardless of what the outer host declares.
+const GUEST_SERVED_VERBS: readonly BridgeRequestType[] = [
+  'storage.get',
+  'storage.set',
+  'storage.delete',
+];
 
 type StorageRequest = Extract<
   BridgeRequest,
@@ -214,6 +225,43 @@ function setupBridge(iframe: HTMLIFrameElement, appSlug: string): void {
     const parsed = BridgeRequestSchema.safeParse(event.data);
     if (!parsed.success) {
       log('msg from game: rejected by schema', event.data);
+      // Answer instead of dropping: the SDK transport has no global request
+      // timeout, so a silent drop leaves the game's promise pending forever.
+      // This is what a game running against a host older than the verb it calls
+      // used to hit. A message with no usable correlationId can only be dropped
+      // — there's nothing to answer.
+      //
+      // Which error matters: `bridge/unsupported-request` is one of the codes
+      // the SDK reads as "this host can't do that" (see UNSUPPORTED_CODES), and
+      // it CACHES that verdict — the verb is retired for the rest of the
+      // session and `capabilities.has()` reports false. That's right for an
+      // unknown verb and badly wrong for a known verb whose payload just failed
+      // validation, which is a per-call bug in the caller: one non-integer
+      // score would permanently retire `scores.submit`, and the game would stop
+      // recording scores for the rest of the session. So split on the
+      // discriminant and let a malformed payload reject with a code the SDK
+      // does not cache.
+      const correlationId = correlationIdOf(event.data);
+      if (correlationId) {
+        const known = isBridgeRequestType(typeOf(event.data));
+        gameWindow.postMessage(
+          {
+            type: 'response',
+            correlationId,
+            ok: false,
+            error: known
+              ? {
+                  code: 'bridge/invalid-request',
+                  message: 'Request payload failed validation for this verb.',
+                }
+              : {
+                  code: 'bridge/unsupported-request',
+                  message: 'This host does not implement the requested verb.',
+                },
+          },
+          '*'
+        );
+      }
       return;
     }
     log('msg from game ok', parsed.data.type);
@@ -238,6 +286,66 @@ function setupBridge(iframe: HTMLIFrameElement, appSlug: string): void {
     if (parsed.type === 'init') {
       currentUser = parsed.user;
       log('init received', currentUser ? `user:${currentUser.username}` : 'guest');
+      // Forward the INTERSECTION of what the outer host declares and what this
+      // host can actually relay. We sit in the middle and reject anything our
+      // own BridgeRequestSchema doesn't model, so passing a verb straight
+      // through would promise the game something it will then be denied. The
+      // game would recover (the denial narrows capabilities at runtime) but
+      // only after showing UI it had to take back.
+      if (parsed.capabilities) {
+        const declared = parsed.capabilities;
+        const relayable = declared.filter(isBridgeRequestType);
+
+        if (relayable.length === 0 && declared.length > 0) {
+          // Never a legitimate outcome: an outer host that declares verbs and
+          // shares none with our schema is almost certainly spelling them
+          // differently (`getTopScores`, `scores:top`, a prefix) rather than
+          // genuinely implementing nothing. Outer hosts should build their list
+          // from BRIDGE_REQUEST_TYPES (exported by
+          // @oddsrabbit/apps-sdk/schemas) instead of literals.
+          //
+          // Relay the init with the field REMOVED rather than as an empty list.
+          // The SDK reads `capabilities: []` as "this host implements nothing"
+          // and hides every capability-gated feature in every game, with no way
+          // back — its runtime detection only ever removes verbs, never adds
+          // them, so no failed call can correct the verdict. That is strictly
+          // worse than no handshake at all. Dropping the field puts the SDK on
+          // the pre-handshake baseline plus runtime detection, which
+          // self-corrects on the first rejected call.
+          log(
+            'init capabilities: NONE of the declared verbs are relayable — ' +
+              'outer host verb names likely do not match BRIDGE_REQUEST_TYPES; ' +
+              'relaying init WITHOUT capabilities so the SDK falls back',
+            declared
+          );
+          const { capabilities: _unrelayable, ...withoutCapabilities } = parsed;
+          forwardInbound(gameWindow, withoutCapabilities);
+          return;
+        }
+
+        // We are not a pure relay. With no signed-in user this host answers
+        // `storage.*` from localStorage itself and never forwards it, so those
+        // verbs work for a guest whatever the outer host declares — and an
+        // outer host that scopes its list to what it can actually serve for a
+        // guest (the WP storage routes need an authenticated user) would
+        // reasonably omit them. Add back what we serve ourselves, or games hide
+        // save/resume UI that works.
+        const forwarded =
+          currentUser === null
+            ? relayable.concat(
+                GUEST_SERVED_VERBS.filter((verb) => !relayable.includes(verb))
+              )
+            : relayable;
+
+        if (relayable.length !== declared.length) {
+          log('init capabilities narrowed to relayable verbs', relayable);
+        }
+        if (forwarded.length !== relayable.length) {
+          log('init capabilities extended with guest-served verbs', forwarded);
+        }
+        forwardInbound(gameWindow, { ...parsed, capabilities: forwarded });
+        return;
+      }
     }
     forwardInbound(gameWindow, parsed);
   };
@@ -282,6 +390,23 @@ function handleGuestStorageRequest(
       error: { code: 'storage/local-failed', message: formatError(error) },
     };
   }
+}
+
+/**
+ * Best-effort `correlationId` from a message that failed schema validation, so
+ * the caller can be told its request was rejected. Returns null when the field
+ * isn't a usable string.
+ */
+function correlationIdOf(data: unknown): string | null {
+  if (!data || typeof data !== 'object') return null;
+  const id = (data as { correlationId?: unknown }).correlationId;
+  return typeof id === 'string' && id !== '' ? id : null;
+}
+
+/** Best-effort discriminant from a message that failed schema validation. */
+function typeOf(data: unknown): unknown {
+  if (!data || typeof data !== 'object') return undefined;
+  return (data as { type?: unknown }).type;
 }
 
 function parseFromOuter(data: unknown): BridgeOutbound | null {

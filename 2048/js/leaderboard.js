@@ -12,14 +12,46 @@
   var OR = window.OddsRabbit;
   var button = document.querySelector(".leaderboard-button");
 
-  // Older host without the global top-N verb — hide the entry point entirely
-  // rather than open an empty modal. (scores.top ships in the same SDK bundle,
-  // so this only trips on a stale host that predates the endpoint.)
-  if (!OR || !OR.scores || typeof OR.scores.top !== "function") {
+  // Hide the entry point on a host that can't serve a global board, rather than
+  // opening a modal that always errors.
+  //
+  // NOTE: do NOT feature-detect `typeof OR.scores.top === "function"` — it ships
+  // in every SDK bundle, so that test always passes while the HOST may still not
+  // implement the verb (the mobile app lagged the web host by an App Store
+  // review). Ask the host via capabilities instead; `has()` also flips to false
+  // once a call has been rejected as unsupported, which covers hosts too old to
+  // declare capabilities at all.
+  if (!OR || !OR.scores || !OR.capabilities || !OR.whenReady) {
     if (button) button.style.display = "none";
     return;
   }
   if (!button) return;
+
+  function hideButton() {
+    button.style.display = "none";
+  }
+
+  function showButton() {
+    button.style.display = "";
+  }
+
+  function hostSupportsGlobalBoard() {
+    return OR.capabilities.has("scores.top");
+  }
+
+  // The capability answer rides in on `init`, which is a postMessage — and this
+  // file is a plain <script>, so at this point in the parse no host has spoken
+  // yet and `has()` would just echo the SDK's pre-handshake guess. Start hidden
+  // and decide in the whenReady continuation, once the host's real answer is in.
+  // (If whenReady never resolves, no init ever arrived — application.js is
+  // blocked on the same promise and the board itself never renders, so a
+  // leaderboard button is moot. Staying hidden is the right resting state.)
+  hideButton();
+  OR.whenReady().then(function () {
+    if (!hostSupportsGlobalBoard()) return;
+    showButton();
+    button.addEventListener("click", openLeaderboard);
+  });
 
   var HIGHSCORE_ROUND = "highscore";
   var WIN_ROUND = "win";
@@ -153,16 +185,34 @@
     backdrop.addEventListener("click", function (e) { if (e.target === backdrop) close(); });
     closeBtn.addEventListener("click", close);
 
-    // Fetch all three in parallel; each resolves to [] on failure so one bad
-    // call never blanks the whole modal.
+    // Fetch all three in parallel. An UNSUPPORTED verb resolves to [] rather
+    // than rejecting (the SDK swallows those), so a host missing one of the
+    // three still renders the rest. Every other failure — network, auth, a
+    // malformed request — still rejects, and the .catch below blanks the modal
+    // with a retry message, which is the honest answer for a transient fault.
     Promise.all([
       OR.scores.top({ roundKey: HIGHSCORE_ROUND, order: "top", limit: LIMIT }),
       OR.scores.top({ roundKey: WIN_ROUND, order: "first", limit: LIMIT }),
-      typeof OR.scores.distribution === "function"
+      OR.capabilities.has("scores.distribution")
         ? OR.scores.distribution({ roundKey: WIN_ROUND })
         : Promise.resolve([])
     ]).then(function (results) {
       if (!backdrop.parentNode) return; // closed while loading
+
+      // The reads resolve to [] rather than rejecting when the host doesn't
+      // implement the verb, so re-check afterwards. Reaching here means the
+      // host declared scores.top at init and then rejected it anyway (a host
+      // too old to declare capabilities, corrected by runtime detection), so
+      // retire the button instead of claiming nobody has played. Say why rather
+      // than yanking the modal shut — an unexplained disappearance reads as a
+      // crash, and the button is about to vanish too.
+      if (!hostSupportsGlobalBoard()) {
+        hideButton();
+        body.textContent = "";
+        body.appendChild(el("p", "lb-empty", "Leaderboards aren't available in this version of the app."));
+        return;
+      }
+
       var highScores = results[0] || [];
       var winners = results[1] || [];
       var winnerCount = sumCounts(results[2] || []);
@@ -200,6 +250,4 @@
       body.appendChild(el("p", "lb-empty", "Couldn't load the leaderboard. Try again."));
     });
   }
-
-  button.addEventListener("click", openLeaderboard);
 })();
