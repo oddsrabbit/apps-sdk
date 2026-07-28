@@ -5,6 +5,7 @@ import type {
 } from '../../src/sdk/sdk';
 import {
   createLeaderboardPanel,
+  pinnedFromRank,
   type LeaderboardPanel,
   type LeaderboardRow,
   type LeaderboardTab,
@@ -825,16 +826,25 @@ function renderLeaderboardPanel(
   // implements the verb. Gate on the capability rather than on the method
   // existing: every SDK bundle has `scores.top`, hosts are what differ.
   if (OR.capabilities.has('scores.top')) {
+    // One key for both reads. A rank fetched against a different round than
+    // the board describes a different set of players entirely — the same class
+    // of mistake the `order` argument invites, and worth removing the chance of.
+    const globalRound = `puzzle-${puzzleIndex}`;
     tabs.push({
       id: 'global',
       label: 'Global',
       emptyText: 'No scores yet — be the first on the board.',
-      load: () =>
-        OR.scores.top({
-          roundKey: `puzzle-${puzzleIndex}`,
-          order: 'top',
-          limit: 20,
-        }),
+      load: () => OR.scores.top({ roundKey: globalRound, order: 'top', limit: 20 }),
+      // The viewer's own placement when they're outside the top 20. Separately
+      // gated: `scores.rank` ships after `scores.top`, so a host can have the
+      // board and not the rank. The panel only calls this when the viewer is
+      // absent from the rows above, and a failure costs the pinned row alone.
+      ...(OR.capabilities.has('scores.rank')
+        ? {
+            loadPinned: () =>
+              OR.scores.rank({ roundKey: globalRound, order: 'top' }).then(pinnedFromRank),
+          }
+        : {}),
       formatValue: formatScore,
     });
   }
@@ -847,6 +857,9 @@ function renderLeaderboardPanel(
     tabs.push(
       createSeasonTab({
         load: () => OR.scores.season({ period: currentPeriod(), limit: 20 }),
+        ...(OR.capabilities.has('scores.seasonRank')
+          ? { loadRank: () => OR.scores.seasonRank({ period: currentPeriod() }) }
+          : {}),
       })
     );
   }

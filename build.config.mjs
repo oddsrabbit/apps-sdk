@@ -338,7 +338,13 @@ async function computeUiVersion() {
 
 function generateDeclarations() {
   // tsc emits to dist/<rootDir-mirror>/, e.g. dist/sdk/index.d.ts. Wrap with stable entries.
-  execSync('tsc --emitDeclarationOnly --outDir dist', { stdio: 'inherit' });
+  //
+  // tsconfig.build.json rather than the root config: the root one includes
+  // `src/**/*` so `npm run type-check` covers the tests, and emitting from it
+  // would publish a `.d.ts` for every `*.test.ts` alongside the real ones.
+  execSync('tsc -p tsconfig.build.json --emitDeclarationOnly --outDir dist', {
+    stdio: 'inherit',
+  });
 }
 
 // After tsc, write thin wrappers so package.json `types` paths stay stable as the SDK evolves.

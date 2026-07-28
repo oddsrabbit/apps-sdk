@@ -739,6 +739,11 @@ function renderFriendsPanel(
   // values, separated only by who submitted first, which is a clock rather than
   // a ranking. Ranked by qualified average: play enough of the month to
   // qualify, then your mean score places you (§3.7). Still no `scores.top` tab.
+  //
+  // Empty means nobody PLAYED, not nobody qualified: the server returns
+  // sub-qualifier players too, ranked below everyone who met it (see
+  // `qualifyingDays` in messages.ts). "Nobody has qualified yet" would be wrong
+  // on a board that is empty and misleading on one that isn't.
   if (hasSeason) {
     tabs.push(
       createSeasonTab({
@@ -748,7 +753,21 @@ function renderFriendsPanel(
             metric: 'qualified_avg',
             limit: 20,
           }),
-        emptyText: 'Nobody has qualified this month yet — keep playing.',
+        // Words needs this more than the other two: a 1–6 daily score means the
+        // top 20 is a wall of near-identical averages, so "where am I" is the
+        // only question the board can actually answer for most players. The
+        // metric must match the board's or the rank describes a different
+        // ordering.
+        ...(OR.capabilities.has('scores.seasonRank')
+          ? {
+              loadRank: () =>
+                OR.scores.seasonRank({
+                  period: currentPeriod(),
+                  metric: 'qualified_avg',
+                }),
+            }
+          : {}),
+        emptyText: 'Nobody has played this month yet — be the first.',
       })
     );
   }
@@ -759,7 +778,9 @@ function renderFriendsPanel(
       viewerUuid: OR.user?.uuid ?? null,
       // Season leads where it exists: it is the board that actually means
       // something for this game, and Friends is empty for anyone who follows
-      // nobody. Without a season board there is only one tab anyway.
+      // nobody. A preference rather than a pin — on the 1st of a month, with
+      // nothing on the season board yet, the panel falls back to Friends on
+      // its own. Without a season board there is only one tab anyway.
       defaultTab: hasSeason ? 'season' : undefined,
     }).element
   );

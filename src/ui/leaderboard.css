@@ -186,6 +186,55 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* ---- The viewer's own placement, pinned under the board ---- */
+
+/* Off-screen but still in the accessibility tree — `display: none` and
+   `visibility: hidden` both remove it from there, which would silence the
+   live region entirely. */
+.lb-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The break in the list. Without it the pinned row reads as the next entry
+   after the last one rather than as somewhere further down the same board. */
+.lb-row-gap {
+  display: flex;
+  justify-content: center;
+  padding: 2px 0;
+  line-height: 1;
+  color: var(--lb-muted, #8a8279);
+}
+
+.lb-gap-mark {
+  font-size: 0.9rem;
+  letter-spacing: 2px;
+}
+
+/* Already carries .lb-row-you, so the highlight and weight come from there.
+   This only reinstates the separation the gap row breaks — and is applied only
+   when there IS a gap, so a viewer sitting immediately after the last row gets
+   the ordinary single border rather than one on each side. */
+.lb-row-pinned {
+  border-top: 1px solid var(--lb-border, rgba(0, 0, 0, 0.12));
+  border-bottom: 0;
+}
+
+/* "of 1,203 players" — the field size, which is most of what makes a rank mean
+   anything. Sits under the pinned row and lines up with its name column. */
+.lb-pinned-note {
+  padding: 2px 6px 0 62px;
+  font-size: 0.75rem;
+  color: var(--lb-muted, #8a8279);
+}
+
 /* Explains what the board is ranking by — the qualifier line on a season board.
    Sits above the list, under the tabs. */
 .lb-note {

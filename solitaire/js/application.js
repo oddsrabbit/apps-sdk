@@ -500,7 +500,7 @@
     // Public read, so guests get this board too — but only where the host
     // implements the verb and the loaded SDK can call it.
     if (OR.capabilities.has("scores.top") && typeof OR.scores.top === "function") {
-      tabs.push({
+      var globalTab = {
         id: "global",
         label: "Global",
         emptyText: "Nobody has solved today's deal yet — be the first!",
@@ -508,7 +508,20 @@
           return OR.scores.top({ roundKey: roundKey, order: "top", limit: 20 });
         },
         formatValue: formatResult
-      });
+      };
+      // The viewer's own placement when they're outside the top 20. Gated
+      // separately from the board — `scores.rank` ships after `scores.top`, so
+      // a host can have one and not the other — and on `pinnedFromRank` being
+      // present, since this game reaches the UI through a script tag that may
+      // be an older bundle than the SDK next to it.
+      if (OR.capabilities.has("scores.rank") && typeof UI.pinnedFromRank === "function") {
+        globalTab.loadPinned = function () {
+          return OR.scores
+            .rank({ roundKey: roundKey, order: "top" })
+            .then(UI.pinnedFromRank);
+        };
+      }
+      tabs.push(globalTab);
     }
 
     // Monthly board — total points, which for solitaire means total speed
@@ -516,14 +529,18 @@
     // dailyScore). Unlike the daily board this one accumulates, so a run of
     // good solves adds up to something instead of resetting at midnight.
     if (OR.capabilities.has("scores.season") && typeof UI.createSeasonTab === "function") {
-      tabs.push(
-        UI.createSeasonTab({
-          load: function () {
-            return OR.scores.season({ period: UI.currentPeriod(), limit: 20 });
-          },
-          emptyText: "No solves this month yet — win a deal to get on the board."
-        })
-      );
+      var seasonOptions = {
+        load: function () {
+          return OR.scores.season({ period: UI.currentPeriod(), limit: 20 });
+        },
+        emptyText: "No solves this month yet — win a deal to get on the board."
+      };
+      if (OR.capabilities.has("scores.seasonRank")) {
+        seasonOptions.loadRank = function () {
+          return OR.scores.seasonRank({ period: UI.currentPeriod() });
+        };
+      }
+      tabs.push(UI.createSeasonTab(seasonOptions));
     }
 
     currentPanel = UI.createLeaderboardPanel({

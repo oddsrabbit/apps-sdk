@@ -99,6 +99,24 @@
       });
   }
 
+  // The viewer's own placement, for the pinned row under a board they didn't
+  // make. Returns undefined — not a function — when this host or this bundle
+  // can't do it, so `loadPinned` lands as absent rather than as a hook that
+  // always resolves null; the panel tests for the hook's presence to decide
+  // whether to fetch anything at all.
+  //
+  // Gated separately from `scores.top`: the rank verb ships after the board, so
+  // a host can serve one and not the other. Also gated on `UI.pinnedFromRank`,
+  // because this game reaches the shared UI through a script tag that can be an
+  // older bundle than the SDK loaded beside it.
+  function pinnedLoaderFor(roundKey, order) {
+    if (!OR.capabilities.has("scores.rank")) return undefined;
+    if (typeof UI.pinnedFromRank !== "function") return undefined;
+    return function () {
+      return OR.scores.rank({ roundKey: roundKey, order: order }).then(UI.pinnedFromRank);
+    };
+  }
+
   // "Try again" is the wrong thing to say about a host that will never serve
   // this board — the button is being retired underneath the user as they read
   // it. Distinguish that from a transient failure, which genuinely is worth a
@@ -126,6 +144,11 @@
           load: function () {
             return loadBoard(HIGHSCORE_ROUND, "top");
           },
+          // 2048's board is all-time and ossifies (§3.7) — after a few months
+          // the top 20 is frozen and no new player can appear on it. The pinned
+          // row is the only thing that gives a newer player a number of their
+          // own to move, so it matters more here than anywhere else.
+          loadPinned: pinnedLoaderFor(HIGHSCORE_ROUND, "top"),
           errorText: boardErrorText,
           formatValue: formatScore
         },
@@ -150,6 +173,9 @@
               return results[0];
             });
           },
+          // `order: "first"` to match this board — a rank computed by score
+          // would point at a completely different row.
+          loadPinned: pinnedLoaderFor(WIN_ROUND, "first"),
           errorText: boardErrorText,
           formatValue: formatDate,
           renderHeader: function () {

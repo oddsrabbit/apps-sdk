@@ -213,25 +213,88 @@ Already done, no work needed:
 
 Still to build:
 
-- `includeSelf=1` on `/scores/top` → append the viewer's own row with its true
-  rank when it falls outside `limit`. Needs an auth-optional variant of a route
-  that is currently fully public; simplest is a separate authenticated
-  `/scores/rank` call the client fires alongside.
-- `GET /apps/{slug}/scores/season?period=YYYY-MM&metric=sum|max` (public), built
-  on `DailyGameRegistry::epochBySlug()` to expand `period` into the app's
-  `puzzle-N` list, then
-  `WHERE app_uuid = ? AND round_key IN (…31 keys…) GROUP BY user_id`.
-- Add covering index `(app_uuid, round_key, user_id, score)`. `idx_leaderboard`
-  covers the `(app_uuid, round_key)` range but not the `user_id`/`score`
-  projection, so the aggregate currently needs a row lookup per matched row.
-- Cache server-side, **not at the edge**: both public score routes deliberately
-  call `nocache_headers()` (an edge cache freezes the board at its first read).
-  A 5–15 min transient per `(app, period, metric)` is the right shape; if that
-  proves insufficient, `cron/process-game-end-of-day.php` already runs
-  post-midnight UTC per daily game and is the natural home for a nightly rollup.
-- Fix `2048/js/application.js:80` — it claims `metadata.won === true` "sets the
-  backend's `won_flag`". There is no `won_flag` column; the win board is just
-  `round_key = 'win'` with `order=first`.
+- ~~`includeSelf=1` on `/scores/top`~~ — ✅ **shipped 2026‑07‑28** as two
+  authenticated companion routes rather than a flag on the public ones. Client
+  wiring landed the same day; see Phase 3.5 in §4.
+
+  ```
+  GET /apps/{slug}/scores/rank?roundKey=&order=top|first      (modern_auth)
+    → { rank: null }                       — viewer hasn't played this round
+    → { rank: { rank, total, entry } }     — entry is a scores/top row + isSelf
+
+  GET /apps/{slug}/scores/season/rank?period=YYYY-MM&metric=  (modern_auth)
+    → { seasonRank: { period, metric, puzzleDays, qualifyingDays,
+                      rank, total, entry } }   — entry is a season row + isSelf
+  ```
+
+  Four things the implementation settled:
+
+  - **Companion routes, not `includeSelf` on the board.** `/scores/top` and
+    `/scores/season` are deliberately public and server-cached; a viewer-scoped
+    field on them would make every response per-user and uncacheable, and would
+    need an auth-*optional* variant of a route that is currently plainly public.
+    Split, the board stays guest-readable and cached while only the pinned row
+    costs a per-viewer query.
+  - **`rank: null` with a 200, never a 404.** "You haven't played" is a normal
+    answer to "where am I", and a 404 would reach the game as an error state on
+    a board that is working perfectly.
+  - **Rank is counted, and the ordering had to be made total first.**
+    Both routes count the rows strictly ahead of the viewer under the board's
+    own `ORDER BY` rather than using a window function. `topForRound` ended in
+    `created_at ASC`, which is not a total order — two rows tied on score and
+    timestamp ordered arbitrarily, so a counted rank could disagree with the
+    position the viewer can see. Both board queries now end in `s.user_id ASC`
+    and both comparisons mirror them exactly.
+  - **Averages compare by cross-multiplication.** `qualified_avg` ranks on
+    `AVG()`, a DECIMAL, and the viewer's average would arrive back as a bound
+    PHP float — an exact tie could then compare either way depending on
+    rounding. `SUM(them) × days(me) > SUM(me) × days(them)` is integer
+    arithmetic and exact.
+
+  Also folded in: `qualifyingDays` and the season metric whitelist moved to
+  `DailyGameRegistry` (`qualifyingDaysFor()`, `SEASON_METRICS`), since the
+  qualifier now has three callers and a viewer ranked above the line on the
+  board and below it on their own pinned row would be worse than having neither.
+
+  **Season is where this earns its keep.** On a daily board a viewer outside the
+  top 20 has at least just played and knows their score. A season board ranks an
+  aggregate the player cannot compute for themselves, so falling outside `limit`
+  means the board says nothing whatsoever about them — and for rabbit-words that
+  board is now the default tab and the game's first global board of any kind.
+
+  Not cached, unlike the boards: the rank query is per-viewer, so a transient per
+  user per period would trade a bounded index-covered read for unbounded
+  `wp_options` growth. If it shows up in profiling, the nightly rollup in
+  `cron/process-game-end-of-day.php` is the escape hatch (see the season bullet).
+- ~~`GET /apps/{slug}/scores/season`, covering index, server-side cache~~ —
+  ✅ **shipped 2026‑07‑27**, see Phase 3 item 2 in §4 for the delivered contract
+  and the four decisions the implementation settled. Three details below were
+  wrong as specified and are corrected there, not here: the metric set is
+  `sum|max|qualified_avg` (not `sum|max`); round keys are derived per app from
+  `dailySchedules()` with an explicit `roundKeyPrefix`, so the `puzzle-N`
+  assumption baked into this bullet is exactly what had to be removed
+  (solitaire is `daily-N` off a 2026‑01‑01 epoch); and the transient is 10 min
+  for the live month, 12 h once the month is closed, rather than a flat 5–15
+  min. The rest still holds — the aggregate is
+  `WHERE app_uuid = ? AND round_key IN (…) GROUP BY user_id` over covering
+  index `idx_season_aggregate (app_uuid, round_key, user_id, score)`, because
+  `idx_leaderboard` covers the `(app_uuid, round_key)` range but not the
+  `user_id`/`score` projection; and the cache is server-side **not** at the
+  edge, since both public score routes deliberately call `nocache_headers()`
+  (an edge cache freezes the board at its first read). If the transient proves
+  insufficient, `cron/process-game-end-of-day.php` already runs post-midnight
+  UTC per daily game and is the natural home for a nightly rollup.
+- ~~Fix `2048/js/application.js:80` — there is no `won_flag` column~~ —
+  **retracted 2026‑07‑27, the original comment was right.** `won_flag` does
+  exist — **in the `oddsrabbit` WP repo, not this one**, which is why grepping
+  here finds nothing but the 2048 comment and this line.
+  `migrations/20260522_004_index_app_scores_for_achievements.sql` adds it
+  as a STORED generated column over `metadata.won`, indexed by
+  `idx_app_scores_user` and read by `AppAchievementEvaluator`. So
+  `metadata.won === true` really does set it. Nothing to fix in 2048 — and had
+  this been actioned, a correct comment would have been replaced with a wrong
+  one. (Separately, the win *board* is indeed just `round_key = 'win'` with
+  `order=first`; that part was accurate, it simply doesn't bear on `won_flag`.)
 - **Decided: `scores.top` is a public read** — guests can fetch it without auth,
   same as `distribution` and `content.daily`. This makes boards usable as a
   marketing surface on the WP game pages. Two consequences: (a) usernames +
@@ -285,7 +348,7 @@ skill, or both?" Each option has a specific failure mode:
 | **Best N of month** (e.g. sum of best 20 days) | Skill + consistency; forgives ~10 missed days; late joiners can still fill their slots | Once 20 good days are banked, late-month days stop mattering. Needs a sentence of explanation |
 | **Wins / days played** | Nothing but participation | For words, hundreds tied at 28–30. No skill signal |
 | **Longest streak** | Habit, most legible metric | As a *sort key* it's ties all the way down; zero skill component |
-| **Qualified average** (days played capped at `Q`, tie-broken by mean) | Attendance to qualify, then skill; playing more never hurts you | Below `Q` you're invisible however well you play, so it reads as a wall to casual players. Needs the qualifier stated on the board |
+| **Qualified average** (days played capped at `Q`, tie-broken by mean) | Attendance to qualify, then skill; playing more never hurts you | Below `Q` your average stops counting for anything, so it reads as a wall to casual players. Needs the qualifier stated on the board |
 
 **Recommendation**
 
@@ -312,6 +375,28 @@ skill, or both?" Each option has a specific failure mode:
   Do not rank by wins (no skill signal) or by streak (tie-soup). Show days played
   and streak as row badges instead, so the habit signal is visible without being
   the sort key.
+
+  **`Q` gates the ranking, not the board.** `seasonForPeriod` orders by
+  `LEAST(COUNT(*), Q) DESC, avg_score DESC` with no `HAVING`, so a player below
+  `Q` is still returned — ranked under everyone who met it, however good their
+  average. That is the right call (a wall you can see past is kinder than one
+  you vanish behind), but it means the board deliberately shows rows whose
+  average did *not* place them, so the UI has to mark them or the ordering
+  reads as a bug. `src/ui/season.ts` badges those rows with progress toward the
+  cap — "14/21 days" rather than "14 days" — and the board's caption states
+  what happens below the line. Do not "fix" this by adding a `HAVING`: that
+  brings back the empty-board-until-two-thirds-of-the-month problem the
+  `puzzleDays` cap was introduced to solve.
+
+  **Known rough edge: the first few days of every month.** `puzzleDays` capped
+  at today means `Q` is 1 on the 1st and 2 on the 3rd, so a board meant to rank
+  a month of play ranks an average over one to three values drawn from
+  `{0, 1…6}` — the same tie-soup a daily global board would have been, and for
+  rabbit-words it is the tab that opens by default. It resolves itself within
+  about a week and the alternative (a fixed floor on `Q`) just moves the empty
+  board back to the start of the month, so this is accepted rather than fixed —
+  but it recurs monthly and is worth knowing before reading the first week's
+  numbers as signal.
 
   **`Q` is derived from the period, not hardcoded.** `Q = ceil(puzzle_days × 2/3)`
   where `puzzle_days` is the number of keys `DailyGameRegistry` actually expands
@@ -437,22 +522,53 @@ Two things the shared module changed on the way through, both worth knowing:
   makes `dist/leaderboard-v1.js` a new deploy artifact — see Phase 4, it ships
   with the games, not with the SDK.
 
-**Phase 3 — season boards** — client side ✅ **implemented 2026‑07‑27**; backend
-outstanding.
+**Phase 3 — season boards** ✅ **implemented 2026‑07‑27** (not yet deployed) —
+backend, SDK, shared UI, and all three adopting games. Reviewed 2026‑07‑28, see
+below. §3.5's `includeSelf` / `/scores/rank` followed in Phase 3.5.
 1. ~~Opt-out setting~~ — removed from scope (§3.5).
-2. ⛔ **Backend, not in this repo.** Aggregation endpoint + covering index +
-   transient cache (§3.5), and register solitaire in `DailyGameRegistry` first.
-   Everything below is built against the contract in §3.5/§3.7 and returns empty
-   boards until this lands. What the server owes, precisely:
-   `GET /apps/{slug}/scores/season?period=YYYY-MM&metric=sum|qualified_avg&limit=`
-   → `{ period, metric, puzzleDays, qualifyingDays, entries[] }`, each entry
-   `{ uuid, username, avatar, value, daysPlayed, average, streak, isSelf }`.
-   `puzzleDays` is the count of keys `DailyGameRegistry` expands for the period —
-   **not** calendar days — and `qualifyingDays` is `ceil(puzzleDays * 2/3)` for
-   `qualified_avg`, null otherwise. It is computed server-side and sent rather
-   than re-derived client-side, because two implementations of one formula
-   drift. `period` is a **UTC** month, matching the UTC boundary every daily app
-   already rolls its puzzle on.
+2. ✅ **Backend** — implemented 2026‑07‑27 in the `oddsrabbit` WP repo.
+   `GET /apps/{slug}/scores/season?period=YYYY-MM&metric=sum|max|qualified_avg&limit=`
+   → `{ season: { period, metric, puzzleDays, qualifyingDays, entries[] } }`,
+   public, `nocache_headers()` plus a server-side transient — 10 min for the
+   current month, 12 h once the month is complete and can no longer change.
+   `AppCommunityController::seasonScores` → `AppScoresService::seasonForPeriod`,
+   covering index `idx_season_aggregate (app_uuid, round_key, user_id, score)`,
+   and the `user_uuid` backfill (§2.3). `period` is a **UTC** month, matching
+   the boundary every daily app already rolls its puzzle on.
+
+   ✅ **Both outer hosts relay it**: `inc/js/pages/games.js` (web) and
+   `AppHost.tsx` + `appService.getSeasonScores` + the `AppBridgeRequest` union
+   (mobile), each declaring `scores.season` in `HOST_CAPABILITIES`. So unlike
+   `scores.top` in Phase 1, this verb ships to mobile and web together and there
+   is no App Store gap for games to degrade across.
+
+   Four things the implementation settled that the design hadn't:
+
+   - **`puzzleDays` is capped at today, not the whole month.** Counting all 31
+     days on the 15th puts the qualifier at 21 and leaves the board empty until
+     the 21st. Capped, the standard rises with the month — 10 of 15 on the 15th,
+     21 of 31 at month end — so the board is live from day one, and a player who
+     stops playing drops back out of qualification.
+   - **Solitaire is registered in a new `dailySchedules()`, not `games()`.** The
+     latter drives content provisioning *and* the end-of-day push cron;
+     solitaire seeds its own deals client-side and has no notification copy, so
+     adding it there would have silently enrolled it in both. Splitting
+     round-key derivation out also forced `roundKeyPrefix` to become explicit —
+     solitaire uses `daily-N` off a 2026‑01‑01 epoch, not `puzzle-N`, an
+     assumption previously hardcoded in every consumer.
+   - **Streak is a second bounded query, not a `GROUP_CONCAT`.** Concatenating
+     per-user key lists would build them for every player who touched the month
+     before `LIMIT` discards almost all of it, and would silently truncate at
+     `group_concat_max_len` — corrupting streaks rather than failing loudly.
+   - **`null` means one thing, and the hosts must not widen it.** In the SDK
+     `null` is strictly "this host doesn't implement the verb" (an
+     unsupported-verb rejection); a malformed board rejects instead. Both hosts
+     initially resolved `null` when `season` was missing from a 200, which would
+     have turned a server-side regression into a board reading "nobody played
+     this month" with nothing logged. Both now error on that case. An app with
+     no daily rounds (2048) 404s with `scores/no-season` and also reaches the
+     game as an error — games gate the tab on `capabilities.has()` long before
+     they would hit it.
 3. ✅ `scores.season` verb in `BridgeRequestSchema`, `SeasonEntry`/`SeasonBoard`
    result schemas, and `OR.scores.season()` in the SDK. Resolves `null` (not
    `[]`) on a host without the verb, so a game can hide the tab rather than show
@@ -469,6 +585,83 @@ outstanding.
 5. ✅ Adopted: rabbit-words (`qualified_avg`, **default tab** — this is words'
    first global board of any kind), rabbit-globe (`sum`), solitaire (`sum`).
    2048 is **not** adopted — it has no daily rows to aggregate, see §3.7.
+
+**Review pass 2026‑07‑28** — read back against the shipped backend. Four fixes,
+none of them structural; the ranking, the caching, and the `null`/reject
+trichotomy all held up.
+
+1. **The board shows unqualified players and didn't say so.** `qualifyingDays`
+   was documented as the minimum to *appear*; the SQL has no `HAVING`, so it is
+   really the minimum to be ranked on skill. Sub-`Q` rows were rendering with a
+   plain day count, under rows with a worse average and nothing to explain why.
+   They now badge as "14/21 days" and the caption states what happens below the
+   line (§3.7). `rankTies: false` on `qualified_avg` was already correct and is
+   now justified against the actual `ORDER BY` rather than against the design.
+2. **A `null` season board claimed nobody had played.** `createSeasonTab` folded
+   "this host has no season board" into its empty state, which is the exact lie
+   `sdk.ts` rejects a malformed envelope to avoid — reintroduced one layer up.
+   It now has its own copy. Only reachable when a host declares the verb and
+   then rejects it, which is precisely the case nobody would debug.
+3. **`defaultTab` is a preference, not a pin.** It suppressed the panel's
+   "open on the first tab with rows" rule outright, so words opened on an empty
+   Season board on the 1st of a month while Friends had content. It now yields
+   to a populated tab if the named one settles empty — and never after the
+   viewer has picked a tab themselves.
+4. **`SeasonEntry.average` was parsed, carried, and never rendered.** It now
+   badges on `sum`/`max` boards, where it is the one figure separating skill
+   from attendance — the documented weakness of a monthly total (§3.7). Not on
+   `qualified_avg`, where it *is* the ranked value.
+
+Also added: `npm test` (`test.config.mjs` — esbuild + `node --test`, no new
+dependency) covering ranking, UTC period arithmetic, metric formatting, and the
+season tab's copy and badges. The repo had no tests, and `src/ui/` is now one
+artifact shipping shared ranking logic to four games at once.
+
+Backend fix in the same pass: a live month's season transient was keyed on
+`(app, period, metric, limit)` with a 10-minute TTL, but `puzzleDays` and the
+`qualifyingDays` derived from it step at UTC midnight — so for up to ten minutes
+past the rollover the board served yesterday's qualifier while claiming today's.
+The UTC day is now part of the key for a live month; a finished month can't move
+and still keys on the period alone.
+
+**Phase 3.5 — the viewer's own rank** ✅ **implemented 2026‑07‑28** (not yet
+deployed). Backend in §3.5; client across all four layers.
+
+1. ✅ `scores.rank` / `scores.seasonRank` verbs in `BridgeRequestSchema`, with
+   `RoundRankSchema` / `SeasonRankSchema` results and `OR.scores.rank()` /
+   `OR.scores.seasonRank()` in the SDK. Both resolve `null` when there is
+   nothing to pin — no session, no verb on this host, or (for `rank`) the viewer
+   hasn't played that round — since a caller does the same thing with all three.
+   Both **gate on `OR.user` client-side**: these are the only authenticated
+   reads a signed-out viewer could otherwise fire, and the round-trip could only
+   ever 401.
+2. ✅ Both outer hosts relay them and declare them in `HOST_CAPABILITIES`, so
+   like `scores.season` this ships to web and mobile together.
+3. ✅ `LeaderboardTab.loadPinned` in the shared panel, plus `PinnedRank`,
+   `pinnedFromRank()` and `createSeasonTab({ loadRank })`.
+4. ✅ Adopted: rabbit-globe (Global + Season), solitaire (Global + Season),
+   rabbit-words (Season), 2048 (High Scores + Hall of Fame, the latter with
+   `order: 'first'` to match its board).
+
+Three things the implementation settled:
+
+- **The pinned row loads in its own chain, never alongside the board.** Racing
+  it in a `Promise.all` with `load()` turns a rank failure into a dead board —
+  which is the exact shape of the 2048 bug in §2.1. The panel fires
+  `loadPinned` only after rows land, and swallows its rejection: the board is
+  already on screen and correct, the viewer just isn't told where they placed.
+- **It isn't fetched at all when the viewer is already on the board.** Their row
+  is there and highlighted; a second copy pinned underneath would be worse than
+  none. That also makes the common case for a friends board cost no request.
+- **Gated on `scores.rank` separately from `scores.top`.** The rank verb ships
+  after the board it annotates, so a host can serve one and not the other — and
+  on mobile that gap is an App Store review wide. The vanilla games additionally
+  check `typeof UI.pinnedFromRank === 'function'`, since they reach the shared
+  UI through a script tag that can be an older bundle than the SDK beside it.
+
+Note `2048` is where the pinned row does the most work: its board is all-time
+and ossifies (§3.7), so for a newer player it is the only number on the screen
+that is theirs to move.
 
 **Phase 4 — deploy discipline**
 Ship order is forced: **backend → SDK + sandbox host → games → RN app.** Two
@@ -513,10 +706,14 @@ ordering above is a correctness requirement, not a preference.
      submission ahead of a board: `scores.top` is a public read and the opt-out
      ships after Phase 2 (§3.5), so that would publish usernames and scores for
      a game with no board and no user-facing benefit.
-   Season metric (§3.7) — **all four signed off**: rabbit-words →
+   Season metric (§3.7) — signed off for the three daily games: rabbit-words →
    `qualified_avg` (cap derived from the month's actual puzzle days),
-   rabbit-globe → `sum`, solitaire → `sum`, 2048 → `max`. Both `sum` games have
-   wide continuous ranges, which is precisely the property words lacks.
+   rabbit-globe → `sum`, solitaire → `sum`. Both `sum` games have wide
+   continuous ranges, which is precisely the property words lacks.
+   ~~2048 → `max`~~ — **withdrawn**: seasons aggregate a month of *daily* rows
+   and 2048 has none, only the constants `highscore` and `keepBest`-updated
+   `win`. Its monthly board needs a per-month round key submitted game-side, not
+   a season aggregation (§3.7).
 4. ~~`highscore` → `alltime`?~~ **Decided: neither — cancelled.** The alias was
    only ever for snake/match3's new all-time boards; with those out (§5.3)
    nothing would ever write under `alltime`, so 2048 keeps `highscore` and the

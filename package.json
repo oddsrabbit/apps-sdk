@@ -36,14 +36,16 @@
   "files": [
     "dist",
     "src",
+    "!src/**/*.test.ts",
     "LICENSE",
     "README.md"
   ],
   "scripts": {
     "build": "node build.config.mjs",
     "build:watch": "node build.config.mjs --watch",
+    "test": "node test.config.mjs",
     "type-check": "tsc --noEmit",
-    "clean": "rm -rf dist *.tsbuildinfo"
+    "clean": "rm -rf dist .test-build *.tsbuildinfo"
   },
   "keywords": [
     "oddsrabbit",

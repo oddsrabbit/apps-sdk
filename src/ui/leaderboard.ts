@@ -97,8 +97,31 @@ export interface LeaderboardTab {
    * sharing ranks there would claim a tie that doesn't exist.
    */
   rankTies?: boolean;
+  /**
+   * The viewer's own placement, pinned as a separated row under the board when
+   * they don't appear in it — the `…  #412 @you` line.
+   *
+   * Loaded in its own chain, deliberately: a rejection here leaves the board
+   * exactly as it was and simply omits the pinned row. Racing it against
+   * `load()` in a `Promise.all` would turn a rank failure into a dead board,
+   * which is the shape of the original 2048 bug (§2.1).
+   *
+   * Resolving null means "nothing to pin" — no session, no rank verb on this
+   * host, or the viewer hasn't played. Called only when `load()` yields rows,
+   * since there is nothing to pin a row *under* otherwise.
+   */
+  loadPinned?(): Promise<PinnedRank | null>;
   /** Optional node above the list, e.g. a percentile headline or a win count. */
   renderHeader?(rows: LeaderboardRow[]): HTMLElement | null;
+}
+
+/** The viewer's placement, for the pinned row. */
+export interface PinnedRank {
+  /** 1-based rank across the whole board, not just the fetched page. */
+  rank: number;
+  /** Players on the board. Omit to render a bare `#412` with no "of N". */
+  total?: number;
+  row: LeaderboardRow;
 }
 
 /** A blurb plus one button, used for the sign-in and empty-board states. */
@@ -121,6 +144,13 @@ export interface LeaderboardOptions {
    * Tab to open on. Default: the first tab that actually has rows — so a viewer
    * who follows nobody, or who isn't signed in, lands on a populated board
    * instead of an empty Friends tab telling them to go make friends.
+   *
+   * A preference, not a pin. It paints straight away (so a caller holding rows
+   * for that board isn't held behind the others' fetches), but if it settles
+   * empty or errored while another tab has rows, the panel falls back to that
+   * one — the same rule as having named no default at all. A tab showing a
+   * sign-in prompt is content and is never fallen back from. Only ever before
+   * the viewer has touched the strip; a tab they chose is never overridden.
    */
   defaultTab?: string;
   /** Text while the boards load. */
@@ -181,8 +211,13 @@ export function leaderboardAvatar(name: string, avatarUrl: string | null): HTMLE
   return node;
 }
 
-/** Ranks for a pre-ordered list. Competition ranking when `shareTies`. */
-function ranksFor(rows: readonly LeaderboardRow[], shareTies: boolean): number[] {
+/**
+ * Ranks for a pre-ordered list. Competition ranking when `shareTies`.
+ *
+ * Exported for tests only — deliberately absent from `src/ui/index.ts`, so it
+ * stays off the `window.OddsRabbitUI` surface the vanilla games consume.
+ */
+export function ranksFor(rows: readonly LeaderboardRow[], shareTies: boolean): number[] {
   const ranks: number[] = [];
   let prevScore: number | null = null;
   let prevRank = 0;
@@ -199,51 +234,151 @@ function ranksFor(rows: readonly LeaderboardRow[], shareTies: boolean): number[]
   return ranks;
 }
 
+/**
+ * `OddsRabbit.scores.rank(...)`'s answer as a `PinnedRank`, or null when there
+ * is nothing to pin.
+ *
+ * Structurally typed rather than importing `RoundRank`, so this file keeps its
+ * "knows nothing about the SDK" property — a `RoundRank` satisfies it, and so
+ * does anything else with the same three fields.
+ *
+ *     loadPinned: () => OR.scores.rank({ roundKey, order: 'top' }).then(pinnedFromRank)
+ */
+export function pinnedFromRank(
+  result: { rank: number; total: number; entry: LeaderboardRow } | null
+): PinnedRank | null {
+  if (!result) return null;
+  return { rank: result.rank, total: result.total, row: result.entry };
+}
+
 function isViewerRow(row: LeaderboardRow, viewerUuid: string | null): boolean {
   if (row.isSelf) return true;
   return viewerUuid !== null && row.uuid === viewerUuid;
 }
 
+/**
+ * One `<li>`. `rankLabel` is what goes in the rank cell — a medal and a bare
+ * number for a row in the list, `#412` for a pinned row, where the `#` says
+ * "this is a rank" rather than "this is the next position in the list".
+ */
+function renderRow(
+  row: LeaderboardRow,
+  index: number,
+  tab: LeaderboardTab,
+  rankLabel: string,
+  mine: boolean,
+  extraClass?: string
+): HTMLElement {
+  const classes = ['lb-row'];
+  if (mine) classes.push('lb-row-you');
+  if (extraClass) classes.push(extraClass);
+  const li = el('li', classes.join(' '));
+
+  li.appendChild(el('span', 'lb-rank', rankLabel));
+
+  const name = row.username ? `@${row.username}` : 'player';
+  li.appendChild(leaderboardAvatar(name, row.avatar));
+  li.appendChild(el('span', 'lb-name', mine ? `${name} (you)` : name));
+
+  const badges = tab.badges?.(row, index);
+  if (badges && badges.length > 0) {
+    const strip = el('span', 'lb-badges');
+    badges.forEach((badge) => strip.appendChild(el('span', 'lb-badge', badge)));
+    li.appendChild(strip);
+  }
+
+  const value = tab.formatValue(row, index);
+  if (value !== '') {
+    const extra = tab.valueClass?.(row, index);
+    li.appendChild(el('span', extra ? `lb-value ${extra}` : 'lb-value', value));
+  }
+  return li;
+}
+
+/**
+ * The gap, the viewer's own row, and the field-size note, appended to a list
+ * that already holds `boardRows` board rows.
+ *
+ * Split out of `renderList` so the pinned row — which arrives in its own chain,
+ * well after the board is on screen — can be appended to the live list instead
+ * of forcing a re-render of rows that haven't changed. Both paths build the
+ * same nodes, so a tab switched away from and back rebuilds identically.
+ */
+function appendPinned(
+  list: HTMLElement,
+  pinned: PinnedRank,
+  tab: LeaderboardTab,
+  boardRows: number
+): void {
+  // The gap says "further down the same board". When the viewer is the very
+  // next row it would be claiming a stretch of board that isn't there — and
+  // with no gap to break, there is no separation for `.lb-row-pinned` to
+  // reinstate either, so the row is left to read as what it is.
+  const gapped = pinned.rank > boardRows + 1;
+  if (gapped) {
+    const gap = el('li', 'lb-row-gap');
+    gap.setAttribute('aria-hidden', 'true');
+    gap.appendChild(el('span', 'lb-gap-mark', '⋯'));
+    list.appendChild(gap);
+  }
+
+  // Index continues past the rendered page rather than restarting at 0: the
+  // tab's `badges`/`formatValue` hooks are handed a position, and handing
+  // them 0 would tell a hall-of-fame board this is the first-ever solve.
+  list.appendChild(
+    renderRow(
+      pinned.row,
+      boardRows,
+      tab,
+      `#${pinned.rank}`,
+      true,
+      gapped ? 'lb-row-pinned' : undefined
+    )
+  );
+
+  if (typeof pinned.total === 'number' && pinned.total > 0) {
+    const note = el('li', 'lb-pinned-note');
+    const players = pinned.total === 1 ? 'player' : 'players';
+    note.textContent = `of ${pinned.total.toLocaleString()} ${players}`;
+    list.appendChild(note);
+  }
+}
+
 function renderList(
   rows: readonly LeaderboardRow[],
   tab: LeaderboardTab,
-  viewerUuid: string | null
+  viewerUuid: string | null,
+  pinned: PinnedRank | null
 ): HTMLElement {
   const list = el('ul', 'lb-list');
   const ranks = ranksFor(rows, tab.rankTies !== false);
 
   rows.forEach((row, i) => {
-    const mine = isViewerRow(row, viewerUuid);
-    const li = el('li', mine ? 'lb-row lb-row-you' : 'lb-row');
-
     const rank = ranks[i] ?? i + 1;
     const medal = rank <= MEDALS.length ? MEDALS[rank - 1] : undefined;
-    li.appendChild(el('span', 'lb-rank', medal ?? String(rank)));
-
-    const name = row.username ? `@${row.username}` : 'player';
-    li.appendChild(leaderboardAvatar(name, row.avatar));
-    li.appendChild(el('span', 'lb-name', mine ? `${name} (you)` : name));
-
-    const badges = tab.badges?.(row, i);
-    if (badges && badges.length > 0) {
-      const strip = el('span', 'lb-badges');
-      badges.forEach((badge) => strip.appendChild(el('span', 'lb-badge', badge)));
-      li.appendChild(strip);
-    }
-
-    const value = tab.formatValue(row, i);
-    if (value !== '') {
-      const extra = tab.valueClass?.(row, i);
-      li.appendChild(el('span', extra ? `lb-value ${extra}` : 'lb-value', value));
-    }
-
-    list.appendChild(li);
+    list.appendChild(
+      renderRow(
+        row,
+        i,
+        tab,
+        medal ?? String(rank),
+        isViewerRow(row, viewerUuid),
+        undefined
+      )
+    );
   });
+
+  // The viewer's own placement, when they didn't make the page above. Only on
+  // a re-render — on first arrival it is appended to the live list instead.
+  if (pinned) appendPinned(list, pinned, tab, rows.length);
   return list;
 }
 
 type TabState =
-  | { status: 'ok'; rows: LeaderboardRow[] }
+  // `pinned` is filled in later and in its own chain — the board renders as
+  // soon as its rows land, and the viewer's placement appends underneath if and
+  // when it arrives.
+  | { status: 'ok'; rows: LeaderboardRow[]; pinned: PinnedRank | null }
   | { status: 'signin' }
   | { status: 'error'; error: unknown };
 
@@ -294,12 +429,25 @@ export function createLeaderboardPanel(options: LeaderboardOptions): Leaderboard
   body.appendChild(el('p', 'lb-loading', loadingText));
   root.appendChild(body);
 
+  // Announces the pinned row, which lands after the board has already been
+  // rendered and read. A dedicated empty region rather than `aria-live` on the
+  // list itself: the list is rebuilt on every tab switch, and a live region
+  // that already holds text when it enters the DOM is announced inconsistently
+  // across screen readers — sometimes re-reading the whole board.
+  const announcer = el('div', 'lb-sr-only');
+  announcer.setAttribute('role', 'status');
+  root.appendChild(announcer);
+
   // A tab whose load rejects becomes `{status:'error'}` rather than taking the
   // whole panel down — one dead board should not blank the others.
   const states = new Map<string, TabState>();
   const tabButtons = new Map<string, HTMLButtonElement>();
   const hasStrip = tabs.length > 1;
   let activeId: string | null = null;
+  // Set once the viewer picks a tab themselves. From then on the panel never
+  // moves them — the empty-default fallback below is a correction to a guess
+  // the panel made, not a licence to override a choice the viewer made.
+  let userSelected = false;
 
   const showTab = (id: string): void => {
     if (destroyed) return;
@@ -327,7 +475,7 @@ export function createLeaderboardPanel(options: LeaderboardOptions): Leaderboard
     } else {
       const header = tab.renderHeader?.(state.rows);
       if (header) body.appendChild(header);
-      body.appendChild(renderList(state.rows, tab, viewerUuid));
+      body.appendChild(renderList(state.rows, tab, viewerUuid, state.pinned));
     }
 
     // A tabpanel is a tab stop only when it holds nothing focusable itself —
@@ -361,6 +509,7 @@ export function createLeaderboardPanel(options: LeaderboardOptions): Leaderboard
     else return;
     e.preventDefault();
     const target = tabs[next]!;
+    userSelected = true;
     showTab(target.id);
     tabButtons.get(target.id)?.focus();
   };
@@ -383,13 +532,60 @@ export function createLeaderboardPanel(options: LeaderboardOptions): Leaderboard
       btn.setAttribute('aria-controls', body.id);
       btn.setAttribute('aria-selected', 'false');
       btn.tabIndex = -1;
-      btn.addEventListener('click', () => showTab(tab.id));
+      btn.addEventListener('click', () => {
+        userSelected = true;
+        showTab(tab.id);
+      });
       btn.addEventListener('keydown', (e) => onStripKey(e, i));
       tabButtons.set(tab.id, btn);
       strip.appendChild(btn);
     });
     root.insertBefore(strip, body);
   }
+
+  /**
+   * Fetch and append the viewer's own placement, once this tab's rows are in.
+   *
+   * Skipped entirely when the viewer is already on the board — their row is
+   * there and highlighted, and pinning a second copy of it underneath would be
+   * worse than pinning nothing. That also means the common case for a friends
+   * board costs no request at all.
+   *
+   * Never rejects outward: a rank that fails leaves the board exactly as it
+   * rendered, minus one row.
+   */
+  const loadPinnedFor = (tab: LeaderboardTab, state: TabState): void => {
+    if (!tab.loadPinned) return;
+    if (state.status !== 'ok' || state.rows.length === 0) return;
+    if (state.rows.some((row) => isViewerRow(row, viewerUuid))) return;
+
+    void Promise.resolve()
+      .then(() => tab.loadPinned!())
+      .then((pinned) => {
+        if (destroyed || !pinned) return;
+        state.pinned = pinned;
+        if (activeId !== tab.id) return;
+        // Append to the list already on screen rather than re-rendering it.
+        // The board itself hasn't changed, and rebuilding every row to add
+        // three nodes underneath them is work and flicker for nothing.
+        const list = body.querySelector('ul.lb-list');
+        if (list instanceof HTMLElement) {
+          appendPinned(list, pinned, tab, state.rows.length);
+        } else {
+          showTab(tab.id);
+        }
+        announcer.textContent = pinned.total
+          ? `You are ranked ${pinned.rank} of ${pinned.total}.`
+          : `You are ranked ${pinned.rank}.`;
+      })
+      .catch((error: unknown) => {
+        // The board is already on screen and correct; the viewer simply isn't
+        // told where they placed. Warned rather than swallowed outright — a
+        // malformed rank is a host contract bug, and the SDK raises it on
+        // purpose, so silence here would make it invisible from both ends.
+        console.warn(`leaderboard: pinned rank for tab "${tab.id}" failed`, error);
+      });
+  };
 
   const settled = tabs.map((tab): Promise<TabState> => {
     const result: Promise<TabState> = tab.signInPrompt
@@ -400,11 +596,12 @@ export function createLeaderboardPanel(options: LeaderboardOptions): Leaderboard
         // solitaire that is the win overlay, which hadn't been shown yet.
         Promise.resolve()
           .then(() => tab.load())
-          .then((rows): TabState => ({ status: 'ok', rows }))
+          .then((rows): TabState => ({ status: 'ok', rows, pinned: null }))
           .catch((error: unknown): TabState => ({ status: 'error', error }));
     return result.then((state) => {
       states.set(tab.id, state);
       if (activeId === tab.id) showTab(tab.id);
+      loadPinnedFor(tab, state);
       return state;
     });
   });
@@ -417,15 +614,38 @@ export function createLeaderboardPanel(options: LeaderboardOptions): Leaderboard
     : undefined;
   if (requested) showTab(requested.id);
 
-  // Without one, "first tab with rows" is the rule — and that genuinely can't
-  // be decided until every board has answered.
+  // "First tab with rows" is the rule, and it genuinely can't be applied until
+  // every board has answered.
+  //
+  // It also runs when a `defaultTab` WAS named but settled dead — no rows, or an
+  // error. The caller named that tab expecting content; landing the viewer on a
+  // dead board because the guess missed is the failure §3.4 exists to prevent,
+  // and it is worth correcting even though the correction moves the selection.
+  // Nothing moves once the viewer has picked a tab, and nothing moves if there
+  // is no populated board to move to.
+  //
+  // A sign-in prompt is NOT dead and is left alone. It is the one non-`ok` state
+  // that renders something the caller deliberately configured — a blurb and a
+  // button — so a caller who points a signed-out viewer at Friends gets the
+  // prompt they asked for rather than being silently rerouted to a board that
+  // needs no session. Empty and errored say "there is nothing here"; a sign-in
+  // prompt says "here is what to do next", which is content.
   void Promise.all(settled).then(() => {
-    if (destroyed || activeId !== null) return;
+    if (destroyed || userSelected) return;
+    const active = activeId !== null ? states.get(activeId) : undefined;
+    if (active?.status === 'signin') return;
+    if (active?.status === 'ok' && active.rows.length > 0) return;
     const populated = tabs.find((tab) => {
       const state = states.get(tab.id);
       return state?.status === 'ok' && state.rows.length > 0;
     });
-    showTab((populated ?? tabs[0]!).id);
+    // No populated board anywhere: keep whatever the caller asked for, since
+    // its empty copy is likelier to be the apt one.
+    if (!populated) {
+      if (activeId === null) showTab(tabs[0]!.id);
+      return;
+    }
+    showTab(populated.id);
   });
 
   return {

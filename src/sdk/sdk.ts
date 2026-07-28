@@ -5,9 +5,13 @@ import {
   DailyContentSchema,
   SeasonBoardEnvelopeSchema,
   SeasonEntrySchema,
+  RoundRankSchema,
+  SeasonRankSchema,
   type SeasonBoard,
   type SeasonEntry,
   type SeasonMetric,
+  type RoundRank,
+  type SeasonRank,
   type BridgeRequest,
   type BridgeUser,
   type AppColorScheme,
@@ -28,7 +32,26 @@ export type {
   SeasonBoard,
   SeasonEntry,
   SeasonMetric,
+  RoundRank,
+  SeasonRank,
 } from '../schemas/messages';
+
+export interface RankPayload {
+  roundKey: string;
+  /**
+   * Must match the board this rank annotates. A rank computed under `top` (by
+   * score) describes a different ordering than a `first` hall-of-fame board, and
+   * pinning one under the other points at the wrong row.
+   */
+  order?: 'top' | 'first';
+}
+
+export interface SeasonRankPayload {
+  /** Calendar month, `YYYY-MM`, in UTC. See `currentPeriod()` in the UI package. */
+  period: string;
+  /** Override the app's configured aggregation. Match the board's. */
+  metric?: SeasonMetric;
+}
 
 export interface SeasonPayload {
   /** Calendar month, `YYYY-MM`, in UTC. See `currentPeriod()` in the UI package. */
@@ -229,6 +252,33 @@ export interface OddsRabbitGlobal {
      * still dropped rather than fatal, as with the other reads.
      */
     season(payload: SeasonPayload): Promise<SeasonBoard | null>;
+    /**
+     * The viewer's own row and true rank in a round, for the pinned
+     * `…  #412 @you` line under a top-N board.
+     *
+     * Resolves `null` for all three of "this host has no rank verb", "nobody is
+     * signed in", and "the viewer hasn't played this round" — a caller only ever
+     * does one thing with those, which is not draw a pinned row. A malformed
+     * response REJECTS, as elsewhere.
+     *
+     * Pass the same `order` as the board. Prefer handing this to the shared
+     * panel's `loadPinned` hook rather than racing it against the board's own
+     * fetch: a rejection there is contained to the pinned row, whereas a
+     * `Promise.all` with the board turns a rank failure into a dead board.
+     */
+    rank(payload: RankPayload): Promise<RoundRank | null>;
+    /**
+     * The same for a season board, and the one that matters: a daily board's
+     * viewer has just played and knows their score, but nobody can compute their
+     * own monthly standing, so a season board with no self row tells a player
+     * outside the top N nothing about themselves.
+     *
+     * Resolves `null` on an unsupported host or a signed-out viewer. A viewer
+     * who played no day this month resolves to an object with `rank`/`entry`
+     * null but `period`/`metric`/`puzzleDays`/`qualifyingDays` populated, so the
+     * caller can still state the qualifier they'd need to meet.
+     */
+    seasonRank(payload: SeasonRankPayload): Promise<SeasonRank | null>;
   };
 
   readonly content: {
@@ -433,6 +483,50 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
           if (isUnsupportedError(error)) return null;
           throw error;
         }),
+    // Both rank reads are authenticated, so a signed-out viewer is answered
+    // here rather than by a round-trip that can only 401. `OR.user` is
+    // populated from `init`, so this is only correct inside `whenReady()` —
+    // which is where a game builds its leaderboard anyway.
+    rank: (payload: RankPayload): Promise<RoundRank | null> => {
+      if (!this.user) return Promise.resolve(null);
+      return this.request<unknown>('scores.rank', payload)
+        .then((result): RoundRank | null => {
+          // Hosts unwrap the REST envelope and resolve the inner value, as they
+          // do for `scores.season`. The server answers "you haven't played this
+          // round" with an explicit null, so that arrives here as null — and a
+          // caller does the same thing with it as with an unsupported host,
+          // which is not draw a pinned row.
+          if (result == null) return null;
+          const parsed = RoundRankSchema.safeParse(result);
+          if (!parsed.success) throw new Error('scores.rank: malformed rank');
+          return parsed.data;
+        })
+        .catch((error: unknown) => {
+          if (isUnsupportedError(error)) return null;
+          throw error;
+        });
+    },
+    seasonRank: (payload: SeasonRankPayload): Promise<SeasonRank | null> => {
+      if (!this.user) return Promise.resolve(null);
+      return this.request<unknown>('scores.seasonRank', payload)
+        .then((result): SeasonRank | null => {
+          // Unlike scores.rank, "played nothing this month" still parses: the
+          // envelope carries the period's qualifier, which is what the UI needs
+          // to tell a player what would put them on the board, so the server
+          // sends the context with `rank`/`entry` null rather than sending
+          // nothing. Only a genuinely absent answer is null here.
+          if (result == null) return null;
+          const parsed = SeasonRankSchema.safeParse(result);
+          if (!parsed.success) {
+            throw new Error('scores.seasonRank: malformed rank');
+          }
+          return parsed.data;
+        })
+        .catch((error: unknown) => {
+          if (isUnsupportedError(error)) return null;
+          throw error;
+        });
+    },
   };
 
   readonly content = {

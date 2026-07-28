@@ -19,6 +19,7 @@ import {
   createLeaderboardPanel,
   leaderboardAvatar,
   openLeaderboardModal,
+  pinnedFromRank,
 } from './leaderboard';
 import { createSeasonTab, currentPeriod, formatPeriod } from './season';
 
@@ -26,6 +27,7 @@ export {
   createLeaderboardPanel,
   leaderboardAvatar,
   openLeaderboardModal,
+  pinnedFromRank,
 } from './leaderboard';
 export type {
   LeaderboardModal,
@@ -35,6 +37,7 @@ export type {
   LeaderboardPrompt,
   LeaderboardRow,
   LeaderboardTab,
+  PinnedRank,
 } from './leaderboard';
 
 export { createSeasonTab, currentPeriod, formatPeriod } from './season';
@@ -44,6 +47,7 @@ export interface OddsRabbitUIGlobal {
   createLeaderboardPanel: typeof createLeaderboardPanel;
   openLeaderboardModal: typeof openLeaderboardModal;
   leaderboardAvatar: typeof leaderboardAvatar;
+  pinnedFromRank: typeof pinnedFromRank;
   createSeasonTab: typeof createSeasonTab;
   currentPeriod: typeof currentPeriod;
   formatPeriod: typeof formatPeriod;
@@ -62,6 +66,7 @@ if (typeof window !== 'undefined' && !window.OddsRabbitUI) {
     createLeaderboardPanel,
     openLeaderboardModal,
     leaderboardAvatar,
+    pinnedFromRank,
     createSeasonTab,
     currentPeriod,
     formatPeriod,

@@ -135,6 +135,36 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
       limit: z.number().int().min(1).max(100).optional(),
     }),
   }),
+  // The viewer's own row and true rank in a round, however far down they are.
+  //
+  // A companion to `scores.top`, not a flag on it: that board is a public read
+  // and is cached server-side, while this answer exists only for a signed-in
+  // viewer. Split, the board stays guest-readable and cacheable and only the
+  // pinned row costs a per-viewer query.
+  //
+  // `order` must match the board being annotated — a rank computed under
+  // `order: 'top'` describes a different ordering than a hall-of-fame board.
+  z.object({
+    type: z.literal('scores.rank'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      roundKey: RoundKey,
+      order: z.enum(['top', 'first']).optional(),
+    }),
+  }),
+  // The same for a season board. This is the one that carries its weight: a
+  // daily board's viewer has just played and knows their score, but nobody can
+  // work out their own monthly standing — days played, capped attendance, a
+  // mean across the month — so a season board with no self row tells a player
+  // outside the top N nothing at all about themselves.
+  z.object({
+    type: z.literal('scores.seasonRank'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      period: SeasonPeriod,
+      metric: SeasonMetricSchema.optional(),
+    }),
+  }),
   // Server-authored daily content for a round (e.g. today's puzzle / answer).
   // Public read — guests can fetch it without auth. The server date-gates by
   // round, so a host can only ever serve the current or past rounds, never a
@@ -328,11 +358,32 @@ export const SeasonBoardSchema = z.object({
   // days. A game's launch month is partial (rabbit-globe's epoch is 2026-06-20,
   // so June 2026 holds 11), and anything derived from window length has to use
   // this or it misreports that month.
+  //
+  // Two adjustments, not one: the count is ALSO capped at today, so the live
+  // month grows day by day rather than reporting its final total from the 1st.
+  // June 2026 for rabbit-globe reads 11 only once June is over; on the 25th it
+  // is 6. This is what keeps a `qualified_avg` board populated mid-month
+  // instead of empty until two-thirds of the month has elapsed — but it means
+  // `puzzleDays` is not stable within a period, and neither is the
+  // `qualifyingDays` derived from it. Don't cache either across a day boundary.
+  // (The server's own transient for a live month is 10 minutes and its key has
+  // no day component, so for up to 10 minutes past UTC midnight both figures
+  // can still describe yesterday. Bounded and self-correcting — but it means a
+  // client that caches on top of it compounds the skew rather than starting
+  // fresh from it.)
   puzzleDays: z.number().int().nonnegative(),
-  // Minimum days played to appear on a `qualified_avg` board, computed server-
-  // side as `ceil(puzzleDays * 2/3)` and sent so the client can state the rule
-  // without re-deriving it — two implementations of one formula will drift.
-  // Null for metrics that have no qualifier.
+  // Days played needed to be ranked on skill on a `qualified_avg` board,
+  // computed server-side as `ceil(puzzleDays * 2/3)` and sent so the client can
+  // state the rule without re-deriving it — two implementations of one formula
+  // will drift. Null for metrics that have no qualifier.
+  //
+  // NOT a visibility filter. `AppScoresService::seasonForPeriod` orders by
+  // `LEAST(COUNT(*), qualifyingDays) DESC, avg_score DESC` with no `HAVING`, so
+  // a player below the threshold is still returned — ranked under everyone who
+  // met it, however good their average. A UI that reads this as "minimum days
+  // to appear" will render those rows as though their average placed them,
+  // which looks like the board is mis-sorted. Mark them instead (see
+  // `src/ui/season.ts`).
   qualifyingDays: z.number().int().nonnegative().nullable().default(null),
   entries: z.array(SeasonEntrySchema),
 });
@@ -355,6 +406,51 @@ export type SeasonBoard = z.infer<typeof SeasonBoardSchema>;
 export const SeasonBoardEnvelopeSchema = SeasonBoardSchema.extend({
   entries: z.array(z.unknown()),
 });
+
+// The viewer's placement on a round board (`scores.rank`).
+//
+// `entry` is a full row rather than just a number so the pinned line can go
+// through the same renderer as the board above it — it carries the avatar and
+// metadata a row needs, and `isSelf` is true by construction (unlike on the
+// public board, this endpoint has a viewer).
+export const RoundRankSchema = z.object({
+  rank: z.number().int().positive(),
+  // Players with a row in this round, so the UI can say "#12 of 340" rather
+  // than a bare ordinal — a rank means very little without the field size.
+  //
+  // `.default(0)` to match `SeasonRankSchema.total`, and for the usual reason:
+  // a host that predates the field would otherwise fail the whole parse, and a
+  // rank with no field size is still worth pinning. The UI drops the "of N"
+  // line at 0 rather than printing "of 0 players".
+  total: z.number().int().nonnegative().default(0),
+  entry: FriendScoreSchema,
+});
+
+export type RoundRank = z.infer<typeof RoundRankSchema>;
+
+// The viewer's placement on a season board (`scores.seasonRank`).
+//
+// Carries `period`/`metric`/`puzzleDays`/`qualifyingDays` of its own rather
+// than borrowing the board's. The two are separate calls and the server caches
+// them differently, so they can straddle a UTC midnight — after which
+// `puzzleDays` has stepped and the `qualifyingDays` derived from it with it.
+// Captioning the pinned row from the board's copy would then state a qualifier
+// the viewer's own rank was not computed against.
+//
+// `rank`/`entry` are null together when the viewer played no day in the period.
+// Not having played is a normal answer to "where am I", so it is a 200 with
+// nulls rather than an error.
+export const SeasonRankSchema = z.object({
+  period: SeasonPeriod,
+  metric: z.string().min(1),
+  puzzleDays: z.number().int().nonnegative(),
+  qualifyingDays: z.number().int().nonnegative().nullable().default(null),
+  rank: z.number().int().positive().nullable().default(null),
+  total: z.number().int().nonnegative().default(0),
+  entry: SeasonEntrySchema.nullable().default(null),
+});
+
+export type SeasonRank = z.infer<typeof SeasonRankSchema>;
 
 // Result of `content.daily`: the server-authored content for one round. `content`
 // is an opaque, app-specific object (e.g. rabbit-words: `{ answer }`) — the
