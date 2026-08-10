@@ -21,20 +21,25 @@
     return storage;
   }
 
-  // Wraps a freshly-constructed actuator instance to (a) share on first win,
-  // (b) fire haptics for moves and terminal transitions. Instance-level (not
-  // prototype-level) so the closure state is scoped to this GameManager —
-  // a second instance on the same page would get its own flags. Applied AFTER
-  // `new GameManager` so the constructor's initial setup() actuate runs
-  // unwrapped: reloading an already-won saved game won't spuriously fire share
-  // or success-haptic.
-  function attachBridgeEffects(actuator) {
+  // Wraps a freshly-constructed game's actuator to (a) share on first win,
+  // (b) fire haptics for moves and terminal transitions, (c) record the win.
+  // Instance-level (not prototype-level) so the closure state is scoped to this
+  // GameManager — a second instance on the same page would get its own flags.
+  // Applied AFTER `new GameManager` so the constructor's initial setup() actuate
+  // runs unwrapped.
+  function attachBridgeEffects(game) {
+    var actuator = game.actuator;
     var origActuate = actuator.actuate.bind(actuator);
     var sharedThisLoad = false;
-    var submittedWinThisLoad = false;
     var prevScore = null;
-    var prevWon = false;
-    var prevOver = false;
+    // Seeded from the restored game, NOT `false`. Attaching after construction
+    // only keeps the first actuate from reading as a transition; `won` and
+    // `over` are restored from the saved state and stay set, so with these
+    // hardcoded false the SECOND actuate — the first move made in keepPlaying
+    // mode on a reloaded won game — looks like a brand new win and re-fires the
+    // share sheet, the success haptic, and the win submit.
+    var prevWon = game.won;
+    var prevOver = game.over;
 
     actuator.actuate = function (grid, metadata) {
       origActuate(grid, metadata);
@@ -76,31 +81,14 @@
         } catch (_) {}
       }
 
-      // Record the win to the platform so it lands in the app_scores table
-      // (metadata.won === true sets the backend's won_flag). roundKey is the
-      // constant "win", so scores.submit's (app, roundKey, user) uniqueness
-      // means each player's FIRST 2048 win is recorded once — repeat wins
-      // reject with 409 already-submitted, which we swallow. Guests can't
-      // submit (the endpoint requires a signed-in user) and there'd be no one
-      // to credit in a post, so we skip them. Once-per-load flag mirrors the
-      // share guard above.
-      if (
-        wonTransition &&
-        !submittedWinThisLoad &&
-        OR.user &&
-        OR.scores &&
-        typeof OR.scores.submit === "function"
-      ) {
-        submittedWinThisLoad = true;
-        try {
-          OR.scores
-            .submit({
-              roundKey: "win",
-              score: metadata.score,
-              metadata: { won: true, tile: 2048 },
-            })
-            .catch(noop); // 409 on a repeat win (already-submitted) is expected.
-        } catch (_) {}
+      // Mark the win as unconfirmed BEFORE attempting to record it, so a submit
+      // that never lands is retried on the next load. Skipped once the platform
+      // has this player's win: roundKey is the constant "win", so a second win
+      // can never be recorded and its marker would never clear. See submitWin()
+      // for why the marker exists at all.
+      if (wonTransition && !storage.isWinRecorded() && canSubmitScores()) {
+        storage.setPendingWin(metadata.score);
+        submitWin(metadata.score);
       }
 
       prevScore = metadata.score;
@@ -110,6 +98,79 @@
   }
 
   function noop() {}
+
+  // Whether a score submission is worth attempting at all.
+  //
+  // Guests are excluded, and that exclusion is NOT deferred: the endpoint needs
+  // a signed-in user, and while `user` is null the host serves storage.* from
+  // this origin's localStorage instead of the per-user server store. Nothing
+  // migrates one to the other, so a marker written as a guest sits in a
+  // namespace the signed-in session never reads. Writing one would be dead
+  // weight rather than a win credited later, so a guest's win is simply not
+  // recorded — same as before this marker existed.
+  //
+  // The capability check reflects what this host has already proven: the SDK
+  // retires a verb the host rejects as unknown, so after one such rejection we
+  // stop writing markers for a call that just demonstrated it can't land. It is
+  // guarded because sdk-v1.js is deployed separately and may predate it.
+  function canSubmitScores() {
+    if (!OR.user || !OR.scores || typeof OR.scores.submit !== "function") return false;
+    try {
+      if (OR.capabilities && typeof OR.capabilities.has === "function") {
+        return OR.capabilities.has("scores.submit");
+      }
+    } catch (_) {}
+    return true;
+  }
+
+  // Record a 2048 win to the platform so it lands in the app_scores table
+  // (metadata.won === true sets the backend's won_flag). roundKey is the
+  // constant "win", so scores.submit's (app, roundKey, user) uniqueness means
+  // each player's FIRST win is recorded once; a repeat rejects with
+  // `scores/already-submitted`, which — like success — proves the win is on
+  // record, so both mark it recorded.
+  //
+  // WHY THE MARKER. This is a permanent public honor (the Hall of Fame board is
+  // ordered by created_at, oldest first), and the win transition fires exactly
+  // once per saved game. A dropped request used to be unrecoverable: `won` is
+  // restored from the saved state, so wonTransition never fires again, and a
+  // later game over calls clearGameState() and wipes even that. The pending
+  // marker is written to storage before the request and survives both, so the
+  // next load retries until the platform confirms.
+  //
+  // EVERY other failure leaves the marker set, not just network ones. We can't
+  // tell a dropped request from a permanent rejection, and the two mistakes are
+  // not symmetric: over-retrying costs one request per load, under-retrying
+  // costs a player an honor they earned and can never earn again. A marker
+  // stranded on a host that doesn't implement scores.submit isn't wasted
+  // either — signed-in storage is per-user and syncs across mobile and web, so
+  // it retries on the next host that does.
+  var winSubmitInFlight = false;
+  function submitWin(score) {
+    if (winSubmitInFlight) return;
+    if (!canSubmitScores()) return;
+    winSubmitInFlight = true;
+    try {
+      OR.scores
+        .submit({
+          roundKey: "win",
+          score: score,
+          metadata: { won: true, tile: 2048 },
+        })
+        .then(function () {
+          winSubmitInFlight = false;
+          storage.markWinRecorded();
+        })
+        .catch(function (err) {
+          winSubmitInFlight = false;
+          if (err && err.code === "scores/already-submitted") {
+            storage.markWinRecorded();
+          }
+        });
+    } catch (_) {
+      winSubmitInFlight = false;
+    }
+  }
 
   // Submit the player's all-time best to the global "highscore" leaderboard.
   // Uses keepBest so the server keeps the max under this constant roundKey — a
@@ -166,7 +227,33 @@
 
       window.requestAnimationFrame(function () {
         var game = new GameManager(4, KeyboardInputManager, HTMLActuator, StorageManagerFactory);
-        attachBridgeEffects(game.actuator);
+        attachBridgeEffects(game);
+
+        // Retry any win the platform hasn't confirmed. This is the only path
+        // that can credit a restored won game: the constructor's setup()
+        // actuate runs before attachBridgeEffects, unwrapped, and every later
+        // actuate now compares against the restored `won`, so reloading a won
+        // game produces no wonTransition and would otherwise never submit.
+        var pendingWin = storage.getPendingWin();
+        if (pendingWin !== null) {
+          submitWin(pendingWin);
+        } else if (game.won && !storage.isWinRecorded() && canSubmitScores()) {
+          // A game won before the marker existed carries none, and may never
+          // have been recorded. One idempotent attempt repairs those; for
+          // everyone already on the board it rejects as already-submitted.
+          // Either outcome writes the "recorded" sentinel, which is what keeps
+          // this a one-time backfill per player rather than a resubmit on every
+          // load — a won game stays in storage until a game over or a restart,
+          // so the `won` flag alone would keep qualifying indefinitely.
+          //
+          // The score submitted is the restored game's CURRENT score, which for
+          // a kept-playing game is higher than it was at the moment of the win.
+          // Nothing recorded the score at the win, and the board is ordered by
+          // created_at rather than score, so the honor lands correctly even
+          // where the number is generous.
+          storage.setPendingWin(game.score);
+          submitWin(game.score);
+        }
         // Subtle confirmation that the "New Game" tap registered. Move/win/
         // lose haptics live in attachBridgeEffects on the actuator; restart
         // is the only player-initiated action that doesn't go through there.

@@ -9,11 +9,19 @@
 // new personal best) so it stays immediate.
 var STATE_WRITE_DEBOUNCE_MS = 500;
 
+// Sentinel stored under pendingWinKey once the platform confirms a win. Any
+// value that can't be read as a score works; see the state table on
+// getPendingWin() for why confirmation writes rather than deletes.
+var WIN_RECORDED_VALUE = "done";
+
 function StorageManager() {
   this.bestScoreKey = "bestScore";
   this.gameStateKey = "gameState";
+  this.pendingWinKey = "pendingWin";
   this._best = 0;
   this._state = null;
+  this._pendingWin = null;
+  this._winRecorded = false;
   this._bridge = null;
   this._stateWriteTimer = null;
 }
@@ -35,15 +43,28 @@ StorageManager.prototype.hydrate = function () {
   return Promise.all([
     self._bridge.get(self.bestScoreKey),
     self._bridge.get(self.gameStateKey),
+    self._bridge.get(self.pendingWinKey),
   ]).then(function (values) {
     var bestRaw = values[0];
     var stateRaw = values[1];
+    var pendingWinRaw = values[2];
     if (bestRaw != null) {
       var parsed = parseInt(bestRaw, 10);
       if (!isNaN(parsed)) self._best = parsed;
     }
     if (stateRaw != null) {
       try { self._state = JSON.parse(stateRaw); } catch (_) {}
+    }
+    // Sentinel first — it doesn't parse as a number, so the score branch below
+    // would otherwise read it as a corrupt marker and retry a confirmed win
+    // forever. Past that, presence is the signal and not the value: an
+    // unparseable marker still means "a win is unconfirmed", so fall back to 0
+    // rather than dropping it.
+    if (pendingWinRaw === WIN_RECORDED_VALUE) {
+      self._winRecorded = true;
+    } else if (pendingWinRaw != null) {
+      var pending = parseInt(pendingWinRaw, 10);
+      self._pendingWin = isNaN(pending) ? 0 : pending;
     }
   }).catch(function (err) {
     console.warn("2048: storage hydrate failed", err);
@@ -84,6 +105,49 @@ StorageManager.prototype.clearGameState = function () {
   }
   if (this._bridge) {
     this._bridge.delete(this.gameStateKey).catch(function () {});
+  }
+};
+
+// One key, three states — "confirmed" has to be distinguishable from "never
+// won", not collapsed into it:
+//
+//   absent      nothing known. A restored game whose `won` flag is set may
+//               predate this marker entirely, so it's worth one backfill.
+//   "<number>"  a win at that score is NOT on record yet. Retry it.
+//   "done"      the platform has this player's win. Never submit again.
+//
+// Confirmation therefore WRITES the sentinel instead of deleting the key. If it
+// deleted, "confirmed" and "never won" would look identical, and the boot-time
+// backfill in application.js would see a bare `won` saved game — which survives
+// until a game over or a restart, so typically forever after a win — and
+// resubmit on every single load for the rest of that player's life.
+//
+// Written immediately rather than debounced like game state: a win happens once
+// and the marker has to outlive a close right after it.
+//
+// Deliberately NOT touched by clearGameState(). A game over wipes the saved
+// game — including its `won` flag — but an unconfirmed win still needs
+// retrying, so this outlives it. See submitWin() in application.js.
+StorageManager.prototype.getPendingWin = function () {
+  return this._pendingWin;
+};
+
+StorageManager.prototype.isWinRecorded = function () {
+  return this._winRecorded;
+};
+
+StorageManager.prototype.setPendingWin = function (score) {
+  this._pendingWin = score;
+  if (this._bridge) {
+    this._bridge.set(this.pendingWinKey, String(score)).catch(function () {});
+  }
+};
+
+StorageManager.prototype.markWinRecorded = function () {
+  this._pendingWin = null;
+  this._winRecorded = true;
+  if (this._bridge) {
+    this._bridge.set(this.pendingWinKey, WIN_RECORDED_VALUE).catch(function () {});
   }
 };
 
