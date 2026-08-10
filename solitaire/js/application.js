@@ -41,6 +41,13 @@
   // cached bundle, which renderFriendsPanel treats as "no panel" rather than
   // failing.
   var UI = window.OddsRabbitUI;
+
+  // Rows to fetch for a public board. The REST route and the SDK schema both
+  // cap this at 100, so it is "everyone the server will hand over". Was 20,
+  // which was a placeholder and had begun cutting real players off on the
+  // deeper boards in the other games. The panel bounds its own height and
+  // scrolls, so a deeper board costs reachable rows, not hidden ones.
+  var BOARD_LIMIT = 100;
   var startDailyBtn = document.querySelector(".start-daily-button");
   var startRandomBtn = document.querySelector(".start-random-button");
   var finishBtn = document.querySelector(".finish-button");
@@ -505,7 +512,7 @@
         label: "Global",
         emptyText: "Nobody has solved today's deal yet — be the first!",
         load: function () {
-          return OR.scores.top({ roundKey: roundKey, order: "top", limit: 20 });
+          return OR.scores.top({ roundKey: roundKey, order: "top", limit: BOARD_LIMIT });
         },
         formatValue: formatResult
       };
@@ -531,7 +538,7 @@
     if (OR.capabilities.has("scores.season") && typeof UI.createSeasonTab === "function") {
       var seasonOptions = {
         load: function () {
-          return OR.scores.season({ period: UI.currentPeriod(), limit: 20 });
+          return OR.scores.season({ period: UI.currentPeriod(), limit: BOARD_LIMIT });
         },
         emptyText: "No solves this month yet — win a deal to get on the board."
       };

@@ -663,6 +663,35 @@ Note `2048` is where the pinned row does the most work: its board is all-time
 and ossifies (§3.7), so for a newer player it is the only number on the screen
 that is theirs to move.
 
+**Review pass 2026‑08‑03 — rabbit-words.** The boards themselves were right
+(Friends + Season, no `scores.top`, both rank verbs gated separately). Three
+fixes around them:
+
+1. **The past-round modal showed the wrong month's season board.** Both the
+   board and the pinned rank were fetched for `currentPeriod()` regardless of
+   which day the modal was on. The modal scrubs back seven days, so in the first
+   week of any month it captioned *this* month over last month's puzzle and
+   ranked the viewer in a month that didn't contain the day on screen. The period
+   is now derived from the puzzle index (`periodForPuzzle`), which is a UTC day
+   offset from the epoch and therefore already the right calendar unit. The empty
+   copy names the month for the same reason.
+2. **The modal opened on Season.** `defaultTab: 'season'` was passed from both
+   call sites, so tapping 🏆 for "Puzzle #N results" landed on a month board.
+   Which board leads is now the caller's (`lead`) — Season on the end-game
+   screen, Friends in the modal, still a preference the panel can override when
+   the named tab settles empty.
+3. **Words never destroyed a panel.** It was the only adopting game with no
+   `PanelSlot`, so every prev/next in the modal left the previous board's season
+   and rank fetches resolving into detached nodes. It now holds one slot per
+   mount point — end-game and modal, which are on screen together — mirroring
+   rabbit-globe.
+
+Also fixed alongside: `npm test` had been dead since it was added. Node 20 walked
+a directory passed to `--test`; Node 22 resolves it as a module instead, so
+`node --test .test-build` failed with MODULE_NOT_FOUND before any assertion ran
+— and reported it as one failing test, which reads like a broken suite rather
+than a broken runner. `test.config.mjs` now names the built files. 21/21 pass.
+
 **Phase 4 — deploy discipline**
 Ship order is forced: **backend → SDK + sandbox host → games → RN app.** Two
 artifacts joined the list in Phase 2: `dist/leaderboard-v1.js` and
@@ -699,7 +728,7 @@ ordering above is a correctness requirement, not a preference.
      blocks only its season board.
    - rabbit-words is in but **season-only** — a daily global board there is
      hundreds of ties on a 1–6 range broken by timestamp (§3.7). Friends tab in
-     Phase 2, Global tab in Phase 3.
+     Phase 2, Global tab in Phase 3. **Reversed 2026‑08‑03 — see §5.4.**
    - **snake and match3 are out entirely**, not deferred. They submit nothing
      today, so a board launches empty and the submit path is real work rather
      than "cheapest on the board". Note this also rules out adding *silent*
@@ -718,3 +747,105 @@ ordering above is a correctness requirement, not a preference.
    only ever for snake/match3's new all-time boards; with those out (§5.3)
    nothing would ever write under `alltime`, so 2048 keeps `highscore` and the
    backend gains no synonym. Revisit only if a new all-time board appears.
+
+## 5.4 Reversal — rabbit-words gets a daily public board (2026‑08‑03)
+
+§3.7 and §5.3 ruled out a `scores.top` tab for rabbit-words: seven possible
+daily values across hundreds of players is a clock, not a ranking. That argument
+is about **scale**, and the scale isn't there. Production, read the morning of
+2026‑08‑03:
+
+| Puzzle | Players that day | Scores |
+| --- | --- | --- |
+| #86 (Aug 1) | 4 | all four tied on "solved in 5" |
+| #87 (Aug 2) | 7 | spread across five distinct results |
+| #88 (Aug 3) | 3 by 08:00 UTC | — |
+
+At that volume the board is not a top-20 cut of a tied field; it **is** the
+field. The observed cost of holding the line was concrete: a player who follows
+nobody got an invite prompt while the day's four other players sat one tab away,
+unreachable — on a platform whose whole pitch is community. Belonging was the
+goal; the ranking was only ever the mechanism.
+
+So words now renders **Everyone → Season → Friends**, with Everyone leading on
+both the end-game screen and the past-round modal. No backend work: the route is
+public and already answers for this app, and both outer hosts already relay
+`scores.top` and `scores.rank`.
+
+Two things this does not change:
+
+- **The clock is still real.** Equal scores are tie-broken by `created_at ASC`,
+  so an early solver outranks a later one with the same guess count. At a
+  handful of players a day nobody can see it. **Revisit trigger: when a single
+  day's field stops fitting on one screen (~50+), the daily board should stop
+  claiming to rank and the season board carries the standing** — that is what
+  `qualified_avg` was designed for and why it stays the second tab, not the
+  first.
+- **The season board keeps its job.** Daily = who else is here today; season =
+  where you stand. Two boards, two questions.
+
+Fixed alongside, in the shared UI and therefore in all four games: **a medal now
+needs a place nobody else reached.** Competition ranking shares a rank on equal
+scores — correct for the number, wrong for the medal, as the four-way tie on
+puzzle #86 rendered four gold medals down a column and read as a bug. `medalsFor`
+awards 🥇🥈🥉 only where the place is uniquely held; a shared place shows its
+number. Boards with `rankTies: false` are unaffected, since every rank there is
+unique by construction.
+
+## 5.5 Board depth — 20 → 100 (2026‑08‑09)
+
+Every board shipped fetching 20 rows. That was a placeholder carried from the
+first 2048 modal, never a decision, and by August it was hiding real players:
+
+| Board | Field | Visible at 20 |
+| --- | --- | --- |
+| 2048 High Scores (all-time) | 51 | 20 — 61% of the field cut |
+| rabbit-words Season (Aug) | 32 | 20 — 12 cut |
+| rabbit-globe Season (Aug) | 10 | all |
+| 2048 Hall of Fame | 1 | all |
+
+All four games now request `100`, the ceiling the REST route and
+`BridgeRequestSchema` already enforce, via a named `BOARD_LIMIT` rather than a
+literal at each call site. No backend change — `limit` was always clamped to
+1..100, and the season transient simply keys on the new value.
+
+The pinned row (§3.5) is what made 20 defensible: a player outside the page
+still saw where they placed. It stays, and it is still the only thing that works
+at any field size — but "see your rank" and "see the field" are different needs,
+and the second one is the community half of the feature.
+
+**A height cap was tried and reverted the same day.** The worry was real — 100
+unbounded rows push lifetime stats and share buttons a couple of thousand pixels
+down an inline board — so `.lb-panel .lb-list` got `max-height: 60vh`, its own
+scroll and `overscroll-behavior: contain`, exempting `.lb-modal` on the grounds
+that the shared modal already scrolls.
+
+That exemption was the bug. **The shared modal is not the only scroll container a
+panel is mounted in.** rabbit-words' past-round modal is the game's own element
+(`.leaderboard-modal-body`, `overflow-y: auto`), and inside it the capped list
+became a second scroller: the last rows of a 31-row season board could not be
+reached on either tab, because a flick that landed on the inner list stopped
+there instead of scrolling the modal holding the rest of it.
+
+**Rule, learned the hard way: a panel does not know what it has been mounted
+inside, so it must not claim the scroll.** Every surface that renders one already
+scrolls, and the outermost scroller is the only one usable on touch. A board that
+needs to take less room should collapse behind a "Show all" control, which adds
+no second scroll region.
+
+The one deliberate exception is solitaire, and it proves the rule: its panel
+lives in `.game-message`, an absolutely positioned overlay with a fixed height
+and no scroll of its own, so the list scrolling is what makes the board reachable
+at all — and there is no parent scroller to chain to. Its cap moved 160px → 38vh,
+since 160px was set for 20-row boards and shows three and a half.
+
+Two pre-existing overflow bugs surfaced while auditing the other games for the
+same shape:
+
+- **rabbit-globe's modal never scrolled.** `.modal-backdrop` is `position: fixed`,
+  so the page behind it can't scroll either, and `.modal` had no `max-height` —
+  a board taller than the viewport ran off the bottom of the screen unreachable.
+  Latent since the leaderboard modal shipped (20 rows already overflowed a short
+  screen), fatal at 100. Now `max-height: calc(100vh - 40px); overflow-y: auto`.
+- **2048 was fine** and always has been: its board is in the shared `.lb-modal`,
+  which is a single 85vh scroll area with nothing nested inside it.

@@ -375,8 +375,18 @@ strong.important {
   letter-spacing: 1px;
 }
 
+/* The one place a leaderboard list is allowed to own a scroll: `.game-message`
+   is an absolutely positioned overlay pinned inside the game container, so it
+   has a fixed height and does NOT scroll — anything taller than it is simply
+   unreachable. The list scrolling itself is what makes the board readable at
+   all here, and there is no parent scroller for a flick to chain to, so it
+   can't trap the way a capped list did inside rabbit-words' scrolling modal.
+
+   160px was set when boards were 20 rows; it shows about three and a half, and
+   with a 100-row board that is a letterbox. Proportional to the viewport
+   instead, leaving room for the buttons underneath. */
 .friends-panel .lb-list {
-  max-height: 160px;
+  max-height: 38vh;
   overflow-y: auto;
 }
 

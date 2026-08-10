@@ -90,6 +90,25 @@
   margin: 8px 0 0;
 }
 
+/* The list deliberately has NO max-height and does NOT scroll itself.
+ *
+ * A bounded, self-scrolling list was tried when boards went from 20 rows to 100
+ * (§5.5) and reverted the same day. It exempted `.lb-modal`, on the reasoning
+ * that the shared modal already scrolls — but the shared modal is not the only
+ * scroll container a panel gets mounted in. rabbit-words' past-round modal is
+ * the game's OWN element (`.leaderboard-modal-body`, `overflow-y: auto`), and
+ * inside it the capped list became a second scroller: the last few rows of a
+ * 31-row season board could not be reached at all, because a flick that hit the
+ * inner list stopped there (`overscroll-behavior: contain`) instead of scrolling
+ * the modal that held the rest of it.
+ *
+ * The general rule this cost us: a panel does not know what it has been mounted
+ * inside, so it must not claim the scroll. Every surface that renders one — game
+ * page, shared modal, per-game modal — already scrolls, and the outermost
+ * scroller is the only one the player can use reliably on touch. If a board ever
+ * needs to take less room, collapse it to the first N rows behind a "Show all"
+ * control, which adds no second scroll region. */
+
 .lb-row {
   display: flex;
   align-items: center;

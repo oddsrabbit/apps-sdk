@@ -34,7 +34,14 @@
 
   var HIGHSCORE_ROUND = "highscore";
   var WIN_ROUND = "win";
-  var LIMIT = 20;
+  // The API caps a board at 100 rows and the SDK schema enforces the same, so
+  // this is "everyone the server will give us". 20 was the Phase 2 placeholder
+  // and it was cutting the all-time board in half — 51 players hold a
+  // `highscore` row as of Aug 2026, so 31 of them were below a fold that
+  // existed for no reason. The modal already scrolls (`.lb-modal`,
+  // max-height 85vh), so a longer board costs height the user can reach
+  // rather than rows they can't.
+  var LIMIT = 100;
 
   function hideButton() {
     button.style.display = "none";

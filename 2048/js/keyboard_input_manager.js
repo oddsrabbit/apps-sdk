@@ -90,11 +90,45 @@ KeyboardInputManager.prototype.listen = function () {
   var touchStartClientX, touchStartClientY;
   var gameContainer = document.body;
 
+  // Because swipe detection covers the whole body (see above), a tap on a
+  // CONTROL enters these handlers too — and `preventDefault()` on touchstart
+  // suppresses the browser's synthesized mouse events for that entire
+  // sequence, `click` included. A control wired to a plain `click` listener is
+  // therefore dead to touch while still working perfectly under a mouse.
+  //
+  // That is exactly how the leaderboard button broke: the same code worked on
+  // the web page (mouse) and was inert in the mobile WebView (tap), which is
+  // what made it look like a platform or caching problem. 2048's own controls
+  // escaped only because `bindButtonPress` binds `touchend` alongside `click`
+  // — anything that forgets that pairing is silently touch-only-broken.
+  //
+  // Rather than require every control added from here on to remember it, leave
+  // the default behaviour intact when the gesture STARTS on one. A tap on a
+  // button is not the beginning of a board swipe, so nothing is lost.
+  //
+  // The leaderboard modal is in the selector for a second reason: it is
+  // appended to `document.body`, so the unconditional touchmove
+  // `preventDefault()` below would otherwise make its scrollable list (up to
+  // 100 rows) impossible to scroll with a finger.
+  var INTERACTIVE_SELECTOR =
+    "button, a, input, select, textarea, [role='button'], .lb-backdrop";
+
+  function startedOnControl(target) {
+    return !!(target && target.closest && target.closest(INTERACTIVE_SELECTOR));
+  }
+
+  // Set on touchstart and held for the whole gesture: once the finger moves,
+  // touchmove/touchend can report a different target than touchstart did, so
+  // re-testing per event would flip mid-swipe.
+  var gestureOnControl = false;
+
   gameContainer.addEventListener(this.eventTouchstart, function (event) {
     if ((!window.navigator.msPointerEnabled && event.touches.length > 1) ||
         event.targetTouches.length > 1) {
       return; // Ignore if touching with more than 1 finger
     }
+
+    gestureOnControl = startedOnControl(event.target);
 
     if (window.navigator.msPointerEnabled) {
       touchStartClientX = event.pageX;
@@ -104,10 +138,12 @@ KeyboardInputManager.prototype.listen = function () {
       touchStartClientY = event.touches[0].clientY;
     }
 
+    if (gestureOnControl) return; // let the browser synthesize the click
     event.preventDefault();
   }, { passive: false });
 
   gameContainer.addEventListener(this.eventTouchmove, function (event) {
+    if (gestureOnControl) return; // let the modal's list scroll
     event.preventDefault();
   }, { passive: false });
 
@@ -115,6 +151,13 @@ KeyboardInputManager.prototype.listen = function () {
     if ((!window.navigator.msPointerEnabled && event.touches.length > 0) ||
         event.targetTouches.length > 0) {
       return; // Ignore if still touching with one or more fingers
+    }
+
+    // A gesture that began on a control belongs to that control, not to the
+    // board — its start/end coordinates would otherwise read as a swipe.
+    if (gestureOnControl) {
+      gestureOnControl = false;
+      return;
     }
 
     var touchEndClientX, touchEndClientY;

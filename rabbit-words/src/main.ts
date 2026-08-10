@@ -5,10 +5,12 @@ import type {
 } from '../../src/sdk/sdk';
 import {
   createLeaderboardPanel,
+  pinnedFromRank,
+  type LeaderboardPanel,
   type LeaderboardRow,
   type LeaderboardTab,
 } from '../../src/ui/leaderboard';
-import { createSeasonTab, currentPeriod } from '../../src/ui/season';
+import { createSeasonTab, currentPeriod, formatPeriod } from '../../src/ui/season';
 import { isValidGuess } from './words';
 
 declare global {
@@ -494,7 +496,15 @@ function renderEndGame(
 
   // Friends panel — the social heart. Always render (handles anon + empty
   // states internally) so signed-out users still see the sign-in CTA.
-  wrap.appendChild(renderFriendsPanel(friends, viewerResultFromState(state)));
+  wrap.appendChild(
+    renderFriendsPanel({
+      slot: endGamePanelSlot,
+      puzzleIndex: state.puzzleIndex,
+      friends,
+      viewerResult: viewerResultFromState(state),
+      lead: 'season',
+    })
+  );
 
   // Personal lifetime stats below — less urgent than the round-specific
   // community + friends data above.
@@ -664,81 +674,161 @@ function viewerResultFromState(state: State): ViewerResult | null {
 }
 
 /**
- * Today's friends board, rendered by the shared leaderboard component
+ * One puzzle's boards, rendered by the shared leaderboard component
  * (`src/ui/leaderboard.ts`). Replaces this game's own row and CTA rendering.
+ * Used for today's end-game screen and for the past-round modal, which passes
+ * the day it is showing — see `puzzleIndex` below.
  *
- * **Friends only — no Global tab.** rabbit-words scores 0, or 1–6 by guess
- * count, so a daily global board is hundreds of players tied on seven possible
- * values, separated only by who submitted first. That's a clock, not a ranking.
- * Words gets its global board in Phase 3 as a *season* board (qualified average
- * over the month) — see §3.7 and §5.3 of docs/proposals/unified-leaderboard.md.
- * Do not add a `scores.top` tab here in the meantime.
+ * **Everyone → Season → Friends**, public boards first. Words has two global
+ * boards for two different jobs: the day's whole field (`scores.top` on this
+ * puzzle) and the month's standing (a season board ranked by qualified average).
+ * See §3.7 and §5.3 of docs/proposals/unified-leaderboard.md — and the
+ * `hasEveryone` block below for why the daily board, ruled out there, is in.
  */
+/**
+ * Rows to fetch for a public board. The REST route and the SDK schema both cap
+ * this at 100, so it is "everyone the server will hand over".
+ *
+ * Was 20 through Phase 2/3, which was a placeholder rather than a decision and
+ * had started cutting real players off: 32 people held a rabbit-words season
+ * row in August 2026 and 51 held a 2048 all-time score, so a third to a half of
+ * each field sat below a fold nobody chose. The panel bounds its own height and
+ * scrolls (`.lb-list`), so a deeper board costs rows the player can reach
+ * instead of rows they can't.
+ */
+const BOARD_LIMIT = 100;
+
 const FRIENDS_EMPTY =
   'Invite friends or follow other players on OddsRabbit to see how they did here.';
 
-function renderFriendsPanel(
-  friends?: FriendScore[],
-  viewerResult?: ViewerResult | null
-): HTMLElement {
+/**
+ * A place a leaderboard panel lives. Words mounts panels in two independent
+ * spots — the end-game screen and the past-round modal, which are on screen at
+ * the same time when the modal is opened over a finished game — so each holds
+ * its own slot rather than sharing one "current panel" that would tear down the
+ * other's board.
+ *
+ * Mounting destroys whatever the slot held. That is what stops a season board
+ * (or a pinned rank) fetched for a day the viewer has already paged past from
+ * resolving into detached nodes, and it bounds the panel churn from the modal's
+ * prev/next to one live panel. Same shape as rabbit-globe's.
+ */
+interface PanelSlot {
+  mount(panel: LeaderboardPanel): HTMLElement;
+  clear(): void;
+}
+
+function panelSlot(): PanelSlot {
+  let live: LeaderboardPanel | null = null;
+  return {
+    mount(panel) {
+      live?.destroy();
+      live = panel;
+      return panel.element;
+    },
+    clear() {
+      live?.destroy();
+      live = null;
+    },
+  };
+}
+
+/** The end-game screen's slot; `render()` rebuilds that screen wholesale. */
+const endGamePanelSlot = panelSlot();
+/** The past-round modal's slot; re-mounted on every prev/next, cleared on close. */
+const modalPanelSlot = panelSlot();
+
+/**
+ * The season a puzzle belongs to, `YYYY-MM` in UTC.
+ *
+ * Derived from the puzzle rather than from the clock. The past-round modal
+ * scrubs back seven days, which crosses a month boundary in the first week of
+ * every month — `currentPeriod()` there would caption August's board over a
+ * July puzzle's results, and pin the viewer's rank in a month that doesn't
+ * contain the day they're looking at. Same UTC rule as `currentPeriod()`: a
+ * puzzle index IS a UTC day offset from `EPOCH_MS`.
+ */
+function periodForPuzzle(puzzleIndex: number): string {
+  return currentPeriod(new Date(EPOCH_MS + puzzleIndex * DAY_MS));
+}
+
+interface FriendsPanelOptions {
+  /** Where this panel lives — see {@link PanelSlot}. */
+  slot: PanelSlot;
+  /** The puzzle whose friends board this is, and whose month the season board covers. */
+  puzzleIndex: number;
+  friends?: FriendScore[];
+  viewerResult?: ViewerResult | null;
+  /**
+   * Which board opens first **when the host has no `scores.top`**. Everyone
+   * leads wherever it exists, so this is the fallback preference only:
+   * `season` on the end-game screen, since it is then the only public board
+   * left, and `friends` in the past-round modal, which the viewer opened to see
+   * one specific day rather than a month.
+   *
+   * A preference either way — the panel falls back to a populated tab if the
+   * named one settles empty.
+   */
+  lead: 'season' | 'friends';
+}
+
+function renderFriendsPanel(options: FriendsPanelOptions): HTMLElement {
+  const { slot, puzzleIndex, friends, viewerResult, lead } = options;
+
   const wrap = document.createElement('section');
   wrap.className = 'friends-panel';
 
   const OR = window.OddsRabbit;
   const signedIn = Boolean(OR.user);
+  const hasEveryone = OR.capabilities.has('scores.top');
   const hasSeason = OR.capabilities.has('scores.season');
+  const period = periodForPuzzle(puzzleIndex);
+  const roundKey = `puzzle-${puzzleIndex}`;
 
   const title = document.createElement('h3');
   title.className = 'hist-title';
-  title.textContent = hasSeason ? 'Leaderboard' : 'Friends';
+  title.textContent = hasEveryone || hasSeason ? 'Leaderboard' : 'Friends';
   wrap.appendChild(title);
 
-  const tabs: LeaderboardTab[] = [
-    {
-          id: 'friends',
-          label: 'Friends',
-          // One empty state for both "you follow nobody" and "they follow
-          // people but nobody played today" — `scores.friends` returns [] in
-          // either case, so the client genuinely can't tell them apart.
-          // `emptyPrompt` wins whenever it is set; `emptyText` is the same copy
-          // without the button, for a future caller that drops the prompt.
-          emptyText: FRIENDS_EMPTY,
-          emptyPrompt: {
-            blurb: FRIENDS_EMPTY,
-            label: 'Invite a friend',
-            onClick: () => {
-              void runInviteShare();
-            },
-          },
-          load: () => Promise.resolve(friendsRows(friends, viewerResult)),
-          formatValue: (row) => {
-            const meta = resultMeta(row);
-            if (meta.won && typeof meta.guessCount === 'number') {
-              return `Solved in ${meta.guessCount}`;
-            }
-            return meta.won ? 'Solved' : "Didn't solve";
-          },
-          valueClass: (row) =>
-            resultMeta(row).won ? null : 'friends-result-lost',
-          // Anonymous: requestSignIn rather than a link, so the host raises the
-          // prompt at a natural friction moment (end of round), per SDK guidance.
-          signInPrompt: signedIn
-            ? null
-            : {
-                blurb: 'Sign in to see how people you follow are doing today.',
-                label: 'Sign in',
-                onClick: () => {
-                  void OR.actions.requestSignIn('See how your friends did today');
-                },
-              },
-    },
-  ];
+  const tabs: LeaderboardTab[] = [];
 
-  // rabbit-words' global board, at last — and a *season* board specifically.
-  // A daily global board here is hundreds of players tied across seven possible
-  // values, separated only by who submitted first, which is a clock rather than
-  // a ranking. Ranked by qualified average: play enough of the month to
-  // qualify, then your mean score places you (§3.7). Still no `scores.top` tab.
+  // The public board, and the one that leads. §3.7 originally ruled a daily
+  // global board out here on the grounds that seven possible scores across
+  // hundreds of players is a clock, not a ranking — but that is an argument
+  // about scale, and the scale isn't there: an August 2026 puzzle draws 3–7
+  // players, so this board IS the day's whole field. A player who follows
+  // nobody was being shown an invite prompt while four strangers sat one tab
+  // away, which is the opposite of what a community board is for.
+  //
+  // Public read, so guests get it without signing in — most of the argument for
+  // making `scores.top` public in the first place (§3.5). Revisit when a single
+  // day's field grows past what one screen can hold: at that point the ties DO
+  // become a clock, and the season board is the one carrying the ranking.
+  if (hasEveryone) {
+    tabs.push({
+      id: 'everyone',
+      label: 'Everyone',
+      emptyText: 'Nobody has played this puzzle yet — be the first.',
+      load: () => OR.scores.top({ roundKey, order: 'top', limit: BOARD_LIMIT }),
+      // Where the viewer placed when they're outside the fetched page. Gated
+      // separately: `scores.rank` ships after `scores.top`, so a host can serve
+      // the board and not the rank. Same round key as the board above, or the
+      // rank would describe a different set of players.
+      ...(OR.capabilities.has('scores.rank')
+        ? {
+            loadPinned: () =>
+              OR.scores.rank({ roundKey, order: 'top' }).then(pinnedFromRank),
+          }
+        : {}),
+      formatValue: resultValue,
+      valueClass: resultValueClass,
+    });
+  }
+
+  // The month, ranked by qualified average: play enough of it to qualify, then
+  // your mean score places you (§3.7). This is the board that still separates
+  // players once a day's field is too tied to — the daily board above is the
+  // company, this one is the standing.
   //
   // Empty means nobody PLAYED, not nobody qualified: the server returns
   // sub-qualifier players too, ranked below everyone who met it (see
@@ -749,9 +839,9 @@ function renderFriendsPanel(
       createSeasonTab({
         load: () =>
           OR.scores.season({
-            period: currentPeriod(),
+            period,
             metric: 'qualified_avg',
-            limit: 20,
+            limit: BOARD_LIMIT,
           }),
         // Words needs this more than the other two: a 1–6 daily score means the
         // top 20 is a wall of near-identical averages, so "where am I" is the
@@ -762,29 +852,89 @@ function renderFriendsPanel(
           ? {
               loadRank: () =>
                 OR.scores.seasonRank({
-                  period: currentPeriod(),
+                  period,
                   metric: 'qualified_avg',
                 }),
             }
           : {}),
-        emptyText: 'Nobody has played this month yet — be the first.',
+        // Names the month rather than saying "this month": on the past-round
+        // modal this board can be last month's, and the viewer has no other
+        // way to tell which one an empty board is talking about.
+        emptyText: `Nobody has played in ${formatPeriod(period)} yet — be the first.`,
       })
     );
   }
 
+  // Friends last: it is the narrowest board and the only one that can be empty
+  // for a reason the player has to fix themselves.
+  tabs.push({
+    id: 'friends',
+    label: 'Friends',
+    // One empty state for both "you follow nobody" and "they follow people but
+    // nobody played today" — `scores.friends` returns [] in either case, so the
+    // client genuinely can't tell them apart. `emptyPrompt` wins whenever it is
+    // set; `emptyText` is the same copy without the button, for a future caller
+    // that drops the prompt.
+    emptyText: FRIENDS_EMPTY,
+    emptyPrompt: {
+      blurb: FRIENDS_EMPTY,
+      label: 'Invite a friend',
+      onClick: () => {
+        void runInviteShare();
+      },
+    },
+    load: () => Promise.resolve(friendsRows(friends, viewerResult)),
+    formatValue: resultValue,
+    valueClass: resultValueClass,
+    // Anonymous: requestSignIn rather than a link, so the host raises the
+    // prompt at a natural friction moment (end of round), per SDK guidance.
+    // Per-tab, so a signed-out player still gets Everyone and Season — the
+    // whole point of those being public reads.
+    signInPrompt: signedIn
+      ? null
+      : {
+          blurb: 'Sign in to see how people you follow are doing today.',
+          label: 'Sign in',
+          onClick: () => {
+            void OR.actions.requestSignIn('See how your friends did today');
+          },
+        },
+  });
+
   wrap.appendChild(
-    createLeaderboardPanel({
-      tabs,
-      viewerUuid: OR.user?.uuid ?? null,
-      // Season leads where it exists: it is the board that actually means
-      // something for this game, and Friends is empty for anyone who follows
-      // nobody. A preference rather than a pin — on the 1st of a month, with
-      // nothing on the season board yet, the panel falls back to Friends on
-      // its own. Without a season board there is only one tab anyway.
-      defaultTab: hasSeason ? 'season' : undefined,
-    }).element
+    slot.mount(
+      createLeaderboardPanel({
+        tabs,
+        viewerUuid: OR.user?.uuid ?? null,
+        // The public board leads wherever it exists, on both the end-game screen
+        // and the past-round modal: this is a community board first, and nobody
+        // should open it onto a prompt to go make friends. `lead` decides only
+        // the fallback for a host with no `scores.top`.
+        //
+        // Still a preference, not a pin — a board that settles empty yields to a
+        // populated one, and nothing moves once the player picks a tab.
+        defaultTab: hasEveryone
+          ? 'everyone'
+          : hasSeason && lead === 'season'
+            ? 'season'
+            : 'friends',
+      })
+    )
   );
   return wrap;
+}
+
+/** "Solved in 4" / "Didn't solve" — the value cell on every words board. */
+function resultValue(row: LeaderboardRow): string {
+  const meta = resultMeta(row);
+  if (meta.won && typeof meta.guessCount === 'number') {
+    return `Solved in ${meta.guessCount}`;
+  }
+  return meta.won ? 'Solved' : "Didn't solve";
+}
+
+function resultValueClass(row: LeaderboardRow): string | null {
+  return resultMeta(row).won ? null : 'friends-result-lost';
 }
 
 /**
@@ -794,9 +944,22 @@ function renderFriendsPanel(
  */
 function resultMeta(row: LeaderboardRow): { won: boolean; guessCount?: number } {
   const meta = row.metadata as { won?: boolean; guessCount?: number } | null;
+  const won = meta?.won ?? row.score > 0;
+  // The guess count is recoverable from the score alone — the submit formula is
+  // invertible, which is how `bucketForScore` reads the community histogram. It
+  // matters more here than it did on the friends board: the public board is the
+  // widest set of rows this game renders, including any written before the
+  // metadata existed, and a row with no `guessCount` degrades to a bare
+  // "Solved" sitting next to "Solved in 3" as though it were a weaker result.
+  const derived =
+    won && row.score > 0 && row.score <= ROW_COUNT
+      ? ROW_COUNT + 1 - row.score
+      : undefined;
+  const guessCount =
+    typeof meta?.guessCount === 'number' ? meta.guessCount : derived;
   return {
-    won: meta?.won ?? row.score > 0,
-    ...(typeof meta?.guessCount === 'number' ? { guessCount: meta.guessCount } : {}),
+    won,
+    ...(typeof guessCount === 'number' ? { guessCount } : {}),
   };
 }
 
@@ -1523,8 +1686,9 @@ function parseLeaderboardIntent(
  */
 async function showLeaderboardModal(puzzleIndex: number): Promise<void> {
   // Don't stack — if a previous tap already opened a leaderboard modal,
-  // tear it down before opening a fresh one.
+  // tear it down before opening a fresh one, board included.
   document.querySelector('.leaderboard-modal-backdrop')?.remove();
+  modalPanelSlot.clear();
 
   const today = todayPuzzleIndex();
   // 7-day window relative to today. A deep-link entry below this cap (e.g. a
@@ -1626,7 +1790,16 @@ async function showLeaderboardModal(puzzleIndex: number): Promise<void> {
     body.appendChild(
       renderCommunityDistribution(community, userBucket, 'How everyone did')
     );
-    body.appendChild(renderFriendsPanel(friends));
+    body.appendChild(
+      renderFriendsPanel({
+        slot: modalPanelSlot,
+        puzzleIndex: viewIndex,
+        friends,
+        // Friends leads here: this modal is about one settled day, and the
+        // season board it also carries is that day's month, not today's.
+        lead: 'friends',
+      })
+    );
   };
 
   prevBtn.addEventListener('click', () => {
@@ -1642,6 +1815,9 @@ async function showLeaderboardModal(puzzleIndex: number): Promise<void> {
 
   const close = (): void => {
     backdrop.remove();
+    // Drops the board's pending renders too: the modal is gone, and a season
+    // board or pinned rank still in flight has nothing left to paint into.
+    modalPanelSlot.clear();
     document.removeEventListener('keydown', onKey);
   };
   const onKey = (e: KeyboardEvent): void => {

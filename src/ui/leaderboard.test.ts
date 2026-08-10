@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { pinnedFromRank, ranksFor, type LeaderboardRow } from './leaderboard';
+import {
+  medalsFor,
+  pinnedFromRank,
+  ranksFor,
+  type LeaderboardRow,
+} from './leaderboard';
 
 function rows(...scores: number[]): LeaderboardRow[] {
   return scores.map((score, i) => ({
@@ -40,6 +45,18 @@ test('a zero score ties like any other value', () => {
   // Guards the `prevScore !== null` sentinel: a first row scoring 0 must not
   // read as "no previous row".
   assert.deepEqual(ranksFor(rows(0, 0, 0), true), [1, 1, 1]);
+});
+
+test('a medal needs a place nobody else reached', () => {
+  // The rabbit-words case: a whole daily board tied on first. Four gold medals
+  // reads as a bug; four rows numbered 1 states the tie.
+  assert.deepEqual(medalsFor([1, 1, 1, 1]), [null, null, null, null]);
+  // A tie further down costs only its own medal.
+  assert.deepEqual(medalsFor([1, 2, 2, 4]), ['🥇', null, null, null]);
+  assert.deepEqual(medalsFor([1, 2, 3, 4]), ['🥇', '🥈', '🥉', null]);
+  // Positional boards never share a rank, so they never lose a medal.
+  assert.deepEqual(medalsFor([1, 2, 3]), ['🥇', '🥈', '🥉']);
+  assert.deepEqual(medalsFor([]), []);
 });
 
 test('pinnedFromRank maps a rank answer, and null through', () => {

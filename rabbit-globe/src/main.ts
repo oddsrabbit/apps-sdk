@@ -760,6 +760,19 @@ function renderCommunityDistribution(
  * tab's `scores.top` from painting into detached nodes after the modal has been
  * paged to another puzzle or closed.
  */
+/**
+ * Rows to fetch for a public board. The REST route and the SDK schema both cap
+ * this at 100, so it is "everyone the server will hand over".
+ *
+ * Was 20 through Phase 2/3, which was a placeholder rather than a decision and
+ * had started cutting real players off: 32 people held a rabbit-words season
+ * row in August 2026 and 51 held a 2048 all-time score, so a third to a half of
+ * each field sat below a fold nobody chose. The panel bounds its own height and
+ * scrolls (`.lb-list`), so a deeper board costs rows the player can reach
+ * instead of rows they can't.
+ */
+const BOARD_LIMIT = 100;
+
 interface PanelSlot {
   mount(panel: LeaderboardPanel): HTMLElement;
   clear(): void;
@@ -834,7 +847,7 @@ function renderLeaderboardPanel(
       id: 'global',
       label: 'Global',
       emptyText: 'No scores yet — be the first on the board.',
-      load: () => OR.scores.top({ roundKey: globalRound, order: 'top', limit: 20 }),
+      load: () => OR.scores.top({ roundKey: globalRound, order: 'top', limit: BOARD_LIMIT }),
       // The viewer's own placement when they're outside the top 20. Separately
       // gated: `scores.rank` ships after `scores.top`, so a host can have the
       // board and not the rank. The panel only calls this when the viewer is
@@ -856,7 +869,7 @@ function renderLeaderboardPanel(
   if (OR.capabilities.has('scores.season')) {
     tabs.push(
       createSeasonTab({
-        load: () => OR.scores.season({ period: currentPeriod(), limit: 20 }),
+        load: () => OR.scores.season({ period: currentPeriod(), limit: BOARD_LIMIT }),
         ...(OR.capabilities.has('scores.seasonRank')
           ? { loadRank: () => OR.scores.seasonRank({ period: currentPeriod() }) }
           : {}),

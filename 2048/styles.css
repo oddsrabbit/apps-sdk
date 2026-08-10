@@ -342,15 +342,27 @@ hr {
   animation: pop 200ms ease 100ms;
   animation-fill-mode: backwards; }
 
-.above-game:after {
-  content: "";
-  display: block;
-  clear: both; }
+/* Intro on its own line, actions right-aligned on the row beneath.
+
+   The original upstream layout floated the intro left and "New Game" right on a
+   single line, which fit because there was one button. A second one doesn't:
+   at the 500px container the intro alone runs ~340px, so "Leaderboard" and
+   "New Game" together overflow, and floats resolve that by dropping one button
+   to the next line — where it lands under the other and beside the intro text.
+   Giving the intro the full row makes the wrap deliberate instead of emergent,
+   and the buttons then sit in a predictable pair at every width. */
+.above-game {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px; }
 
 .game-intro {
-  float: left;
-  line-height: 42px;
-  margin-bottom: 0; }
+  /* Own line at any width — the basis is the whole row, not the text's length. */
+  flex: 1 1 100%;
+  line-height: 1.4;
+  margin: 0 0 4px; }
 
 .restart-button {
   background: #8f7a66;
@@ -363,8 +375,7 @@ hr {
   text-align: center;
   font: inherit;
   font-weight: bold;
-  cursor: pointer;
-  float: right; }
+  cursor: pointer; }
 
 .game-explanation {
   margin-top: 50px; }
@@ -397,16 +408,7 @@ hr {
     margin-bottom: 10px; }
 
   .game-intro {
-    width: 55%;
-    display: block;
-    box-sizing: border-box;
-    line-height: 1.65; }
-
-  .restart-button {
-    width: 42%;
-    padding: 0;
-    box-sizing: border-box;
-    margin-top: 2px; }
+    line-height: 1.5; }
 
   .game-container {
     margin-top: 17px;
@@ -452,7 +454,8 @@ hr {
 
 /* ---- Leaderboard ---- */
 
-/* Secondary button next to "New Game" (both float right). */
+/* Secondary button, sharing the action row with "New Game" (see .above-game).
+   Lighter than the primary so "New Game" still reads as the main action. */
 .leaderboard-button {
   background: #bbada0;
   border: 0;
@@ -464,9 +467,7 @@ hr {
   text-align: center;
   font: inherit;
   font-weight: bold;
-  cursor: pointer;
-  float: right;
-  margin-left: 8px; }
+  cursor: pointer; }
 
 /* The leaderboard modal, rows, avatars and medals are the shared component
    (src/ui/leaderboard.css), themed via the --lb-* variables at the top of this
@@ -474,15 +475,10 @@ hr {
    rabbit-globe’s copy; do not re-add them locally. */
 
 @media screen and (max-width: 520px), screen and (max-height: 720px) {
-  .game-intro {
-    width: 100%;
-    float: none; }
-
+  /* 280px of container can't hold both labels at their natural width, so the
+     two share the row evenly instead of one wrapping under the other. */
   .leaderboard-button, .restart-button {
-    float: left;
-    width: 48%;
-    margin-left: 0; }
-
-  .restart-button {
-    float: right; } }
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 0; } }
 

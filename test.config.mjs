@@ -16,7 +16,7 @@
 
 import { spawn } from 'node:child_process';
 import { readdir, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import * as esbuild from 'esbuild';
 
 const OUT_DIR = '.test-build';
@@ -57,7 +57,19 @@ await esbuild.build({
   logLevel: 'warning',
 });
 
-const child = spawn(process.execPath, ['--enable-source-maps', '--test', OUT_DIR], {
+// The built files, named explicitly rather than handing `--test` the output
+// DIRECTORY. Node 20 walked a directory argument for test files; Node 22 does
+// not — it resolves the path as a module instead, so `node --test .test-build`
+// dies with MODULE_NOT_FOUND and reports it as one failed test, before a single
+// assertion has run. Listing the files works on both, and needs no glob support.
+//
+// esbuild mirrors `outbase` into `outdir`, so `src/ui/season.test.ts` lands at
+// `.test-build/ui/season.test.js`.
+const testFiles = entryPoints.map((entry) =>
+  join(OUT_DIR, relative('src', entry).replace(/\.ts$/, '.js'))
+);
+
+const child = spawn(process.execPath, ['--enable-source-maps', '--test', ...testFiles], {
   stdio: 'inherit',
   // Pin the locale. `formatPeriod` and the average badge deliberately render in
   // the viewer's locale (`toLocaleDateString(undefined, …)`), so the copy

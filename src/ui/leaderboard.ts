@@ -203,6 +203,14 @@ export function leaderboardAvatar(name: string, avatarUrl: string | null): HTMLE
     const img = document.createElement('img');
     img.className = 'lb-avatar-img';
     img.alt = '';
+    // One request per row, and boards are now up to 100 rows deep while the
+    // list shows about ten at a time — so eager loading would fetch ~90 photos
+    // nobody has scrolled to, on a mobile connection, every time a board opens.
+    // Lazy loading is measured against the scroll container, which is exactly
+    // the bounded `.lb-list`. The initial is painted first either way, so a row
+    // that hasn't fetched its photo yet is already complete rather than empty.
+    img.loading = 'lazy';
+    img.decoding = 'async';
     img.src = avatarUrl;
     img.addEventListener('load', () => node.classList.add('lb-avatar-has-img'));
     img.addEventListener('error', () => img.remove());
@@ -232,6 +240,32 @@ export function ranksFor(rows: readonly LeaderboardRow[], shareTies: boolean): n
     ranks.push(rank);
   });
   return ranks;
+}
+
+/**
+ * Medals for an already-ranked list: 🥇🥈🥉 for the top three places, but only
+ * where the place is held by exactly one row.
+ *
+ * Competition ranking shares a rank on equal scores, which is right for the
+ * NUMBER — four players who all solved in five did all place first — and wrong
+ * for the MEDAL. rabbit-words has seven possible daily values and a handful of
+ * players a day, so a whole board tying on first is ordinary; four gold medals
+ * down a column reads as a rendering bug rather than as a four-way tie. The
+ * shared number states the tie plainly, and the medal keeps meaning "nobody
+ * else got here", which is what makes it worth showing at all.
+ *
+ * Boards with `rankTies: false` are unaffected — every rank there is unique by
+ * construction.
+ *
+ * Exported for tests only — deliberately absent from `src/ui/index.ts`, like
+ * {@link ranksFor}.
+ */
+export function medalsFor(ranks: readonly number[]): (string | null)[] {
+  const held = new Map<number, number>();
+  for (const rank of ranks) held.set(rank, (held.get(rank) ?? 0) + 1);
+  return ranks.map((rank) =>
+    rank <= MEDALS.length && held.get(rank) === 1 ? MEDALS[rank - 1]! : null
+  );
 }
 
 /**
@@ -352,16 +386,16 @@ function renderList(
 ): HTMLElement {
   const list = el('ul', 'lb-list');
   const ranks = ranksFor(rows, tab.rankTies !== false);
+  const medals = medalsFor(ranks);
 
   rows.forEach((row, i) => {
     const rank = ranks[i] ?? i + 1;
-    const medal = rank <= MEDALS.length ? MEDALS[rank - 1] : undefined;
     list.appendChild(
       renderRow(
         row,
         i,
         tab,
-        medal ?? String(rank),
+        medals[i] ?? String(rank),
         isViewerRow(row, viewerUuid),
         undefined
       )
