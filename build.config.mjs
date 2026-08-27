@@ -105,6 +105,7 @@ const GAME_MATCH3_JS = [
   'renderer.js',
   'sound_manager.js',
   'application.js',
+  'leaderboard.js',
 ];
 
 // Solitaire. Original Klondike. Splits deck/rules out of game.js since
@@ -179,7 +180,7 @@ const buildTargets = [
     format: 'cjs',
   },
   // Shared leaderboard UI. Deliberately a separate bundle rather than part of
-  // sdk-v1.js: every game loads the SDK, but only the four with boards need
+  // sdk-v1.js: every game loads the SDK, but only the ones with boards need
   // this, and a transport library should not carry DOM rendering.
   {
     ...browserOpts,

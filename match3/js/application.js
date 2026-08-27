@@ -28,6 +28,128 @@
 
   function noop() {}
 
+  // Score submission ---------------------------------------------------
+  // Two boards, both read back by js/leaderboard.js: an all-time best under the
+  // constant "highscore" round, and this month's best under "month-YYYY-MM".
+  // Both use keepBest, so the server keeps the max under a key that is written
+  // more than once — without it the second submit of a rising best would reject
+  // as already-submitted and freeze the player's row at their first score.
+  var ROUNDS = window.Match3Rounds;
+
+  // Whether a score submission is worth attempting at all.
+  //
+  // Guests are excluded, and that exclusion is NOT deferred: the endpoint needs
+  // a signed-in user, and while `user` is null the host serves storage.* from
+  // this origin's localStorage instead of the per-user server store. A
+  // "submitted" marker written as a guest would sit in a namespace the signed-in
+  // session never reads — dead weight rather than a score credited later.
+  //
+  // The capability check reflects what this host has already proven: the SDK
+  // retires a verb the host rejects as unknown, so after one such rejection we
+  // stop trying. It is guarded because sdk-v1.js is deployed separately and may
+  // predate it.
+  function canSubmitScores() {
+    if (!OR.user || !OR.scores || typeof OR.scores.submit !== "function") return false;
+    try {
+      if (OR.capabilities && typeof OR.capabilities.has === "function") {
+        return OR.capabilities.has("scores.submit");
+      }
+    } catch (_) {}
+    return true;
+  }
+
+  // A failed submit is recoverable by design — the marker stays behind and the
+  // next trigger retries — which is exactly why it needs a log: a host that
+  // rejects EVERY submit is otherwise indistinguishable, from the outside, from
+  // one where everything landed. Nothing user-facing: the player has no action
+  // to take, and the retry is already running.
+  function warnSubmitFailed(roundKey, err) {
+    try { console.warn("match3: score submit failed for " + roundKey, err); } catch (_) {}
+  }
+
+  // Submit whatever the platform hasn't confirmed yet, for both rounds.
+  //
+  // WHY THE MARKERS. A submit that never lands used to be unrecoverable in the
+  // games that just fired and forgot: the best score lives on in local storage,
+  // but nothing remembers that the server never got it, so the row stays missing
+  // until the player beats their own best again — which, for a good run, may be
+  // never. Storage records what the platform CONFIRMED (on a resolved submit
+  // only), so any gap between that and the real best is retried here on the next
+  // load, the next game over, and the next background AND foreground — the four
+  // moments this is called. A rejection leaves the marker behind and simply
+  // retries later; over-retrying costs one deduped request, under-retrying costs
+  // a player their place on the board.
+  //
+  // In-flight flags rather than a queue: these are idempotent keepBest upserts,
+  // so a dropped attempt loses nothing that the next call doesn't redo, and two
+  // concurrent submits of the same round would only race each other's markers.
+  // A score beaten WHILE its submit is in flight is therefore skipped here and
+  // picked up by the re-entrant call each success makes — which terminates
+  // immediately once the markers match the stored bests. Only successes recurse;
+  // a failure must wait for the next real trigger, or a host that always rejects
+  // would spin.
+  var bestSubmitInFlight = false;
+  var monthSubmitInFlight = false;
+  function submitBests() {
+    if (!ROUNDS || !canSubmitScores()) return;
+
+    var best = storage.getBest();
+    if (best > 0 && best > storage.getSubmittedBest() && !bestSubmitInFlight) {
+      bestSubmitInFlight = true;
+      try {
+        OR.scores
+          .submit({
+            roundKey: ROUNDS.HIGHSCORE,
+            score: best,
+            keepBest: true,
+            metadata: { best: true }
+          })
+          .then(function () {
+            bestSubmitInFlight = false;
+            storage.markBestSubmitted(best);
+            submitBests();
+          })
+          .catch(function (err) {
+            bestSubmitInFlight = false;
+            warnSubmitFailed(ROUNDS.HIGHSCORE, err);
+          });
+      } catch (err) {
+        bestSubmitInFlight = false;
+        warnSubmitFailed(ROUNDS.HIGHSCORE, err);
+      }
+    }
+
+    // Resolved per call so a session left open across UTC midnight on the 1st
+    // starts writing to the new month's key on its next run, rather than topping
+    // up a board the modal has already stopped showing.
+    var period = ROUNDS.currentPeriod();
+    var monthBest = storage.getMonthBest(period);
+    if (monthBest > 0 && monthBest > storage.getSubmittedMonthBest(period) && !monthSubmitInFlight) {
+      monthSubmitInFlight = true;
+      try {
+        OR.scores
+          .submit({
+            roundKey: ROUNDS.monthRoundKey(period),
+            score: monthBest,
+            keepBest: true,
+            metadata: { period: period }
+          })
+          .then(function () {
+            monthSubmitInFlight = false;
+            storage.markMonthBestSubmitted(monthBest, period);
+            submitBests();
+          })
+          .catch(function (err) {
+            monthSubmitInFlight = false;
+            warnSubmitFailed(ROUNDS.monthRoundKey(period), err);
+          });
+      } catch (err) {
+        monthSubmitInFlight = false;
+        warnSubmitFailed(ROUNDS.monthRoundKey(period), err);
+      }
+    }
+  }
+
   function showFatalError(message) {
     if (document.querySelector(".bootstrap-error")) return;
     var banner = document.createElement("div");
@@ -449,15 +571,53 @@
               sound.newBest();
               try { OR.actions.haptic("success").catch(noop); } catch (_) {}
             }
+            // Every run is a candidate for the monthly board, not just an
+            // all-time best: a player who peaked in March can still top this
+            // month with a score well under their own record. game.js already
+            // stored the all-time best (it owns that comparison); this stores
+            // the month's, and submitBests() sends whichever of the two the
+            // platform is now behind on.
+            storage.recordMonthScore(info.score);
+            submitBests();
           },
         },
       });
+
+      // Opening the leaderboard mid-run must not cost the player time: the
+      // timer drains while a modal covers the board, and the top-row button
+      // stays tappable during a run (unlike New Game, which is hidden because a
+      // stray tap there is unrecoverable). js/leaderboard.js calls this before
+      // it opens the modal — a no-op unless a run is actually in progress, so
+      // the idle and game-over entry points are unaffected. Deliberately not a
+      // resume: the player closes the board when they're ready, and the paused
+      // overlay behind it already offers Resume.
+      window.Match3PauseForModal = function () { game.pause(); };
 
       // Auto-pause when the host backgrounds the app, same as snake. Match-3
       // is less time-pressured than snake but the timer still drains, so a
       // backgrounded run would silently game-over.
       try {
-        OR.lifecycle.on("pause", function () { game.pause(); });
+        OR.lifecycle.on("pause", function () {
+          game.pause();
+          // Also a retry point for anything the platform hasn't confirmed —
+          // covers a player who set a score and backgrounded the app before the
+          // first attempt landed, which on a flaky connection is exactly when it
+          // didn't. No-op when both markers are current.
+          submitBests();
+        });
+        // And retry on the way back in. `pause` is the WORST moment to be
+        // depending on: the app is being backgrounded, often because the player
+        // walked out of range, so that attempt is the one most likely to fail —
+        // and the next trigger after it is a whole game away, or a whole app
+        // launch away. `resume` is when the connection has typically come back,
+        // and it costs nothing when the markers are already current.
+        //
+        // Deliberately does NOT unpause the run: the auto-pause above exists so
+        // a backgrounded game doesn't silently time out, and resuming it for a
+        // player who isn't looking at the board yet would throw that away.
+        OR.lifecycle.on("resume", function () {
+          submitBests();
+        });
       } catch (_) {}
 
       // Sound: unlock + mute toggle ----------------------------------
@@ -540,6 +700,12 @@
       window.addEventListener("orientationchange", syncCanvas);
 
       setBest(storage.getBest());
+      // Boot-time retry: hydrate has just told us what the platform confirmed,
+      // so anything scored on a previous load that never landed goes now. Also
+      // the path that backfills a player whose best predates this game having a
+      // leaderboard at all — their stored best has no marker, so it submits once
+      // and is marked.
+      submitBests();
       var initialTimer = (window.Match3Game && window.Match3Game.TIMER_START) || 120;
       setTimer(initialTimer, initialTimer, 1);
       scoresContainerEl.classList.add("ready");

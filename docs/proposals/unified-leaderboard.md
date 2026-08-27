@@ -51,7 +51,7 @@ score DESC, `created_at` ASC everywhere.
 | rabbit-globe | `puzzle-N` (epoch 2026‑06‑20) | ✅ | ✅ | ❌ | ✅ |
 | solitaire | `daily-<id>` | ✅ | ✅ | ❌ | ❌ |
 | snake | — | ❌ | ❌ | ❌ | ❌ |
-| match3 | — | ❌ | ❌ | ❌ | ❌ |
+| match3 | `highscore` (keepBest), `month-YYYY-MM` (keepBest) | ✅ | ❌ | ✅ | ❌ |
 
 Three different roundKey conventions, two different leaderboard UIs (globe's
 `renderFriendsPanel` + `rowAvatar`, and 2048's `leaderboard.js`, whose comment
@@ -731,7 +731,8 @@ ordering above is a correctness requirement, not a preference.
      Phase 2, Global tab in Phase 3. **Reversed 2026‑08‑03 — see §5.4.**
    - **snake and match3 are out entirely**, not deferred. They submit nothing
      today, so a board launches empty and the submit path is real work rather
-     than "cheapest on the board". Note this also rules out adding *silent*
+     than "cheapest on the board". **Reversed for match3 2026‑08‑26 — see §5.6;
+     snake still out.** Note this also rules out adding *silent*
      submission ahead of a board: `scores.top` is a public read and the opt-out
      ships after Phase 2 (§3.5), so that would publish usernames and scores for
      a game with no board and no user-facing benefit.
@@ -849,3 +850,60 @@ same shape:
   screen), fatal at 100. Now `max-height: calc(100vh - 40px); overflow-y: auto`.
 - **2048 was fine** and always has been: its board is in the shared `.lb-modal`,
   which is a single 85vh scroll area with nothing nested inside it.
+
+## 5.6 Reversal — match3 gets boards, all-time + monthly (2026‑08‑26)
+
+§5.3 ruled snake and match3 out **entirely**, on two grounds: they submit
+nothing, so a board would launch empty; and adding *silent* submission ahead of a
+board would publish usernames and scores for a game with no user-facing benefit.
+
+The first is a cost, not an objection — every board on this platform launched
+empty, and 2048's filled within days of Phase 1. The second is an argument
+against submitting *without* a board, which is exactly why the two ship together
+here. So match3 is in. **snake is unchanged and still out** — nothing here
+generalises to it beyond the pattern being reusable when someone wants it.
+
+What shipped, all in `match3/`, no backend and no SDK change:
+
+- **Two round keys, both `keepBest`.** `highscore` (all-time, the same constant
+  2048 uses — round keys are scoped by `app_uuid`, so there is no collision) and
+  `month-YYYY-MM` for the current calendar month.
+- **A monthly board, not a season board.** `scores.season` aggregates a month of
+  **daily** rows server-side, and match3 has no daily rounds — the same reason
+  2048's season tab was withdrawn (§5.3). This is §3.7's other prescription: a
+  per-month round key submitted game-side, which needs the game to track its own
+  month best (`monthBest`, stamped `YYYY-MM:score`, in `storage_manager.js`) and
+  nothing else. The month rolls at **UTC** midnight, matching `currentPeriod()`
+  in `src/ui/season.ts` — a locally-derived month would put players in UTC+13 on
+  next month's empty board half a day early.
+- **Why a second board at all.** An all-time board ossifies (§3.7): a few months
+  in, the top 100 is frozen and a new player has nothing on it to move. 2048 can
+  only answer that with the pinned row; a game adopting scores from scratch can
+  answer it with a board that empties on the 1st, for the cost of one more
+  `scores.top` read. The panel opens on the first tab that has rows, so the 1st
+  of a month falls back to All Time rather than greeting the day's first player
+  with a blank table.
+- **Submission is retried, not fire-and-forget.** Storage records what the
+  platform *confirmed* (written only on a resolved submit), so any gap between
+  that and the real best is retried on the next load, the next game over, and the
+  next background *and foreground* — `pause` fires as the app is being put away,
+  which is exactly when a flaky connection is flakiest, so `resume` is the
+  trigger that actually catches what `pause` dropped. 2048's `pendingWin` marker
+  (added 2026‑08‑10) exists for the same reason and a narrower case: there, a
+  dropped submit costs a permanent
+  honor; here it costs a place on a board until the player happens to beat their
+  own best again — which, for a good run, may be never. Same trade as §4's:
+  over-retrying costs one deduped request, under-retrying costs a player their
+  row. Boot-time retry doubles as the backfill for players whose stored best
+  predates the board.
+- **Two entry points, both capability-gated.** The top row (beside New Game) and
+  the game-over overlay (beside Share) — the second is where a player most wants
+  to know where the score they just got landed. Both start `hidden` and are
+  revealed only after the host declares `scores.top`, and both retire if a call
+  later proves it can't serve one (§2.1).
+- **Opening the board pauses the run.** Unique to this game among the six: the
+  timer drains in real time, so a modal over the board would otherwise cost the
+  player the seconds they spent reading it. `Match3PauseForModal` is installed by
+  `application.js` and called by `leaderboard.js` before it opens; it is a no-op
+  outside a live run, so the idle and game-over entry points are unaffected. Not
+  a resume on close — the paused overlay behind the modal already offers one.

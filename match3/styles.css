@@ -11,6 +11,22 @@
   --accent: #FFF5C7;      /* chip text — warm cream */
   --ink: #1A1326;         /* primary text on cream */
   --muted: #6B5E80;       /* secondary text */
+
+  /* Shared leaderboard component (src/ui/leaderboard.css) reads --lb-*. Mapped
+     onto the palette above rather than restated, so the modal follows the game
+     if the chrome is ever retinted. The accent is the deep frame purple: it is
+     what the tab underline, the medals and the pinned-row marker are drawn in,
+     and on this cream surface it's the only colour with enough contrast to
+     carry them. */
+  --lb-surface: var(--bg);
+  --lb-text: var(--ink);
+  --lb-muted: var(--muted);
+  --lb-border: rgba(43, 31, 62, 0.16);
+  --lb-accent: var(--frame);
+  --lb-accent-text: var(--accent);
+  --lb-badge-bg: rgba(43, 31, 62, 0.10);
+  --lb-you-bg: rgba(107, 94, 128, 0.16);
+  --lb-scrim: rgba(26, 19, 38, 0.55);
 }
 
 html, body {
@@ -119,7 +135,7 @@ h1.title {
   color: var(--muted);
 }
 
-.restart-button, .game-message button {
+.restart-button, .leaderboard-button, .game-message button {
   background: var(--frame);
   color: var(--accent);
   border: none;
@@ -133,15 +149,44 @@ h1.title {
   border-radius: 8px;
   transition: transform 0.1s ease, background 0.15s ease;
 }
-.restart-button { float: right; }
+/* margin-LEFT, not a margin-right on Leaderboard beside it: New Game is hidden
+   for the whole of a run (below), and a gap owned by the button that survives
+   would then inset the lone Leaderboard button 8px from the right edge, out of
+   line with the score chips above it. The gap belongs to the button that comes
+   and goes. */
+.restart-button { float: right; margin-left: 8px; }
 .restart-button:active, .game-message button:active {
   transform: translateY(1px);
   background: var(--frame-soft);
+}
+
+/* Leaderboard. Same chrome as New Game but a step lighter — the two sit side by
+   side and only one of them can destroy a run, so they shouldn't read as equal
+   weight. Floated right AFTER New Game in source order, which puts it to the
+   LEFT of it: New Game keeps the corner it has always been in.
+
+   Stays tappable during a run, unlike New Game — opening the board pauses the
+   timer (Match3PauseForModal, application.js) so it costs the player nothing. */
+.leaderboard-button {
+  float: right;
+  background: var(--frame-soft);
+}
+/* Presses the opposite way to the buttons above — they darken to --frame-soft,
+   which is this one's resting colour, so it goes the other direction rather
+   than giving no feedback at all. */
+.leaderboard-button:active {
+  transform: translateY(1px);
+  background: var(--frame);
 }
 /* [hidden] needs an explicit display:none — float: right would otherwise
    keep the float slot reserved on some browsers and leave a gap. Toggled
    from application.js while state === 'playing'. */
 .restart-button[hidden] { display: none !important; }
+/* Same reason as above for the float, plus one more: the per-state rules below
+   opt overlay buttons back in by class, and a capability-hidden button must
+   outrank that. Both are !important so neither can be reopened by specificity
+   alone — `hidden` here means "this host has no leaderboard", not "not now". */
+.leaderboard-button[hidden] { display: none !important; }
 
 /* Timer bar — between header and board. Width drains; colour cycles
    green→red via inline style from application.js. The optional speed
@@ -418,7 +463,10 @@ h1.title {
 .game-message[data-state="idle"] .start-button { display: inline-block; }
 .game-message[data-state="paused"] .resume-button { display: inline-block; }
 .game-message[data-state="over"] .retry-button,
-.game-message[data-state="over"] .share-button { display: inline-block; }
+.game-message[data-state="over"] .share-button,
+.game-message[data-state="over"] .leaderboard-button-overlay { display: inline-block; }
+/* Capability gate beats the state rule above — see .leaderboard-button[hidden]. */
+.game-message .lower button[hidden] { display: none !important; }
 
 .new-best-note {
   font-size: 14px;
@@ -584,8 +632,28 @@ strong.important {
     margin-top: 0;
   }
   .score-container::after, .best-container::after { font-size: 11px; top: 8px; line-height: 11px; }
-  .game-intro { font-size: 11px; max-width: 58%; }
-  .restart-button { font-size: 10px; padding: 9px 12px; }
+  /* Three floats can't share this row: the intro takes its percentage, New Game
+     claims the corner, and Leaderboard wraps to a second line that pushes the
+     board down. Flex instead — the same shape 2048's mobile rules use — with the
+     intro as the only flexible item, so it absorbs exactly what the two buttons
+     don't need and neither can wrap. `order` keeps the buttons in their desktop
+     sequence (Leaderboard, then New Game) once floats are off. */
+  .above-game { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+  /* The clearfix above exists for the floats this block just turned off, and a
+     ::after IS a flex item — leave it in and the row ends with an empty item and
+     the gap in front of it. */
+  .above-game::after { display: none; }
+  .game-intro { font-size: 11px; flex: 1 1 auto; min-width: 0; max-width: none; margin: 0; }
+  .restart-button, .leaderboard-button {
+    font-size: 10px;
+    padding: 9px 12px;
+    float: none;
+    flex: 0 0 auto;
+  }
+  /* `gap` owns the spacing here, so drop New Game's float-era margin — left in,
+     it would stack with the gap and make this pair sit 16px apart. */
+  .leaderboard-button { order: 1; }
+  .restart-button { order: 2; margin-left: 0; }
   .board-frame { padding: 8px; }
   .game-message { top: 8px; right: 8px; bottom: 8px; left: 8px; gap: 12px; padding: 14px; }
   .game-message-text { font-size: 18px; }
@@ -594,6 +662,14 @@ strong.important {
   .game-explanation { font-size: 11px; margin-top: 16px; }
   .combo-banner { font-size: 16px; padding: 8px 16px; }
   .stage-banner { font-size: 20px; padding: 14px 24px; letter-spacing: 1.5px; }
+}
+
+/* Narrow phones. The flex row above stops the buttons wrapping, but under ~360px
+   the intro is squeezed to a ~78px column that stacks four lines and makes the
+   row taller than the board's own header. It's what gives way: the how-to-play
+   line under the board is the same sentence at greater length. */
+@media screen and (max-width: 360px) {
+  .game-intro { display: none; }
 }
 
 /* Short-viewport cap. The canvas is 1:1 aspect filling the container, so

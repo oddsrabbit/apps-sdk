@@ -6,12 +6,12 @@
  *  - TypeScript games (rabbit-globe, rabbit-words) import from
  *    `../../src/ui/leaderboard` and esbuild bundles it into their `main.js`,
  *    the same way they already import the schemas.
- *  - Vanilla-JS games (2048, solitaire) are copied verbatim by the build and
- *    have no bundler, so they load `dist/leaderboard-v1.js` as a script tag and
- *    reach it through `window.OddsRabbitUI`.
+ *  - Vanilla-JS games (2048, solitaire, match3) are copied verbatim by the build
+ *    and have no bundler, so they load `dist/leaderboard-v1.js` as a script tag
+ *    and reach it through `window.OddsRabbitUI`.
  *
  * Kept out of the SDK bundle on purpose: `sdk-v1.js` is loaded by every game
- * including the four with no leaderboard, and UI code has no business in a
+ * including the ones with no leaderboard, and UI code has no business in a
  * transport library.
  */
 
