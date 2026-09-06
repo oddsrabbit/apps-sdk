@@ -132,6 +132,7 @@ await mkdir('dist/snake/images', { recursive: true });
 await mkdir('dist/match3/js', { recursive: true });
 await mkdir('dist/solitaire/js', { recursive: true });
 await mkdir('dist/solitaire/fonts', { recursive: true });
+await mkdir('dist/solitaire/images', { recursive: true });
 await mkdir('dist/liquid/js', { recursive: true });
 
 const baseOpts = {
@@ -286,6 +287,14 @@ async function copyHostAssets() {
     ),
     copyFile('snake/fonts/press-start-2p-latin.woff2', 'dist/solitaire/fonts/press-start-2p-latin.woff2'),
     copyFile('snake/fonts/OFL.txt', 'dist/solitaire/fonts/OFL.txt'),
+    // Card atlas — 52 faces from Kenney's Playing Cards Pack (CC0) plus the
+    // OddsRabbit card back, packed into one PNG by solitaire/tools/build-atlas.py
+    // so the board costs a single image request. index.html carries the URL
+    // with a __BUILD_ID__ query so a new deck doesn't serve stale from cache.
+    // KENNEY-LICENSE.txt ships alongside it; CC0 doesn't require attribution,
+    // but the provenance of redistributed art belongs in the bundle.
+    copyFile('solitaire/images/cards.png', 'dist/solitaire/images/cards.png'),
+    copyFile('solitaire/images/KENNEY-LICENSE.txt', 'dist/solitaire/images/KENNEY-LICENSE.txt'),
     // Liquid — WebGL fluid simulation. Vendored vanilla JS, no bundling needed.
     copyHtmlWithBuildId('liquid/index.html', 'dist/liquid/index.html'),
     copyFile('liquid/js/script.js', 'dist/liquid/js/script.js'),

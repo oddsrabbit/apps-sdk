@@ -36,7 +36,18 @@
 
       <div class="game-container">
         <div class="board-frame">
-          <canvas class="game-canvas" width="900" height="860" aria-label="Solitaire game board"></canvas>
+          <!-- width/height match renderer.js INTERNAL_W/INTERNAL_H. The
+               constructor overwrites them, but these are what the browser
+               lays out with before the scripts run.
+
+               data-atlas carries the card-art URL so it can be cache-busted:
+               the build only substitutes __BUILD_ID__ in index.html, and JS
+               is copied verbatim, so an atlas path hardcoded in renderer.js
+               would go stale on every art change. See
+               docs/deploy-cache-policy.md. -->
+          <canvas class="game-canvas" width="998" height="1036"
+                  data-atlas="./images/cards.png?v=__BUILD_ID__"
+                  aria-label="Solitaire game board"></canvas>
 
           <!-- Floating action button. Sibling of the canvas (not nested in
                .game-message) so it can paint during the playing state when

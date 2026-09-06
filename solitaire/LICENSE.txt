@@ -19,3 +19,15 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+---
+
+The Press Start 2P font shipped in fonts/ is (c) 2012 The Press Start 2P
+Project Authors, licensed under the SIL Open Font License 1.1. See
+fonts/OFL.txt.
+
+Card faces in images/cards.png are derived from Kenney's Playing Cards Pack,
+released under Creative Commons Zero 1.0 (https://kenney.nl). CC0 imposes no
+attribution requirement; the credit is given because Kenney requests it. See
+images/KENNEY-LICENSE.txt. The card back in that atlas is original OddsRabbit
+work and is covered by the MIT license above.

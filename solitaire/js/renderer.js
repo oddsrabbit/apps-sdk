@@ -1,44 +1,60 @@
 // Canvas renderer. Internal resolution is INTERNAL_W × INTERNAL_H with
-// `image-rendering: pixelated` CSS upscale, so all art is hand-placed at
-// integer pixel positions and stays crisp on any display.
+// `image-rendering: pixelated` CSS upscale, so all art sits on integer pixel
+// positions and stays crisp on any display.
 //
-// Each of the 52 card faces is prerendered once into an offscreen canvas,
-// then blitted via drawImage on every frame. Card backs, empty-slot ghosts,
-// and the stock-recycle icon are cached the same way. This keeps the main
-// loop cheap — even on the lowest-tier Android WebView the redraw is one
-// fillRect + ~30 drawImage calls per frame.
+// The 52 card faces and the card back come from one atlas PNG
+// (images/cards.png, built by tools/build-atlas.py). Each is cropped out of
+// the atlas once at boot into its own offscreen canvas, then blitted via
+// drawImage on every frame. Empty-slot ghosts and the stock-recycle icon are
+// still drawn procedurally — they are table markings, not cards, and they
+// need to follow the felt palette. This keeps the main loop cheap: even on
+// the lowest-tier Android WebView the redraw is one fillRect + ~30 drawImage
+// calls per frame, exactly as before the atlas landed.
+//
+// The atlas is an image, so it loads async. Renderer.load(url) resolves once
+// it has decoded; application.js constructs the renderer with the result.
 
 (function () {
   var Deck = window.SolitaireDeck;
 
   // --- Layout ---
   //
-  // Every card sprite is AUTHORED at CARD_W × CARD_H (the historical 56×80)
-  // but PAINTED into an offscreen canvas that is SCALE× larger, through a
-  // ctx.scale(SCALE) transform. Each hand-placed 1px becomes a crisp SCALE×
-  // SCALE block, so the art reads sharp at the bigger on-board size without a
-  // single sprite coordinate changing. The board then lays those scaled
-  // sprites out using the post-scale dimensions CW × CH. SCALE is the one
-  // knob that makes the cards physically bigger and crisper — bumping it
-  // never touches the art code below.
-  var SCALE = 2;
-  var CARD_W = 56;               // art-authoring card width (sprite internals)
-  var CARD_H = 80;               // art-authoring card height
-  var CW = CARD_W * SCALE;       // 112 — on-board card width (layout + blits)
-  var CH = CARD_H * SCALE;       // 160 — on-board card height
+  // Card art is AUTHORED at CARD_W × CARD_H — the atlas cell size — and
+  // BLITTED into an offscreen canvas SCALE× larger with smoothing off, so
+  // each authored pixel becomes a crisp SCALE × SCALE block. The board then
+  // lays those scaled sprites out using the post-scale dimensions CW × CH.
+  // SCALE is the one knob that makes the cards physically bigger; nothing
+  // below hardcodes a post-scale number.
+  //
+  // Every vertical offset below is a multiple of SCALE. That matters: the
+  // peek strips (FACE_DOWN_OFFSET / FACE_UP_OFFSET) slice the sprite, and a
+  // slice that lands mid-authored-pixel shears the art differently on each
+  // card in a column.
+  var SCALE = 3;
+  var CARD_W = 42;               // atlas cell width  (art-authoring size)
+  var CARD_H = 60;               // atlas cell height
+  var CW = CARD_W * SCALE;       // 126 — on-board card width (layout + blits)
+  var CH = CARD_H * SCALE;       // 180 — on-board card height
 
-  // Board geometry, in on-board (post-scale) pixels. The old 480×720 portrait
-  // crushed seven columns into thumbnail cards and left the bottom half of
-  // the felt empty; this is a wide, near-square board sized just tall enough
-  // for the longest legal tableau run so the cards can be big.
+  // Board geometry, in on-board (post-scale) pixels.
   var COL_GAP = 12;
   var MARGIN = 22;
   var TOP_ROW_Y = 40;
-  var TABLEAU_Y = 220;
-  var FACE_DOWN_OFFSET = 12;
-  var FACE_UP_OFFSET = 32;
-  var INTERNAL_W = 2 * MARGIN + 7 * CW + 6 * COL_GAP;   // 900
-  var INTERNAL_H = 860;          // covers TABLEAU_Y + ~6 down + ~12 up + a card
+  // Below the top row (TOP_ROW_Y + CH = 220), with room for the stock's
+  // pile-depth badge, which prints just under it and is 5 * SCALE tall. At
+  // SCALE 2 the top row ended at 200 and 220 was clear; at SCALE 3 the row
+  // reaches 220 on its own and the badge would print under the tableau.
+  var TABLEAU_Y = 250;
+  var FACE_DOWN_OFFSET = 5 * SCALE;   // 15 — a face-down peek shows 5 authored px
+  // 14 authored px. The atlas rank glyph occupies authored rows 5–12, so this
+  // clears it with a row to spare — a face-up peek strip always shows the
+  // whole rank, which is the entire point of the deck swap.
+  var FACE_UP_OFFSET = 14 * SCALE;    // 42
+  var INTERNAL_W = 2 * MARGIN + 7 * CW + 6 * COL_GAP;   // 998
+  // Tallest legal tableau column is 6 face-down + a 13-card K→A run, so the
+  // deepest card starts at 6 down-offsets + 12 up-offsets. Plus a card and a
+  // little breathing room under it.
+  var INTERNAL_H = TABLEAU_Y + 6 * FACE_DOWN_OFFSET + 12 * FACE_UP_OFFSET + CH + 4 * SCALE;  // 1036
 
   // 7 column x-positions reused by top row (stock/waste/foundations) and
   // tableau columns. Stock at col 0, waste at col 1, foundations at cols
@@ -55,51 +71,81 @@
 
   // --- Palette ---
 
-  // Card-face colours. Cream-ish white is gentle on the light-oak felt and
-  // close enough to a deck's actual paper colour. Pip reds and blacks are
-  // slightly desaturated to sit on the cream face without clipping
-  // visually. Pixel art tradition: never pure 0/255 on warm surfaces.
-  var COL_FELT = "#d9b483";          // light-oak table surface (mirrors --wood)
-  var COL_FELT_DARK = "#c79a66";     // recessed wood under cards / empty slots
-  var COL_CARD = "#f5ecd6";          // cream face
-  var COL_CARD_EDGE = "#3a2615";     // dark warm edge / 1px border
-  var COL_RED = "#c01818";
-  var COL_BLACK = "#1a1a1a";
-  var COL_BACK_PRIMARY = "#8a5a30";  // card-back base (warm wood — pops on light felt)
-  var COL_BACK_ACCENT = "#5c3a1e";   // darker inner panel
-  var COL_CARROT = "#e8893e";
-  var COL_CARROT_DARK = "#c45e1a";
-  var COL_LEAF = "#5a8c3a";
-  // Empty-slot ghost colour: needs to read against the recessed-wood fill we
-  // use for empty-slot backgrounds (COL_FELT_DARK #c79a66). A dark wood tone
-  // gives the dashed border + recycle arrow real contrast against the lighter
-  // recess without competing with the cards laid over them.
-  var COL_GHOST = "#8a5a30";
-  var COL_RABBIT_BODY = "#fff8e7";
-  var COL_RABBIT_EAR = "#f4c2c2";    // pink inner ear
-  var COL_RABBIT_NOSE = "#d97a8a";
-  var COL_RABBIT_EYE = "#1a1a1a";
-  var COL_CROWN = "#f5c84c";
-  var COL_CROWN_DARK = "#c8951a";
-  var COL_FLOWER = "#e8467c";
-  var COL_FLOWER_CENTER = "#f5d56a";
-  // Drop-target highlight — pale, warm cream so it pops off the felt
-  // without competing with cards. Drawn as a 2px-thick frame around the
-  // top card / empty slot of every legal drop target while a drag is in
-  // flight, then cleared on drop or cancel.
+  // Green felt. The cards are the atlas's pure white, which the old light-oak
+  // table (#d9b483) could not hold — white on tan washed out at every size,
+  // and the drop-target highlight had nothing to sit against. Green is also
+  // the universal solitaire cue. styles.css mirrors these in --wood-*; change
+  // both or the chrome drifts from the board.
+  var COL_FELT = "#2e7d4f";          // table surface (mirrors --wood)
+  var COL_FELT_DARK = "#256640";     // recessed felt under empty slots
+  // Empty-slot ghost: the dashed border and the recycle arrow, drawn ON the
+  // recess. Lighter than the recess (the wood palette went the other way,
+  // dark-on-light) because a dark line on dark green disappears.
+  var COL_GHOST = "#5aad80";
+  // Pile-depth badge under the stock. Drawn on the felt itself, not on a
+  // recess, so it needs to be lighter than COL_FELT rather than COL_GHOST.
+  var COL_TABLE_MARK = "#a9d9be";
+  // Drop-target highlight — warm cream, the one non-green on the board, so
+  // legal landing spots read instantly against felt and cards alike.
   var COL_HIGHLIGHT = "#f5d56a";
 
-  // --- Rank glyphs (3×5 pixel font) ---
+  // --- Atlas ---
 
-  // Hand-rolled 3-wide × 5-tall digit/letter glyphs. Press Start 2P would
-  // get us anti-aliasing trouble at this nominal size (8px renders as ~6px
-  // visible against image-rendering: pixelated), so we ship our own
-  // pixel font for the rank corners. Each row is exactly 3 chars; 'O' is
-  // filled, '.' is transparent.
-  var RANK_GLYPHS = {
-    // Ace
-    "A": [".O.", "O.O", "OOO", "O.O", "O.O"],
-    // Numbers 2-9
+  // images/cards.png, a 13 × 5 grid of CARD_W × CARD_H cells. Rows 0–3 are
+  // the suits in Deck order and columns 0–12 the ranks A..K, so a cell's
+  // index IS the engine's card integer (suit * 13 + rank) — faces need no
+  // lookup table. Row 4 col 0 is the card back; the rest of row 4 is spare
+  // (rabbit court cards, seasonal backs). tools/build-atlas.py owns all of
+  // this; keep the two in sync.
+  var ATLAS_BACK_COL = 0;
+  var ATLAS_BACK_ROW = 4;
+
+  // Load the atlas. Resolves with a decoded HTMLImageElement, rejects if the
+  // image 404s or fails to decode — application.js turns that into the
+  // bootstrap-error banner rather than a blank felt.
+  function loadAtlas(url) {
+    return new Promise(function (resolve, reject) {
+      var img = new Image();
+      img.onload = function () { resolve(img); };
+      img.onerror = function () { reject(new Error("solitaire: could not load card atlas " + url)); };
+      img.src = url;
+    });
+  }
+
+  // Crop one atlas cell into its own offscreen canvas at CW × CH. Returns a
+  // canvas rather than drawing from the atlas per frame so the per-frame path
+  // stays a plain 1:1 blit, and so the nearest-neighbour upscale happens once.
+  function spriteFromAtlas(atlas, col, row) {
+    var off = document.createElement("canvas");
+    off.width = CW;
+    off.height = CH;
+    var ctx = off.getContext("2d");
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(
+      atlas,
+      col * CARD_W, row * CARD_H, CARD_W, CARD_H,
+      0, 0, CW, CH
+    );
+    return off;
+  }
+
+  function buildCardFace(atlas, card) {
+    return spriteFromAtlas(atlas, Deck.rankOf(card), Deck.suitOf(card));
+  }
+
+  function buildCardBack(atlas) {
+    return spriteFromAtlas(atlas, ATLAS_BACK_COL, ATLAS_BACK_ROW);
+  }
+
+  // --- Digit glyphs (3×5 pixel font) ---
+
+  // The only text the renderer still draws is the stock's pile-depth badge.
+  // Press Start 2P would need anti-aliasing we deliberately don't have (8px
+  // renders as ~6px visible under image-rendering: pixelated), so the badge
+  // keeps its own pixel font. Each row is exactly 3 chars; 'O' is filled.
+  var DIGIT_GLYPHS = {
+    "0": ["OOO", "O.O", "O.O", "O.O", "OOO"],
+    "1": [".O.", "OO.", ".O.", ".O.", "OOO"],
     "2": ["OO.", "..O", ".O.", "O..", "OOO"],
     "3": ["OO.", "..O", ".OO", "..O", "OO."],
     "4": ["O.O", "O.O", "OOO", "..O", "..O"],
@@ -108,212 +154,9 @@
     "7": ["OOO", "..O", ".O.", ".O.", ".O."],
     "8": [".O.", "O.O", ".O.", "O.O", ".O."],
     "9": [".O.", "O.O", ".OO", "..O", "OO."],
-    // Court — designed at 3×5 so they share footprint with the digits.
-    // J: top bar, vertical right, curved hook at the bottom-left.
-    // Q: rounded oval with a tail trailing bottom-right.
-    // K: vertical left bar with a < angled to the right.
-    J: ["OOO", "..O", "..O", "O.O", ".O."],
-    Q: [".O.", "O.O", "O.O", "OOO", "..O"],
-    K: ["O.O", "OO.", "O..", "OO.", "O.O"],
-    // 0/1 are never produced by rankKey (ten renders via the "10" special
-    // case in drawRankAt) — they exist for the stock pile-depth counter.
-    "0": ["OOO", "O.O", "O.O", "O.O", "OOO"],
-    "1": [".O.", "OO.", ".O.", ".O.", "OOO"],
   };
 
-  // Map a rank 0..12 to the glyph key used above. Rank 0 is the ace; ranks
-  // 1..8 map to "2".."9" (the literal digit chars). Rank 9 is ten (special
-  // — drawn as two stacked digits to fit the 3-wide corner). 10/11/12 are
-  // J/Q/K.
-  function rankKey(rank) {
-    if (rank === 0) return "A";
-    if (rank >= 1 && rank <= 8) return String(rank + 1);
-    if (rank === 9) return "10";
-    if (rank === 10) return "J";
-    if (rank === 11) return "Q";
-    return "K";
-  }
-
-  // --- Suit pip sprites (9×9 pixel art) ---
-
-  // Heart, diamond, spade, club at 9x9. Each row is exactly 9 chars; 'O'
-  // is filled with the suit colour, '.' is transparent. Order matches
-  // Deck.SUIT_* constants (clubs, diamonds, hearts, spades).
-  var SUIT_SPRITES = [
-    // Clubs — three round lobes (top + left + right) over a stem and splayed
-    // base. The previous sprite tapered to a point and merged the lobes into
-    // one mass, which made clubs nearly indistinguishable from spades at card
-    // size. This one keeps a flat-round top lobe and cuts notches on row 3
-    // (top lobe vs side lobes) and row 6 (side lobes vs stem) so the trefoil
-    // silhouette survives the small scale.
-    [
-      "...OOO...",
-      "..OOOOO..",
-      "..OOOOO..",
-      "OO.OOO.OO",
-      "OOOOOOOOO",
-      "OOOOOOOOO",
-      ".OO.O.OO.",
-      "...OOO...",
-      "..OO.OO..",
-    ],
-    // Diamonds
-    [
-      "....O....",
-      "...OOO...",
-      "..OOOOO..",
-      ".OOOOOOO.",
-      "OOOOOOOOO",
-      ".OOOOOOO.",
-      "..OOOOO..",
-      "...OOO...",
-      "....O....",
-    ],
-    // Hearts — two distinct lobe tops with a clean V-dip between them, then
-    // the body rounds straight into the point. The old sprite had a stray
-    // pixel in the dip plus three full-width rows that read as a rectangle.
-    [
-      ".OO...OO.",
-      "OOOO.OOOO",
-      "OOOOOOOOO",
-      "OOOOOOOOO",
-      ".OOOOOOO.",
-      "..OOOOO..",
-      "...OOO...",
-      "....O....",
-      ".........",
-    ],
-    // Spades
-    [
-      "....O....",
-      "...OOO...",
-      "..OOOOO..",
-      ".OOOOOOO.",
-      "OOOOOOOOO",
-      "OOOOOOOOO",
-      "...OOO...",
-      "..OO.OO..",
-      ".OO...OO.",
-    ],
-  ];
-
-  // --- Sprite painter ---
-
-  // Generic 1-bit pixel sprite painter. `sprite` is an array of equal-
-  // length strings; 'O' draws a pixel of `color`, anything else is
-  // transparent. Used by suit pips and rank glyphs alike.
-  function paintMonoSprite(ctx, sprite, x, y, color) {
-    ctx.fillStyle = color;
-    for (var row = 0; row < sprite.length; row++) {
-      var line = sprite[row];
-      for (var col = 0; col < line.length; col++) {
-        if (line.charAt(col) === "O") {
-          ctx.fillRect(x + col, y + row, 1, 1);
-        }
-      }
-    }
-  }
-
-  // --- Card face composition ---
-
-  // Build one card face into a fresh offscreen canvas. Called 52 times at
-  // boot, cached in `Renderer._cardSprites`. The returned canvas can be
-  // blitted directly via drawImage.
-  function buildCardFace(card) {
-    var suit = Deck.suitOf(card);
-    var rank = Deck.rankOf(card);
-    var key = rankKey(rank);
-    var pipColor = (suit === Deck.SUIT_DIAMONDS || suit === Deck.SUIT_HEARTS) ? COL_RED : COL_BLACK;
-
-    var off = document.createElement("canvas");
-    off.width = CW;
-    off.height = CH;
-    var ctx = off.getContext("2d");
-    ctx.imageSmoothingEnabled = false;
-    ctx.scale(SCALE, SCALE);
-
-    // Cream body + 1px dark edge frame.
-    ctx.fillStyle = COL_CARD;
-    ctx.fillRect(0, 0, CARD_W, CARD_H);
-    ctx.fillStyle = COL_CARD_EDGE;
-    ctx.fillRect(0, 0, CARD_W, 1);
-    ctx.fillRect(0, CARD_H - 1, CARD_W, 1);
-    ctx.fillRect(0, 0, 1, CARD_H);
-    ctx.fillRect(CARD_W - 1, 0, 1, CARD_H);
-    // Corner pixels removed to fake a rounded card. 1px tucks at each
-    // corner; the underlying felt shows through.
-    ctx.clearRect(0, 0, 1, 1);
-    ctx.clearRect(CARD_W - 1, 0, 1, 1);
-    ctx.clearRect(0, CARD_H - 1, 1, 1);
-    ctx.clearRect(CARD_W - 1, CARD_H - 1, 1, 1);
-
-    // Top-left rank + pip stack. Rank glyph: 3-wide for A/digits; 6-wide
-    // for "10" (drawn as 1+0 side-by-side). Suit pip 9x9 sits below.
-    var cornerX = 4;
-    var cornerY = 4;
-    drawRankAt(ctx, key, cornerX, cornerY, pipColor);
-    paintMonoSprite(ctx, SUIT_SPRITES[suit], cornerX - 1, cornerY + 7, pipColor);
-
-    // Bottom-right mirrored rank + pip (no rotation — easier to read for
-    // mobile-sized cards than upside-down corners, and matches several
-    // modern decks).
-    var brX = CARD_W - 4 - rankWidth(key);
-    var brY = CARD_H - 4 - 5;
-    drawRankAt(ctx, key, brX, brY, pipColor);
-    paintMonoSprite(ctx, SUIT_SPRITES[suit], brX - 1, brY - 11, pipColor);
-
-    // Center art varies by rank.
-    if (rank === 0) {
-      // Ace: one big centered pip, 2x-scaled. We re-paint the pip larger
-      // by drawing each sprite "pixel" as a 2x2 block.
-      paintMonoSpriteScaled(ctx, SUIT_SPRITES[suit], 19, 30, pipColor, 2);
-    } else if (rank >= 1 && rank <= 9) {
-      // 2-10: arrange small pips per traditional layout. layoutPipPositions
-      // returns center coords for the count.
-      var count = rank + 1;
-      var positions = pipLayout(count);
-      for (var p = 0; p < positions.length; p++) {
-        // Pip region is inset clear of the corner rank+pip stacks: pips span
-        // cols 12-43 and rows 15-65, so the unit-square layout can never
-        // collide with the top-left stack (cols ≤ 11) or the bottom-right
-        // one (cols ≥ 45, rows ≥ 60). The old near-full-card span overprinted
-        // the bottom-right rank digit on every 4-10.
-        var px = Math.round(positions[p][0] * 23) + 12;
-        var py = Math.round(positions[p][1] * 42) + 15;
-        paintMonoSprite(ctx, SUIT_SPRITES[suit], px, py, pipColor);
-      }
-    } else {
-      // J / Q / K: pixel rabbit court card.
-      drawCourtRabbit(ctx, rank, suit, pipColor);
-    }
-
-    return off;
-  }
-
-  // Rank glyph width in pixels. "10" is the only multi-char case: the "1"
-  // paints at col 0 (the sprite reserves col 1 but it's empty) and the "0"
-  // paints at cols 3–5, so the visible footprint runs col 0 to col 5 — 6
-  // wide, not 7. Returning 7 used to nudge the bottom-right "10" one pixel
-  // further left than every other rank, since brX = CARD_W - 4 - width.
-  function rankWidth(key) {
-    return key === "10" ? 6 : 3;
-  }
-
-  function drawRankAt(ctx, key, x, y, color) {
-    if (key === "10") {
-      // "1" is drawn narrower (just the vertical bar) so the two chars
-      // share a 7-wide footprint without overlapping.
-      var one = ["O.", "O.", "O.", "O.", "O."];
-      var zero = ["OOO", "O.O", "O.O", "O.O", "OOO"];
-      paintMonoSprite(ctx, one, x, y, color);
-      paintMonoSprite(ctx, zero, x + 3, y, color);
-      return;
-    }
-    var glyph = RANK_GLYPHS[key];
-    if (!glyph) return;
-    paintMonoSprite(ctx, glyph, x, y, color);
-  }
-
+  // Paint a 1-bit sprite with each source pixel as a `scale`-square block.
   function paintMonoSpriteScaled(ctx, sprite, x, y, color, scale) {
     ctx.fillStyle = color;
     for (var row = 0; row < sprite.length; row++) {
@@ -326,280 +169,13 @@
     }
   }
 
-  // Classic Klondike pip layout. Returns an array of [x, y] in the unit
-  // square [0..1]^2, suitable for scaling to a card's pip region. The
-  // layouts here mirror what you'd see on a Bicycle deck — 2 is top+
-  // bottom, 3 adds a middle, etc.
-  function pipLayout(n) {
-    switch (n) {
-      case 2:  return [[0.5, 0], [0.5, 1]];
-      case 3:  return [[0.5, 0], [0.5, 0.5], [0.5, 1]];
-      case 4:  return [[0, 0], [1, 0], [0, 1], [1, 1]];
-      case 5:  return [[0, 0], [1, 0], [0.5, 0.5], [0, 1], [1, 1]];
-      case 6:  return [[0, 0], [1, 0], [0, 0.5], [1, 0.5], [0, 1], [1, 1]];
-      case 7:  return [[0, 0], [1, 0], [0.5, 0.25], [0, 0.5], [1, 0.5], [0, 1], [1, 1]];
-      case 8:  return [[0, 0], [1, 0], [0.5, 0.25], [0, 0.5], [1, 0.5], [0.5, 0.75], [0, 1], [1, 1]];
-      case 9:  return [[0, 0], [1, 0], [0, 0.33], [1, 0.33], [0.5, 0.5], [0, 0.66], [1, 0.66], [0, 1], [1, 1]];
-      case 10: return [[0, 0], [1, 0], [0.5, 0.17], [0, 0.33], [1, 0.33], [0, 0.66], [1, 0.66], [0.5, 0.83], [0, 1], [1, 1]];
-      default: return [];
-    }
-  }
-
-  // --- Pixel rabbit court cards ---
-
-  // J/Q/K all share the same rabbit head silhouette; the rank flag tweaks
-  // the accessory (J: jester ear-flop, Q: flower, K: crown). Centered in
-  // the card; small enough to leave the corner glyphs and a thin suit-
-  // colour banner along the head's frame border.
-  //
-  // Outlining strategy: each rabbit slab is drawn twice — once in the
-  // dark warm outline colour at +1 px in every direction, then in cream
-  // at full size. Adjacent slabs are arranged to overlap by 1 px on the
-  // shared edge so the outline never shows as an internal seam, only at
-  // the silhouette perimeter.
-  function drawCourtRabbit(ctx, rank, suit, pipColor) {
-    // Suit-tinted portrait banner inside the card body.
-    var tint = (pipColor === COL_RED) ? "#f0c8c8" : "#d8d4d0";
-    ctx.fillStyle = tint;
-    ctx.fillRect(9, 14, CARD_W - 18, CARD_H - 28);
-    ctx.fillStyle = pipColor;
-    ctx.fillRect(9, 14, CARD_W - 18, 1);
-    ctx.fillRect(9, CARD_H - 15, CARD_W - 18, 1);
-    ctx.fillRect(9, 14, 1, CARD_H - 28);
-    ctx.fillRect(CARD_W - 10, 14, 1, CARD_H - 28);
-
-    var cx = 28;          // rabbit horizontal centre inside the portrait
-    var headTopY = 24;    // top of the head silhouette
-
-    // -- Outline pass (dark warm, drawn under the cream so the perimeter
-    //    pixels remain visible after the cream slab is laid down) --
-    ctx.fillStyle = COL_CARD_EDGE;
-    // Ears. Left always vertical; right vertical for Q/K, jester-bent for
-    // J — the tip kinks 4 px right and curls back across to dramatize the
-    // ear-flop. Bigger kink than the original so the J reads as J even at
-    // tableau scale where the corner glyph is tiny.
-    ctx.fillRect(cx - 9, headTopY - 15, 6, 17);            // left ear outline
-    if (rank === 10) {
-      ctx.fillRect(cx + 3, headTopY - 4, 6, 6);            // base (short stub)
-      ctx.fillRect(cx + 6, headTopY - 10, 6, 8);           // mid-bend
-      ctx.fillRect(cx + 9, headTopY - 14, 6, 6);           // tip flopped out to the right
-    } else {
-      ctx.fillRect(cx + 3, headTopY - 15, 6, 17);          // right ear outline
-    }
-    // Head + body silhouette, slab by slab. The slabs overlap on every
-    // shared y by 1 row in the cream pass so this dark fill stays hidden
-    // at internal seams.
-    ctx.fillRect(cx - 9, headTopY - 1, 18, 5);             // forehead
-    ctx.fillRect(cx - 10, headTopY + 2, 20, 11);           // mid head (widest)
-    ctx.fillRect(cx - 9, headTopY + 11, 18, 5);            // chin
-    ctx.fillRect(cx - 7, headTopY + 14, 14, 3);            // jaw bottom
-    ctx.fillRect(cx - 8, headTopY + 16, 16, 4);            // upper body
-    ctx.fillRect(cx - 9, headTopY + 19, 18, 7);            // chest
-    ctx.fillRect(cx - 8, headTopY + 25, 16, 4);            // lower body / feet
-
-    // -- Cream body pass (overlapping slabs so the dark outline pass
-    //    only survives at the perimeter) --
-    ctx.fillStyle = COL_RABBIT_BODY;
-    // Ears.
-    ctx.fillRect(cx - 8, headTopY - 14, 4, 15);
-    if (rank === 10) {
-      // J's three-segment jester ear. Each cream slab is extended by 1 row
-      // toward its neighbour so the kink between segments shows as a clean
-      // 1-px outline, not a chunky 4-5-wide dark block (the bottom of the
-      // mid-bend slab overlapping the top of the next slab's outline).
-      ctx.fillRect(cx + 4, headTopY - 4, 4, 6);            // base stub (extended up 1 row toward mid)
-      ctx.fillRect(cx + 7, headTopY - 10, 4, 8);           // mid bend (extended 1 row each way)
-      // Tip shares its left column with the mid-bend slab (rows -10..-9) so
-      // the cream connects through the kink — one column further right the
-      // segments only touched diagonally and the tip floated as a detached
-      // block.
-      ctx.fillRect(cx + 10, headTopY - 13, 4, 5);          // floppy tip
-    } else {
-      ctx.fillRect(cx + 4, headTopY - 14, 4, 15);
-    }
-    // Head + body slabs, each overlapping the next by 1 row in y.
-    ctx.fillRect(cx - 8, headTopY, 16, 4);                 // forehead
-    ctx.fillRect(cx - 9, headTopY + 3, 18, 10);            // mid head (overlaps forehead at headTopY+3)
-    ctx.fillRect(cx - 8, headTopY + 12, 16, 4);            // chin (overlaps mid head at headTopY+12)
-    ctx.fillRect(cx - 6, headTopY + 15, 12, 2);            // jaw bottom
-    ctx.fillRect(cx - 7, headTopY + 17, 14, 3);            // upper body (overlaps jaw at headTopY+17)
-    ctx.fillRect(cx - 8, headTopY + 20, 16, 6);            // chest
-    ctx.fillRect(cx - 7, headTopY + 26, 14, 3);            // lower body
-
-    // -- Pink inner-ear stripes --
-    ctx.fillStyle = COL_RABBIT_EAR;
-    ctx.fillRect(cx - 7, headTopY - 12, 2, 12);
-    if (rank === 10) {
-      ctx.fillRect(cx + 5, headTopY - 2, 2, 4);            // pink in base stub
-      ctx.fillRect(cx + 8, headTopY - 8, 2, 4);            // pink in mid bend
-      ctx.fillRect(cx + 11, headTopY - 11, 2, 3);          // pink in floppy tip
-    } else {
-      ctx.fillRect(cx + 5, headTopY - 12, 2, 12);
-    }
-
-    // -- Eyes (2px squares with a 1px cream highlight on the upper-left) --
-    ctx.fillStyle = COL_RABBIT_EYE;
-    ctx.fillRect(cx - 5, headTopY + 5, 2, 2);
-    ctx.fillRect(cx + 3, headTopY + 5, 2, 2);
-    ctx.fillStyle = COL_RABBIT_BODY;
-    ctx.fillRect(cx - 5, headTopY + 5, 1, 1);
-    ctx.fillRect(cx + 3, headTopY + 5, 1, 1);
-
-    // -- Nose (small pink triangle) --
-    ctx.fillStyle = COL_RABBIT_NOSE;
-    ctx.fillRect(cx - 2, headTopY + 9, 4, 1);
-    ctx.fillRect(cx - 1, headTopY + 10, 2, 1);
-
-    // -- Mouth (two pink pixels making a tiny smile) --
-    ctx.fillRect(cx - 2, headTopY + 12, 1, 1);
-    ctx.fillRect(cx + 1, headTopY + 12, 1, 1);
-
-    // -- Accessory --
-    if (rank === 11) {
-      // Q: flower tucked beside the left ear. cx-16 keeps the flower's
-      // 7-wide middle row clear of the ear at col cx-9 (was cx-14, which
-      // overlapped 2 cols into the ear and overwrote its left outline +
-      // cream interior with flower pink).
-      drawFlower(ctx, cx - 16, headTopY - 11);
-    } else if (rank === 12) {
-      // K: crown sitting on the forehead between the ear roots.
-      drawCrown(ctx, cx - 9, headTopY - 5);
-    }
-
-    // The four corner glyphs (rank + pip in each diagonal pair) already
-    // identify the suit; an extra in-banner pip near the bottom-right used
-    // to live here, but at this card size it sat right above the bottom-
-    // right corner glyph and read as the inner banner's own corner — making
-    // J/Q/K look like a card-within-a-card. Removed.
-  }
-
-  // 18×7 crown — three main peaks with gold finial balls, a base band with
-  // dark shadow under it, and a red centre gem. Outlined under-and-around
-  // in the same dark warm as the rabbit so it sits as part of the silhouette
-  // rather than floating on top.
-  function drawCrown(ctx, x, y) {
-    // Outline silhouette.
-    ctx.fillStyle = COL_CARD_EDGE;
-    ctx.fillRect(x - 1, y + 2, 20, 5);          // base band outline
-    ctx.fillRect(x - 1, y - 2, 5, 5);           // left peak
-    ctx.fillRect(x + 6, y - 3, 6, 6);           // centre peak
-    ctx.fillRect(x + 13, y - 2, 5, 5);          // right peak
-    // Gold fills inside the outline.
-    ctx.fillStyle = COL_CROWN;
-    ctx.fillRect(x, y + 3, 18, 3);              // base band
-    ctx.fillRect(x, y - 1, 3, 4);               // left peak
-    ctx.fillRect(x + 7, y - 2, 4, 5);           // centre peak
-    ctx.fillRect(x + 15, y - 1, 3, 4);          // right peak
-    // Finial balls atop the outer peaks.
-    ctx.fillRect(x + 1, y - 2, 1, 1);
-    ctx.fillRect(x + 16, y - 2, 1, 1);
-    // Darker gold under-band shadow gives the crown thickness.
-    ctx.fillStyle = COL_CROWN_DARK;
-    ctx.fillRect(x, y + 5, 18, 1);
-    // Centre red gem.
-    ctx.fillStyle = COL_RED;
-    ctx.fillRect(x + 8, y + 3, 2, 2);
-  }
-
-  // 7×7 flower with five distinct petals around a yellow centre. Outline
-  // sits 1 px around the petals so the bloom reads as its own shape
-  // against the rabbit ear behind it.
-  function drawFlower(ctx, x, y) {
-    ctx.fillStyle = COL_CARD_EDGE;
-    // Petal outline silhouette.
-    ctx.fillRect(x + 2, y - 1, 3, 1);           // top petal
-    ctx.fillRect(x + 1, y, 5, 3);
-    ctx.fillRect(x, y + 2, 7, 3);               // mid row (left + right petals + centre)
-    ctx.fillRect(x + 1, y + 5, 5, 2);
-    ctx.fillRect(x + 2, y + 7, 3, 1);           // bottom petal
-    // Petal fills.
-    ctx.fillStyle = COL_FLOWER;
-    ctx.fillRect(x + 2, y, 3, 2);               // top
-    ctx.fillRect(x, y + 3, 2, 2);               // left
-    ctx.fillRect(x + 5, y + 3, 2, 2);           // right
-    ctx.fillRect(x + 1, y + 5, 2, 2);           // bottom-left
-    ctx.fillRect(x + 4, y + 5, 2, 2);           // bottom-right
-    // Yellow centre disc.
-    ctx.fillStyle = COL_FLOWER_CENTER;
-    ctx.fillRect(x + 2, y + 2, 3, 3);
-  }
-
-  // --- Card back ---
-
-  // Carrot-tiled card back. 4 carrots arranged 2×2 against the dark-green
-  // back colour, with a thin cream border so the back reads as "stacked
-  // card edge" at small sizes.
-  function buildCardBack() {
-    var off = document.createElement("canvas");
-    off.width = CW;
-    off.height = CH;
-    var ctx = off.getContext("2d");
-    ctx.imageSmoothingEnabled = false;
-    ctx.scale(SCALE, SCALE);
-    ctx.fillStyle = COL_BACK_PRIMARY;
-    ctx.fillRect(0, 0, CARD_W, CARD_H);
-
-    // Inner darker rectangle — 2px in from the edge.
-    ctx.fillStyle = COL_BACK_ACCENT;
-    ctx.fillRect(3, 3, CARD_W - 6, CARD_H - 6);
-
-    // 2x2 grid of carrot sprites. Each sprite is roughly 12 wide × 16 tall.
-    // The top pair sits at y=2 — high enough that the carrot leaves (rows
-    // 0–3 of the sprite) land inside the 6px FACE_DOWN_OFFSET peek window.
-    // Without this lift, a stacked face-down column shows only the cream
-    // edge + warm-brown band + dark accent (all flat), and the back motif
-    // never reads. With it, every face-down peek shows two green leaf
-    // tufts and the column looks like a deck of cards. The bottom pair
-    // stays put — they only need to look right on the unstacked top of
-    // the stock pile.
-    drawCarrotSprite(ctx, 7, 2);
-    drawCarrotSprite(ctx, CARD_W - 19, 2);
-    drawCarrotSprite(ctx, 7, CARD_H - 25);
-    drawCarrotSprite(ctx, CARD_W - 19, CARD_H - 25);
-
-    // Cream edge.
-    ctx.fillStyle = COL_CARD;
-    ctx.fillRect(0, 0, CARD_W, 1);
-    ctx.fillRect(0, CARD_H - 1, CARD_W, 1);
-    ctx.fillRect(0, 0, 1, CARD_H);
-    ctx.fillRect(CARD_W - 1, 0, 1, CARD_H);
-    // Round the corners by clearing single pixels.
-    ctx.clearRect(0, 0, 1, 1);
-    ctx.clearRect(CARD_W - 1, 0, 1, 1);
-    ctx.clearRect(0, CARD_H - 1, 1, 1);
-    ctx.clearRect(CARD_W - 1, CARD_H - 1, 1, 1);
-    return off;
-  }
-
-  // Reused from snake's carrot sprite philosophy — leaves on top, tapered
-  // body, single highlight pixel. Tuned to fit a 12×16 footprint.
-  function drawCarrotSprite(ctx, x, y) {
-    // Leaves
-    ctx.fillStyle = COL_LEAF;
-    ctx.fillRect(x + 4, y, 1, 3);
-    ctx.fillRect(x + 6, y, 1, 3);
-    ctx.fillRect(x + 5, y + 1, 1, 3);
-    ctx.fillRect(x + 3, y + 3, 5, 1);
-    // Body
-    ctx.fillStyle = COL_CARROT_DARK;
-    ctx.fillRect(x + 4, y + 4, 3, 1);
-    ctx.fillRect(x + 3, y + 5, 5, 2);
-    ctx.fillRect(x + 4, y + 7, 3, 2);
-    ctx.fillRect(x + 4, y + 9, 2, 2);
-    ctx.fillRect(x + 5, y + 11, 1, 1);
-    // Highlight
-    ctx.fillStyle = COL_CARROT;
-    ctx.fillRect(x + 4, y + 5, 1, 1);
-  }
-
   // --- Empty-slot sprites ---
 
-  // Foundation ghost: a faded suit pip on a darker rectangle, telling the
-  // player "any of this suit goes here". We build 4 — one per suit slot.
-  // (The player can place any suit in any slot — Klondike doesn't require
-  // a pre-committed mapping — but showing a different pip in each slot
-  // would mislead. We just draw a ghost of *whatever* shape is currently
-  // there: empty → no pip at all, just the outline.)
+  // Empty slots stay hand-drawn. The atlas has a Kenney `card_empty`, but it
+  // is a white card with a decorative frame — on the felt it reads as a blank
+  // card you could pick up, which is exactly wrong for a hole. A recess with a
+  // dashed ghost border reads as "nothing is here".
+
   function buildEmptyFoundation() {
     var off = document.createElement("canvas");
     off.width = CW;
@@ -621,7 +197,7 @@
     ctx.imageSmoothingEnabled = false;
     ctx.scale(SCALE, SCALE);
     drawEmptyOutline(ctx);
-    // Circular arrow — half-ring + arrowhead. Simple 16×16 sprite centered.
+    // Circular arrow — half-ring + arrowhead, centred in the card.
     ctx.fillStyle = COL_GHOST;
     var cx = CARD_W / 2;
     var cy = CARD_H / 2;
@@ -629,23 +205,29 @@
     // gap for the arrowhead. (The old bounds 0.15π..2.2π spanned more than a
     // full turn, so the ring drew closed and the arrowhead vanished into it.)
     for (var a = Math.PI * 0.05; a < Math.PI * 1.7; a += 0.18) {
-      var rx = Math.round(cx + Math.cos(a) * 9);
-      var ry = Math.round(cy + Math.sin(a) * 9);
+      var rx = Math.round(cx + Math.cos(a) * 8);
+      var ry = Math.round(cy + Math.sin(a) * 8);
       ctx.fillRect(rx, ry, 2, 2);
     }
     // Arrowhead — stepped solid triangle at the arc's end, pointing
     // clockwise (down-right) into the gap.
-    ctx.fillRect(cx + 1, cy - 10, 6, 2);
-    ctx.fillRect(cx + 3, cy - 8, 4, 2);
-    ctx.fillRect(cx + 5, cy - 6, 2, 2);
+    ctx.fillRect(cx + 1, cy - 9, 5, 2);
+    ctx.fillRect(cx + 3, cy - 7, 3, 2);
+    ctx.fillRect(cx + 4, cy - 5, 2, 2);
     return off;
   }
 
-  // Generic empty-card outline — dashed border on a recessed-wood fill,
-  // used for both foundation slots and the empty stock.
+  // Generic empty-card outline — dashed border on a recessed-felt fill, used
+  // for both foundation slots and the empty stock. Corners are cut to match
+  // how the atlas cards fake a rounded edge, so a slot lines up with the card
+  // that will land in it.
   function drawEmptyOutline(ctx) {
     ctx.fillStyle = COL_FELT_DARK;
     ctx.fillRect(0, 0, CARD_W, CARD_H);
+    ctx.clearRect(0, 0, 1, 1);
+    ctx.clearRect(CARD_W - 1, 0, 1, 1);
+    ctx.clearRect(0, CARD_H - 1, 1, 1);
+    ctx.clearRect(CARD_W - 1, CARD_H - 1, 1, 1);
     ctx.fillStyle = COL_GHOST;
     // Dashed border — 3px dashes with 2px gaps along each edge.
     for (var x = 2; x < CARD_W - 2; x += 5) {
@@ -660,7 +242,12 @@
 
   // --- Renderer ---
 
-  function Renderer(canvas) {
+  // `atlas` is the decoded image from Renderer.load(). It is only read here,
+  // in the constructor — every sprite is cropped out of it up front, so the
+  // atlas can be garbage-collected afterwards and the draw loop never touches
+  // it.
+  function Renderer(canvas, atlas) {
+    if (!atlas) throw new Error("solitaire: Renderer needs a loaded atlas — use Renderer.load()");
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d");
     this.ctx.imageSmoothingEnabled = false;
@@ -670,9 +257,9 @@
     // Sprite cache.
     this._cardSprites = new Array(Deck.DECK_SIZE);
     for (var i = 0; i < Deck.DECK_SIZE; i++) {
-      this._cardSprites[i] = buildCardFace(i);
+      this._cardSprites[i] = buildCardFace(atlas, i);
     }
-    this._cardBack = buildCardBack();
+    this._cardBack = buildCardBack(atlas);
     this._emptyFoundation = buildEmptyFoundation();
     this._emptyStock = buildEmptyStock();
 
@@ -681,10 +268,19 @@
     this._lastDrag = null;
   }
 
+  // Fetch and decode the card atlas. Resolves with the image; the caller
+  // passes it straight to the constructor. Rejecting here (rather than
+  // failing silently to a blank felt) is what lets application.js surface
+  // the bootstrap-error banner.
+  Renderer.load = loadAtlas;
+
   Renderer.INTERNAL_W = INTERNAL_W;
   Renderer.INTERNAL_H = INTERNAL_H;
   Renderer.CARD_W = CW;
   Renderer.CARD_H = CH;
+  // Exported so application.js can size its device-pixel snap to the art
+  // grid: one authored pixel is SCALE internal pixels.
+  Renderer.SCALE = SCALE;
   // Exported so application.js paints the same felt on the pre-deal canvas
   // (it previously hardcoded a stale dark-wood hex that didn't match).
   Renderer.COL_FELT = COL_FELT;
@@ -724,22 +320,26 @@
     }
   };
 
-  // Pale 2px frame around a card-shaped rect. Four fillRect calls keep
-  // it cheap to repaint every pointermove. The pulse animation that
-  // tempted me here would be nice but would force a 60fps redraw loop;
-  // skipping for now — the static frame is enough signal.
+  // Cream frame around a card-shaped rect. Four fillRect calls keep it cheap
+  // to repaint every pointermove. The pulse animation that tempted me here
+  // would be nice but would force a 60fps redraw loop; skipping for now — the
+  // static frame is enough signal.
+  //
+  // Thickness is one authored pixel (SCALE internal px), not a literal, so
+  // the frame keeps its visual weight relative to the cards if SCALE moves.
+  // At the old literal 2 it thinned out as the art got bigger.
   Renderer.prototype._drawHighlights = function (board, dragState, targets) {
     var ctx = this.ctx;
+    var t2 = SCALE;
     ctx.fillStyle = COL_HIGHLIGHT;
     for (var i = 0; i < targets.length; i++) {
       var t = targets[i];
       var rect = this._targetRect(board, t);
       if (!rect) continue;
-      // 2px frame.
-      ctx.fillRect(rect.x - 1, rect.y - 1, rect.w + 2, 2);             // top
-      ctx.fillRect(rect.x - 1, rect.y + rect.h - 1, rect.w + 2, 2);    // bottom
-      ctx.fillRect(rect.x - 1, rect.y - 1, 2, rect.h + 2);             // left
-      ctx.fillRect(rect.x + rect.w - 1, rect.y - 1, 2, rect.h + 2);    // right
+      ctx.fillRect(rect.x - t2, rect.y - t2, rect.w + 2 * t2, t2);              // top
+      ctx.fillRect(rect.x - t2, rect.y + rect.h, rect.w + 2 * t2, t2);          // bottom
+      ctx.fillRect(rect.x - t2, rect.y - t2, t2, rect.h + 2 * t2);              // left
+      ctx.fillRect(rect.x + rect.w, rect.y - t2, t2, rect.h + 2 * t2);          // right
     }
   };
 
@@ -773,26 +373,27 @@
       // up-left when there's depth, then the real top on top of it. The
       // diagonal offset shows two edges of the card beneath (top + left) so
       // it reads as a stacked deck; a horizontal-only offset exposed just a
-      // cream sliver that read as a rendering artifact.
-      if (board.stock.length > 1) this.ctx.drawImage(this._cardBack, x - 4, y - 4);
+      // pale sliver of the back's border that read as a rendering artifact.
+      if (board.stock.length > 1) this.ctx.drawImage(this._cardBack, x - 2 * SCALE, y - 2 * SCALE);
       this.ctx.drawImage(this._cardBack, x, y);
       // Pile-depth count in the gap under the top row, so players can see
-      // how many draws remain before the next recycle.
-      this._drawPileCount(board.stock.length, x + CW / 2, TOP_ROW_Y + CH + 6);
+      // how many draws remain before the next recycle. TABLEAU_Y leaves room
+      // for it; see the layout constants.
+      this._drawPileCount(board.stock.length, x + CW / 2, TOP_ROW_Y + CH + 2 * SCALE);
     }
   };
 
-  // Small pixel number centered under a pile. Digits reuse the 3×5 rank-
-  // glyph font at the same SCALE as the card corners; drawn in the ghost
-  // colour so the badge reads as a table marking, not a card.
+  // Small pixel number centered under a pile, in the 3×5 digit font at the
+  // board's SCALE. Drawn in the table-marking colour so the badge reads as
+  // something painted on the felt rather than a card.
   Renderer.prototype._drawPileCount = function (n, centerX, y) {
     var str = String(n);
     var w = (str.length * 4 - 1) * SCALE; // 3px digits + 1px gaps
     var x = Math.round(centerX - w / 2);
     for (var i = 0; i < str.length; i++) {
-      var glyph = RANK_GLYPHS[str.charAt(i)];
+      var glyph = DIGIT_GLYPHS[str.charAt(i)];
       if (!glyph) continue;
-      paintMonoSpriteScaled(this.ctx, glyph, x, y, COL_GHOST, SCALE);
+      paintMonoSpriteScaled(this.ctx, glyph, x, y, COL_TABLE_MARK, SCALE);
       x += 4 * SCALE;
     }
   };
@@ -871,11 +472,16 @@
     // cards. We paint exactly that L so the shadow reads as a drop shadow
     // and not as a faint tint visible at the card edges.
     var stackH = CH + (dragState.cards.length - 1) * FACE_UP_OFFSET;
+    // Offsets in authored pixels so the shadow keeps its proportions if SCALE
+    // moves — these were literals tuned when SCALE was 2 and would have gone
+    // hairline against the bigger art.
+    var near = 1 * SCALE;
+    var far = 2 * SCALE;
     this.ctx.fillStyle = "rgba(0,0,0,0.25)";
-    // Right-edge strip (3 px wide, from top of stack to its full bottom).
-    this.ctx.fillRect(px + CW, py + 6, 3, stackH);
-    // Bottom-edge strip (6 px tall, under the bottom card only).
-    this.ctx.fillRect(px + 3, py + stackH, CW, 6);
+    // Right-edge strip, from just below the top of the stack to its bottom.
+    this.ctx.fillRect(px + CW, py + far, near, stackH);
+    // Bottom-edge strip, under the bottom card only.
+    this.ctx.fillRect(px + near, py + stackH, CW, far);
     for (var i = 0; i < dragState.cards.length; i++) {
       this.ctx.drawImage(this._cardSprites[dragState.cards[i]], px, py + i * FACE_UP_OFFSET);
     }

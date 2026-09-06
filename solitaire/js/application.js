@@ -58,7 +58,24 @@
   // --- Instances ---
 
   var storage = new StorageClass();
-  var renderer = new RendererClass(canvas);
+  // The card art lives in an atlas PNG, so the renderer cannot exist until
+  // that image has decoded. The fetch starts here, at module scope, so it
+  // overlaps the bridge handshake and the storage hydrate rather than adding
+  // its latency on top of them; bootstrap() awaits it and assigns `renderer`.
+  // Everything that touches `renderer` runs after first paint (pointer
+  // handlers, render()), and both guard for the gap.
+  //
+  // The URL comes off the canvas' data-atlas attribute rather than being
+  // hardcoded here, because index.html is the only file the build rewrites
+  // __BUILD_ID__ in — see docs/deploy-cache-policy.md for why an unversioned
+  // asset URL goes stale.
+  var atlasPromise = RendererClass.load(canvas.getAttribute("data-atlas") || "./images/cards.png");
+  // The rejection is really handled in bootstrap(), which awaits this promise
+  // and falls through to showFatalError. This no-op catch only exists so a
+  // failure that lands before bootstrap attaches its handler can't surface as
+  // an unhandled rejection in the host console.
+  atlasPromise.catch(function () {});
+  var renderer = null;
   // Procedural audio (js/sound_manager.js). Constructed up front but stays
   // suspended until the first user gesture unlocks it (see initSound); the
   // play* methods self-guard when muted/suspended, so handlers below never
@@ -73,8 +90,8 @@
     },
   });
   var input = new InputClass(canvas, {
-    hitTest: function (x, y) { return renderer.hitTest(x, y); },
-    isDraggable: function (loc) { return renderer.isDraggable(loc); },
+    hitTest: function (x, y) { return renderer ? renderer.hitTest(x, y) : null; },
+    isDraggable: function (loc) { return renderer ? renderer.isDraggable(loc) : false; },
   });
 
   // --- Drag state ---
@@ -150,6 +167,10 @@
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       return;
     }
+    // A board exists but the atlas hasn't decoded yet — only reachable if a
+    // restore lands before the atlas resolves. Leave the felt as painted
+    // above; bootstrap renders again once the renderer is up.
+    if (!renderer) return;
     var targets = dragState ? dragState.legalTargets : null;
     renderer.draw(board, dragState, targets);
   }
@@ -1171,8 +1192,11 @@
   // The canvas is CSS-scaled to the column width, which generally lands the
   // pixel art at a fractional device-pixel ratio — nearest-neighbour then
   // renders art pixels in alternating widths, a subtle wobble in the 1px
-  // card borders. Each art pixel is 2 internal px, so the art is wobble-free
-  // when (cssWidth × dpr) is a multiple of INTERNAL_W / 2. When the column
+  // card borders. Each art pixel is SCALE internal px, so the art is
+  // wobble-free when (cssWidth × dpr) is a multiple of INTERNAL_W / SCALE.
+  // Reading SCALE off the renderer rather than repeating the literal is what
+  // keeps this honest — it was hardcoded to 2, and would have silently
+  // targeted the wrong grid the moment SCALE moved. When the column
   // width is within 8% of such a size, snap down to it; otherwise keep the
   // full width — a small wobble beats giant side margins (e.g. narrow phones
   // at 3× would lose ~15% of the board).
@@ -1191,7 +1215,7 @@
     var avail = frame.clientWidth;
     if (!avail) return;
     var dpr = window.devicePixelRatio || 1;
-    var step = (RendererClass.INTERNAL_W / 2) / dpr;
+    var step = (RendererClass.INTERNAL_W / RendererClass.SCALE) / dpr;
     var snapped = Math.floor(avail / step) * step;
     if (snapped > 0 && avail - snapped <= avail * 0.08) {
       frame.style.width = snapped + "px";
@@ -1203,8 +1227,9 @@
 
   function bootstrap() {
     OR.whenReady().then(function () {
-      return storage.hydrate();
-    }).then(function () {
+      return Promise.all([storage.hydrate(), atlasPromise]);
+    }).then(function (results) {
+      renderer = new RendererClass(canvas, results[1]);
       initSound();
       snapCanvasWidth();
       // Restore an in-progress deal if we have one. Daily deals only
@@ -1229,6 +1254,9 @@
       OR.ready();
     }).catch(function (err) {
       console.error("solitaire: bootstrap failed", err);
+      // Covers a failed atlas as well as a failed bridge or storage — a
+      // missing cards.png would otherwise leave the player on bare felt with
+      // no explanation.
       showFatalError("Couldn't start the game. Try reloading.");
       try { OR.ready(); } catch (e) {}
     });
