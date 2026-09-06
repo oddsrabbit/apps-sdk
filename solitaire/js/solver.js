@@ -296,6 +296,86 @@
     return moves;
   }
 
+  // --- Dead-end detection ---------------------------------------------------
+
+  // Does this position have any move that actually gets somewhere? Used by
+  // game.js to nudge a player who has painted themselves into a corner.
+  //
+  // Two things have to be excluded or a dead board looks alive forever:
+  //
+  //   - **Drawing and recycling.** This is draw-1 with an unlimited recycle,
+  //     so turning the stock is legal in every position that has any stock or
+  //     waste at all. A naive "are there zero legal moves?" check would
+  //     therefore never once fire in this game.
+  //   - **The king-shuffle**, the same reversible no-op genMoves prunes:
+  //     moving an entire face-up column onto an empty one reveals no card and
+  //     frees no column, it just swaps which column is the empty one. The
+  //     resulting position is identical up to relabelling, so a board whose
+  //     only move is that one really is finished.
+  //
+  // Single-ply is sufficient, not an approximation: a sequence of moves needs
+  // a first move, so "no productive move exists" settles it for every depth.
+  //
+  // The one legal move deliberately NOT counted is foundation → tableau.
+  // Pulling a card back off a foundation to receive a tableau card is a real
+  // (if rare) Klondike technique, so a board reported stuck may still have
+  // that line. It is left out because genMoves leaves it out — the solver
+  // never uses it to prove a deal winnable either — and because counting it
+  // would suppress the nudge in most genuinely stuck positions, since a
+  // foundation top can usually drop onto *some* tableau card. Callers should
+  // word the result as a nudge, not a verdict.
+  function hasProductiveMove(board) {
+    var s = stateFromBoard(board);
+    var c, i, d;
+
+    // Tableau top → foundation.
+    for (c = 0; c < s.tableau.length; c++) {
+      var col = s.tableau[c];
+      if (col.length && foundationEligible(col[col.length - 1], s.found)) return true;
+    }
+
+    // Anything in stock or waste. Every one of those cards reaches the waste
+    // top eventually — draw-1 turns the whole deck past that position and the
+    // recycle is unlimited — and drawing changes nothing but stock/waste, so
+    // each can be tested against the tableau and foundations exactly as they
+    // stand. That shortcut is specific to draw-1: under draw-3 only every
+    // third card is reachable and this would have to simulate the passes.
+    for (i = 0; i < s.stock.length; i++) {
+      if (playableFromWaste(s, s.stock[i])) return true;
+    }
+    for (i = 0; i < s.waste.length; i++) {
+      if (playableFromWaste(s, s.waste[i])) return true;
+    }
+
+    // Tableau → tableau, minus the king-shuffle. Mirrors genMoves' "tt" arm,
+    // including its permissive slice rule: any face-up index can head a move
+    // and everything above it travels along, whether or not the slice is a
+    // properly sequenced run.
+    for (var src = 0; src < s.tableau.length; src++) {
+      var scol = s.tableau[src];
+      var firstFaceUp = s.hidden[src];
+      for (i = firstFaceUp; i < scol.length; i++) {
+        for (d = 0; d < s.tableau.length; d++) {
+          if (d === src) continue;
+          var dcol = s.tableau[d];
+          if (!canStack(scol[i], colTop(dcol))) continue;
+          if (dcol.length === 0 && i === firstFaceUp && firstFaceUp === 0) continue;
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  function playableFromWaste(s, card) {
+    if (foundationEligible(card, s.found)) return true;
+    for (var d = 0; d < s.tableau.length; d++) {
+      if (canStack(card, colTop(s.tableau[d]))) return true;
+    }
+    return false;
+  }
+
   // Binary max-heap over frontier entries, ordered by `.pr`. Plain array
   // implementation — no dependencies, deterministic, fast enough for the
   // frontier sizes we hit.
@@ -392,6 +472,7 @@
   window.SolitaireSolver = {
     isSolvable: isSolvable,
     findSolvableSeed: findSolvableSeed,
+    hasProductiveMove: hasProductiveMove,
     // Exposed for offline verification harnesses only.
     _internal: {
       stateFromBoard: stateFromBoard,

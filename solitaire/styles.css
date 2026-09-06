@@ -80,6 +80,78 @@ html, body {
   flex: 0 0 auto;
 }
 
+/* Dead-end nudge. Sits low over the felt, where a stuck board has empty
+   space — a stuck position is by definition one where no column got long.
+   Never coexists with .finish-button (if you can auto-complete you are not
+   stuck), so the two can share the same bottom slot without collision. */
+.stuck-banner {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100% - 24px);
+  padding: 10px 12px;
+  box-sizing: border-box;
+  background: var(--wood-darkest);
+  border: 2px solid var(--wood-mid);
+  border-bottom-width: 4px;
+  border-right-width: 4px;
+  color: var(--wood-pale);
+  font-size: 10px;
+  letter-spacing: 1px;
+}
+/* `display: flex` above beats the UA stylesheet's `[hidden] { display: none }`,
+   so the attribute application.js toggles has to be re-applied here. */
+.stuck-banner[hidden] { display: none; }
+
+.stuck-text {
+  text-transform: uppercase;
+  font-weight: bold;
+  white-space: nowrap;
+}
+/* Inverted against the bar: pale fill, dark label. The rest of the game's
+   buttons are dark-on-pale, but the bar itself is --wood-darkest, so that
+   treatment would put a dark button on a dark ground. Mid-green fill was
+   tried and the 9px label did not survive it. */
+.stuck-banner button {
+  background: var(--wood-pale);
+  color: var(--wood-darkest);
+  border: 2px solid var(--wood-pale);
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 9px;
+  font-weight: bold;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.stuck-banner button:active { transform: translate(1px, 1px); }
+/* Dismiss is the quiet one — an outline, not a filled chip, so it doesn't
+   compete with the two actions that actually get the player out. */
+.stuck-banner .stuck-dismiss {
+  background: transparent;
+  color: var(--wood-pale);
+  border-color: var(--wood-mid);
+  padding: 6px 8px;
+  line-height: 1;
+  font-size: 11px;
+}
+
+@media (max-width: 420px) {
+  .stuck-banner {
+    bottom: 14px;
+    gap: 8px;
+    padding: 8px 10px;
+    font-size: 9px;
+  }
+  .stuck-banner button { padding: 5px 6px; font-size: 8px; }
+}
+
 .heading::after {
   content: "";
   display: block;
@@ -163,10 +235,18 @@ h1.title {
   align-items: center;
 }
 
-/* Sound on/off toggle, leftmost in the button row. Emoji glyph carries the
-   state (🔊 / 🔇); the button itself is a flat tap target with no chrome so
-   it reads as a small control, not a primary action like Undo / New Deal. */
-.sound-toggle {
+/* Sound and vibration toggles, leftmost in the button row. An emoji glyph
+   carries the state (🔊 / 🔇 and 📳 / 📴); the buttons themselves are flat tap
+   targets with no chrome so they read as small controls, not primary actions
+   like Undo / New Deal.
+
+   `aria-pressed="true"` means the thing is OFF for both — pressed-in is the
+   silenced state — which is what the dimmed opacity below is showing. The
+   vibration button is `hidden` in the markup and only unhidden on touch
+   devices, so this rule set covers a control that is usually absent on
+   desktop. */
+.sound-toggle,
+.haptic-toggle {
   flex: 0 0 auto;
   background: none;
   border: none;
@@ -179,13 +259,33 @@ h1.title {
   transition: opacity 0.15s ease, transform 0.1s ease;
   -webkit-tap-highlight-color: transparent;
 }
-.sound-toggle:hover { opacity: 1; }
-.sound-toggle:active { transform: translateY(1px); }
-.sound-toggle[aria-pressed="true"] { opacity: 0.45; }
-.sound-toggle:focus-visible {
+.sound-toggle:hover,
+.haptic-toggle:hover { opacity: 1; }
+.sound-toggle:active,
+.haptic-toggle:active { transform: translateY(1px); }
+.sound-toggle[aria-pressed="true"],
+.haptic-toggle[aria-pressed="true"] { opacity: 0.45; }
+.sound-toggle:focus-visible,
+.haptic-toggle:focus-visible {
   outline: 2px solid var(--wood-darkest);
   outline-offset: 2px;
 }
+
+/* The vibration icon is drawn, not an emoji, so it takes the chrome colour the
+   rest of the toolbar uses. `display: flex` stops the inline SVG sitting on the
+   text baseline, which would push it a couple of pixels below the speaker. */
+.haptic-toggle {
+  display: flex;
+  align-items: center;
+  color: var(--wood-darkest);
+}
+.haptic-toggle[hidden] { display: none; }
+
+/* The slash is the whole state signal, and it is the same signal 🔇 gives next
+   to it. The dimming on [aria-pressed="true"] reinforces it but must not be
+   the only cue — opacity alone reads as "disabled", not as "switched off". */
+.haptic-slash { display: none; }
+.haptic-toggle[aria-pressed="true"] .haptic-slash { display: inline; }
 
 .undo-button, .restart-button, .game-message button, .finish-button {
   background: var(--wood-darkest);

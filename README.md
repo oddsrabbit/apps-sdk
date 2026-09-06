@@ -5,7 +5,7 @@ The SDK for building games and apps on [OddsRabbit](https://www.oddsrabbit.com).
 > 🚧 **Alpha.** APIs subject to change.
 
 - **Full developer guide:** [oddsrabbit.com/developers/games](https://www.oddsrabbit.com/developers/games/)
-- **Reference games:** [`rabbit-words/`](./rabbit-words/), [`rabbit-globe/`](./rabbit-globe/), [`2048/`](./2048/), [`snake/`](./snake/), [`match3/`](./match3/), [`solitaire/`](./solitaire/), [`liquid/`](./liquid/)
+- **Reference games:** [`rabbit-words/`](./rabbit-words/), [`rabbit-globe/`](./rabbit-globe/), [`2048/`](./2048/), [`snake/`](./snake/), [`match3/`](./match3/), [`solitaire/`](./solitaire/), [`hex/`](./hex/), [`hop/`](./hop/), [`liquid/`](./liquid/)
 
 ## Hello world
 

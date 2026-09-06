@@ -29,6 +29,28 @@
                default; this lets a player silence it. aria-pressed reflects
                the muted state and is kept in sync from application.js. -->
           <button type="button" class="sound-toggle" aria-label="Mute sound" aria-pressed="false">🔊</button>
+          <!-- Vibration on/off. Starts `hidden`; application.js reveals it only
+               on a touch device, since nothing on a desktop can buzz and a
+               control that cannot do anything is worse than no control.
+
+               Inline SVG rather than an emoji, unlike the sound toggle beside
+               it. The two candidate glyphs (📳 / 📴) are both orange rounded
+               squares that are near-indistinguishable at this 16px size, and
+               the orange fights a palette that is otherwise entirely green.
+               Drawing it means it inherits `currentColor` and picks up the
+               slash convention from 🔇 next door, which is the part players
+               actually read. The slash is shown by CSS off `aria-pressed`, so
+               the state lives in exactly one place. -->
+          <button type="button" class="haptic-toggle" aria-label="Turn off vibration" aria-pressed="false" hidden>
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
+              <rect x="5.25" y="2.25" width="5.5" height="11.5" rx="1.25"
+                    fill="none" stroke="currentColor" stroke-width="1.4" />
+              <path d="M2.6 5.9v4.2M13.4 5.9v4.2"
+                    stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+              <path class="haptic-slash" d="M2.2 13.8L13.8 2.2"
+                    stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+          </button>
           <button type="button" class="undo-button" disabled>Undo</button>
           <button type="button" class="restart-button">New Deal</button>
         </div>
@@ -54,6 +76,19 @@
                the overlay is display:none. application.js toggles its
                display inline based on game.canAutoComplete(). -->
           <button type="button" class="finish-button">Finish</button>
+
+          <!-- Dead-end nudge. Deliberately NOT the .game-message overlay:
+               that one is a full-board scrim, and covering the board is the
+               opposite of useful when the whole point is to let the player
+               look at it and undo. This is a bar over the empty felt at the
+               bottom, the board stays live behind it, and it is dismissible.
+               role=status + aria-live announces it without stealing focus. -->
+          <div class="stuck-banner" role="status" aria-live="polite" hidden>
+            <span class="stuck-text">No moves left</span>
+            <button type="button" class="stuck-undo">Undo</button>
+            <button type="button" class="stuck-new">New deal</button>
+            <button type="button" class="stuck-dismiss" aria-label="Dismiss">&times;</button>
+          </div>
 
           <div class="game-message" data-state="idle">
             <p class="game-message-text" role="status" aria-live="polite"></p>

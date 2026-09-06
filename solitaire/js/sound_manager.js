@@ -10,9 +10,14 @@
 // never have to guard. The mute flag lives here; persistence is the caller's
 // job (application.js stores it via the OddsRabbit storage bridge).
 //
-// Voicing leans soft and woody to match the card-table theme: low sine
-// "thocks" for card placement, brighter triangle blips for foundation
+// Voicing leans soft and woody to match the card-table theme: low noise-and-
+// sine "thocks" for card placement, brighter triangle blips for foundation
 // progress, and filtered noise sweeps for the shuffle/recycle whoosh.
+//
+// The effects are a deliberate hierarchy, loudest and brightest reserved for
+// the rarest event: win > foundation > place > draw. Flattening it — most
+// obviously by reusing the foundation blip for ordinary tableau moves — costs
+// the player the ability to hear progress without looking at the board.
 
 (function () {
   function SoundManager() {
@@ -140,14 +145,43 @@
     this._voice({ type: "triangle", freq: 520, freqEnd: 640, dur: 0.05, peak: 0.12 });
   };
 
-  // Soft wooden thock for a successful tableau move.
+  // Card-on-card landing for a tableau move. Two layers: a very short filtered
+  // noise tick — the contact — over the low wooden body. The tick is the part
+  // that matters. A bare sine has no attack transient, so the old single-voice
+  // version read as a soft "boop" rather than a card being put down, which is
+  // why this sound felt flat next to foundation() despite being the one the
+  // player hears most.
+  //
+  // It stays deliberately darker and quieter than foundation(). A deal has
+  // several times more tableau moves than foundation sends, so this has to
+  // survive hundreds of repeats without fatiguing, and it must not read as a
+  // reward — see the note on foundation() below.
+  //
+  // The small random detune keeps a fast run of placements from machine-gunning
+  // on one identical pitch.
   SoundManager.prototype.place = function () {
     if (!this._live()) return;
-    this._voice({ type: "sine", freq: 310, freqEnd: 240, dur: 0.09, peak: 0.2 });
+    this._noise({ dur: 0.035, cutoffStart: 5200, cutoffEnd: 1600, peak: 0.075 });
+    this._voice({
+      type: "sine",
+      freq: 310,
+      freqEnd: 240,
+      dur: 0.09,
+      peak: 0.2,
+      detune: (Math.random() * 80) - 40,
+    });
   };
 
-  // Brighter rising blip when a card banks onto a foundation — the
-  // "progress" sound, distinct from the neutral tableau thock.
+  // Brighter rising blip when a card banks onto a foundation.
+  //
+  // This is the progress sound and the top of the routine-feedback hierarchy:
+  // a foundation send is the only move that advances the win, and it is
+  // irreversible in practice. Everything about it is the inverse of place() —
+  // it rises instead of falling, it is bright instead of woody, and it carries
+  // an overtone. Keep it that way: giving tableau moves this sound too would
+  // fire it on the majority of moves, at which point it stops meaning
+  // "progress" and starts meaning "something happened", and the win fanfare
+  // loses the runway it climbs from.
   SoundManager.prototype.foundation = function () {
     if (!this._live()) return;
     this._voice({ type: "sine", freq: 660, freqEnd: 880, dur: 0.11, peak: 0.18 });

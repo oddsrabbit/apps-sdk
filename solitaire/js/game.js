@@ -111,6 +111,26 @@
     return this._canFinishByAutoplay();
   };
 
+  // Whether the deal has run out of moves that go anywhere. Delegates to the
+  // solver, which owns this game's move vocabulary — including the permissive
+  // slice rule and the king-shuffle prune — so legality is defined in exactly
+  // one place rather than twice with a chance to drift.
+  //
+  // Reports false when the solver script is absent, matching how the rest of
+  // game.js treats it as optional: the nudge simply never appears rather than
+  // the game breaking. Also false unless we are actually playing, so a won or
+  // pre-deal board never claims to be stuck.
+  //
+  // Cheap enough for the per-move call site: at most 52 cards against 7
+  // columns plus the tableau pass, all integer compares, no allocation beyond
+  // one state clone.
+  SolitaireGame.prototype.isStuck = function () {
+    if (this._state !== STATE_PLAYING) return false;
+    var Solver = window.SolitaireSolver;
+    if (!Solver || typeof Solver.hasProductiveMove !== "function") return false;
+    return !Solver.hasProductiveMove(this._board);
+  };
+
   // Dry-run of the exact policy autoCompleteStep follows — send any tableau or
   // waste top to a foundation, otherwise draw/recycle to expose the next card
   // — on throwaway copies, reporting whether it empties the whole deck onto

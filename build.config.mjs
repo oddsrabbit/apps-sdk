@@ -108,6 +108,30 @@ const GAME_MATCH3_JS = [
   'leaderboard.js',
 ];
 
+// Hex Rush. Original hexagonal block-stacker. Same drop-in pattern as the
+// other vanilla games; sound_manager loads before game.js because the game
+// constructs one.
+const GAME_HEX_JS = [
+  'input_manager.js',
+  'storage_manager.js',
+  'sound_manager.js',
+  'game.js',
+  'renderer.js',
+  'application.js',
+  'leaderboard.js',
+];
+
+// Hop. Original one-button side-scroller. Same file set as Hex Rush.
+const GAME_HOP_JS = [
+  'input_manager.js',
+  'storage_manager.js',
+  'sound_manager.js',
+  'game.js',
+  'renderer.js',
+  'application.js',
+  'leaderboard.js',
+];
+
 // Solitaire. Original Klondike. Splits deck/rules out of game.js since
 // solitaire has materially more rules logic than the action games.
 const GAME_SOLITAIRE_JS = [
@@ -134,6 +158,10 @@ await mkdir('dist/solitaire/js', { recursive: true });
 await mkdir('dist/solitaire/fonts', { recursive: true });
 await mkdir('dist/solitaire/images', { recursive: true });
 await mkdir('dist/liquid/js', { recursive: true });
+await mkdir('dist/hex/js', { recursive: true });
+await mkdir('dist/hex/fonts', { recursive: true });
+await mkdir('dist/hop/js', { recursive: true });
+await mkdir('dist/hop/fonts', { recursive: true });
 
 const baseOpts = {
   bundle: true,
@@ -295,6 +323,27 @@ async function copyHostAssets() {
     // but the provenance of redistributed art belongs in the bundle.
     copyFile('solitaire/images/cards.png', 'dist/solitaire/images/cards.png'),
     copyFile('solitaire/images/KENNEY-LICENSE.txt', 'dist/solitaire/images/KENNEY-LICENSE.txt'),
+    // Hex Rush — original hexagonal block-stacker. Reuses snake's Press Start 2P
+    // for its chrome; the OFL.txt ships alongside so the redistributed font
+    // carries its license. No image assets: the board is drawn as canvas
+    // geometry (js/renderer.js), so the whole game is HTML + CSS + JS.
+    copyHtmlWithBuildId('hex/index.html', 'dist/hex/index.html'),
+    copyFile('hex/styles.css', 'dist/hex/styles.css'),
+    ...GAME_HEX_JS.map((name) =>
+      copyFile(`hex/js/${name}`, `dist/hex/js/${name}`)
+    ),
+    copyFile('snake/fonts/press-start-2p-latin.woff2', 'dist/hex/fonts/press-start-2p-latin.woff2'),
+    copyFile('snake/fonts/OFL.txt', 'dist/hex/fonts/OFL.txt'),
+    // Hop — original one-button side-scroller. Same pattern. Also asset-free:
+    // every sprite is drawn as integer rects at a fixed 320x480 internal
+    // resolution (js/renderer.js).
+    copyHtmlWithBuildId('hop/index.html', 'dist/hop/index.html'),
+    copyFile('hop/styles.css', 'dist/hop/styles.css'),
+    ...GAME_HOP_JS.map((name) =>
+      copyFile(`hop/js/${name}`, `dist/hop/js/${name}`)
+    ),
+    copyFile('snake/fonts/press-start-2p-latin.woff2', 'dist/hop/fonts/press-start-2p-latin.woff2'),
+    copyFile('snake/fonts/OFL.txt', 'dist/hop/fonts/OFL.txt'),
     // Liquid — WebGL fluid simulation. Vendored vanilla JS, no bundling needed.
     copyHtmlWithBuildId('liquid/index.html', 'dist/liquid/index.html'),
     copyFile('liquid/js/script.js', 'dist/liquid/js/script.js'),

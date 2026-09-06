@@ -51,6 +51,10 @@
   var startDailyBtn = document.querySelector(".start-daily-button");
   var startRandomBtn = document.querySelector(".start-random-button");
   var finishBtn = document.querySelector(".finish-button");
+  var stuckBanner = document.querySelector(".stuck-banner");
+  var stuckUndoBtn = document.querySelector(".stuck-undo");
+  var stuckNewBtn = document.querySelector(".stuck-new");
+  var stuckDismissBtn = document.querySelector(".stuck-dismiss");
   var retryDailyBtn = document.querySelector(".retry-daily-button");
   var retryRandomBtn = document.querySelector(".retry-random-button");
   var shareBtn = document.querySelector(".share-button");
@@ -82,6 +86,19 @@
   // need to check.
   var sound = new SoundClass();
   var MUTED_KEY = "soundMuted";
+
+  // Vibration on/off, persisted separately from the mute setting. They are two
+  // different senses and players silence them for different reasons — sound
+  // because they are somewhere quiet, vibration because the buzzing is
+  // distracting or drains the battery — so one switch for both would force a
+  // player who wants neither one of them to give up the other.
+  //
+  // Stored inverted ("1" means OFF) so that the absence of the key, a failed
+  // read, and an explicit "on" all mean the same thing. Haptics are on by
+  // default, and a storage failure must not silently disable a feature the
+  // player never asked to turn off.
+  var HAPTICS_KEY = "hapticsOff";
+  var hapticsEnabled = true;
   var game = new GameClass({
     storage: storage,
     listener: {
@@ -209,9 +226,41 @@
     refreshStats();
     undoBtn.disabled = game.getUndoDepth() === 0;
     finishBtn.style.display = (!autoCompleting && game.canAutoComplete()) ? "inline-block" : "none";
+    refreshStuckBanner();
+  }
+
+  // --- Dead-end nudge ---
+
+  // Set while the banner is dismissed for the *current* dead end. Cleared the
+  // moment the board has a move again, so undoing out of a corner and later
+  // walking back into one shows the nudge afresh rather than staying silent
+  // for the rest of the deal.
+  var stuckDismissed = false;
+
+  // A stuck board is a real state, not a loss: the deal was proven winnable
+  // before it was dealt (solver.js), undo is unlimited, and the player got
+  // here by their own moves. So this nudges and offers the two ways out
+  // rather than ending anything — the game stays in STATE_PLAYING and the
+  // board stays live behind the bar.
+  function refreshStuckBanner() {
+    // Never during the Finish cascade: it fires onChange per step, and a
+    // mid-cascade board can transiently have no tableau move while the
+    // autoplay is still draining cards to the foundations.
+    var stuck = !autoCompleting && game.isStuck();
+    if (!stuck) stuckDismissed = false;
+    stuckBanner.hidden = !stuck || stuckDismissed;
+  }
+
+  function hideStuckBanner() {
+    stuckDismissed = false;
+    stuckBanner.hidden = true;
   }
 
   function onStateChange(state) {
+    // The nudge only ever makes sense mid-deal, and every transition either
+    // starts a fresh board or ends this one — so clear it on all of them and
+    // let the next onBoardChange re-derive it.
+    hideStuckBanner();
     if (state === GameClass.STATE_PLAYING) {
       setOverlayState("playing");
       startTimeTick();
@@ -1024,6 +1073,16 @@
 
   undoBtn.addEventListener("click", doUndo);
   restartBtn.addEventListener("click", requestNewDeal);
+  // The banner's actions are the toolbar's actions — same handlers, so the
+  // confirm-before-discarding rule in requestNewDeal covers this path too.
+  // They live on the bar as well because a stuck player is looking at the
+  // board, not the toolbar above it.
+  stuckUndoBtn.addEventListener("click", doUndo);
+  stuckNewBtn.addEventListener("click", requestNewDeal);
+  stuckDismissBtn.addEventListener("click", function () {
+    stuckDismissed = true;
+    stuckBanner.hidden = true;
+  });
 
   // "New Deal" pops the player back to the idle chooser. resetToIdle()
   // transitions the engine to IDLE, which fires onStateChange → stopTimeTick +
@@ -1096,7 +1155,10 @@
 
   // --- Haptics shim ---
 
+  // Every haptic in the game routes through here, which is the only reason one
+  // flag can switch them all off. Call sites stay unaware of the setting.
   function haptic(kind) {
+    if (!hapticsEnabled) return;
     if (!OR.actions || typeof OR.actions.haptic !== "function") return;
     try { OR.actions.haptic(kind).catch(function () {}); } catch (_) {}
   }
@@ -1187,6 +1249,65 @@
     }
   }
 
+  // --- Haptics toggle ---
+
+  // Shown on touch devices only, and deliberately NOT gated on
+  // `capabilities.has("actions.haptic")`. That check is the house pattern for
+  // host-dependent UI, but it is the wrong instrument here: the web host
+  // declares `actions.haptic` and answers it as a no-op, so gating on it
+  // reveals the button on a desktop where nothing can possibly buzz. Touch is
+  // the honest proxy for "this device has a motor" — the same test the share
+  // modal already applies before offering a native share sheet.
+  //
+  // The consequence worth stating: a player who turns vibration off on their
+  // phone has no way to turn it back on from a desktop, because the control
+  // isn't there. That is the right trade. The setting still syncs, so their
+  // phone shows it switched off and can switch it back.
+  function initHaptics() {
+    var toggleEl = document.querySelector(".haptic-toggle");
+    if (!toggleEl) return;
+    if (!IS_TOUCH_DEVICE) return;   // stays `hidden` from the markup
+    toggleEl.hidden = false;
+
+    function paintHapticToggle() {
+      // Only the attribute moves. The icon is inline SVG in the markup and CSS
+      // draws or hides its slash off `aria-pressed`, so the visual state and
+      // the accessible state cannot drift apart the way they could if this
+      // function set both.
+      //
+      // Pressed-in means OFF, matching the sound toggle beside it.
+      toggleEl.setAttribute("aria-pressed", hapticsEnabled ? "false" : "true");
+      toggleEl.setAttribute(
+        "aria-label",
+        hapticsEnabled ? "Turn off vibration" : "Turn on vibration"
+      );
+    }
+
+    // Hydrate, then paint. Any read failure leaves the default (on) in place —
+    // see the note on HAPTICS_KEY.
+    if (OR.storage && OR.storage.get) {
+      OR.storage.get(HAPTICS_KEY)
+        .then(function (raw) { hapticsEnabled = raw !== "1"; })
+        .catch(function () {})
+        .then(paintHapticToggle);
+    } else {
+      paintHapticToggle();
+    }
+
+    toggleEl.addEventListener("click", function () {
+      hapticsEnabled = !hapticsEnabled;
+      paintHapticToggle();
+      // Confirm the change with the sense being changed: switching vibration
+      // back on fires one tap, so the player feels that it took effect rather
+      // than having to trust an icon. Switching it off stays silent, which is
+      // its own confirmation.
+      if (hapticsEnabled) haptic("light");
+      if (OR.storage && OR.storage.set) {
+        OR.storage.set(HAPTICS_KEY, hapticsEnabled ? "0" : "1").catch(function () {});
+      }
+    });
+  }
+
   // --- Crisp-scale snapping ---
 
   // The canvas is CSS-scaled to the column width, which generally lands the
@@ -1231,6 +1352,7 @@
     }).then(function (results) {
       renderer = new RendererClass(canvas, results[1]);
       initSound();
+      initHaptics();
       snapCanvasWidth();
       // Restore an in-progress deal if we have one. Daily deals only
       // restore if the seed still matches today — yesterday's deal

@@ -1,0 +1,447 @@
+/* Press Start 2P (OFL 1.1, see fonts/OFL.txt). Latin subset only — covers all
+   the text the game shows; ~5KB. font-display: swap paints the system mono
+   fallback first, then upgrades when the woff2 arrives. Shared with snake and
+   solitaire so the games read as one family. */
+@font-face {
+  font-family: "Press Start 2P";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./fonts/press-start-2p-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* Daylight garden. The chrome is pulled from the sprite palette in
+   js/renderer.js — the same greens and browns the board is drawn with — so the
+   frame reads as part of the scene rather than as a container around it. Dark
+   text on a light page, the inverse of Hex Rush, because this board is bright
+   and a dark surround would make the canvas glare. */
+:root {
+  color-scheme: light;
+  --hop-bg: #dceecf;        /* page — a pale wash of the grass green */
+  --hop-board: #7ec8ef;     /* canvas sky — matches SKY_TOP in renderer.js */
+  --hop-panel: #3f7d3c;     /* chips, buttons — GRASS_DARK */
+  --hop-line: #2f6b28;      /* borders — HEDGE_DARK */
+  --hop-deep: #1f4a1b;      /* deepest shadow — HEDGE_EDGE */
+  --hop-text: #23401f;
+  --hop-light: #f3faee;     /* text on the dark panels */
+  --hop-dim: #55764f;
+  --hop-carrot: #f2873c;
+  --hop-leaf: #6fc25e;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--hop-bg);
+  color: var(--hop-text);
+  font-family: "Press Start 2P", ui-monospace, "Menlo", "Consolas", monospace;
+  font-size: 14px;
+  -webkit-font-smoothing: none;
+  font-smooth: never;
+  /* Tell the browser we own all touch gestures so Android Chrome's compositor
+     can't claim a tap for scroll/zoom before our (non-passive) touch listeners
+     run. `{ passive: false }` on the listeners alone isn't enough on Android —
+     the compositor consults `touch-action` first. */
+  touch-action: none;
+  overscroll-behavior: none;
+}
+
+body { margin: 16px 0; }
+
+.container {
+  width: 520px;
+  max-width: calc(100vw - 32px);
+  margin: 0 auto;
+}
+
+.heading::after {
+  content: "";
+  display: block;
+  clear: both;
+}
+
+h1.title {
+  font-size: 34px;
+  font-weight: bold;
+  margin: 0;
+  display: block;
+  float: left;
+  letter-spacing: 2px;
+  color: var(--hop-text);
+}
+
+.scores-container {
+  float: right;
+  text-align: right;
+  /* Inline "0" placeholders hold the layout but stay invisible until
+     application.js writes the hydrated values and toggles `.ready`. Otherwise
+     a stored best of 4210 flashes "0 → 4210" on first paint. */
+  visibility: hidden;
+}
+.scores-container.ready { visibility: visible; }
+
+/* Score / best chips. Same proportions as 2048, snake, match3 and Hex Rush so
+   the chip shape is one shared element across the suite. */
+.score-container, .best-container {
+  position: relative;
+  display: inline-block;
+  background: var(--hop-panel);
+  padding: 15px 22px;
+  font-size: 20px;
+  height: 22px;
+  line-height: 40px;
+  min-width: 40px;
+  font-weight: bold;
+  color: var(--hop-light);
+  margin-top: 8px;
+  margin-left: 8px;
+  text-align: center;
+  border: 2px solid var(--hop-line);
+  box-shadow: inset 0 0 0 2px var(--hop-deep);
+}
+.score-container::after, .best-container::after {
+  position: absolute;
+  width: 100%;
+  top: 8px;
+  left: 0;
+  font-size: 11px;
+  line-height: 11px;
+  text-align: center;
+  color: var(--hop-leaf);
+  letter-spacing: 1px;
+}
+.score-container::after { content: "SCORE"; }
+.best-container::after { content: "BEST"; }
+
+.above-game { margin-top: 24px; }
+.above-game::after {
+  content: "";
+  display: block;
+  clear: both;
+}
+
+.game-intro {
+  float: left;
+  font-size: 11px;
+  line-height: 1.6;
+  margin: 8px 0 0;
+  max-width: 52%;
+  color: var(--hop-dim);
+}
+
+.restart-button,
+.leaderboard-button,
+.pause-button,
+.sound-toggle,
+.game-message button {
+  background: var(--hop-panel);
+  color: var(--hop-light);
+  border: 2px solid var(--hop-line);
+  border-bottom-width: 4px;
+  border-right-width: 4px;
+  padding: 10px 16px;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+.restart-button { float: right; }
+.leaderboard-button { float: right; margin-right: 8px; }
+.restart-button:active,
+.leaderboard-button:active,
+.pause-button:active,
+.sound-toggle:active,
+.game-message button:active {
+  border-bottom-width: 2px;
+  border-right-width: 2px;
+  transform: translate(2px, 2px);
+}
+
+/* Pause + mute sit on their own row under the header buttons, right-aligned
+   and clear of the board so neither is in the way of the tap that hops. */
+.control-row {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+  min-height: 38px;
+}
+.sound-toggle {
+  padding: 8px 10px;
+  font-size: 14px;
+  line-height: 1;
+}
+.pause-button { padding: 8px 12px; }
+
+.game-container {
+  margin-top: 12px;
+  position: relative;
+  cursor: default;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+  touch-action: none;
+}
+
+.board-frame {
+  background: var(--hop-deep);
+  padding: 10px;
+  border: 2px solid var(--hop-line);
+  box-sizing: border-box;
+}
+
+/* Portrait, and upscaled from the canvas element's own 320x480 buffer — the
+   width/height attributes in index.html set that, so no aspect-ratio is needed
+   here. `max-width` keeps the board a sensible size on a wide desktop window
+   instead of stretching a 320px-wide scene across 520px of container. Nearest
+   neighbour on the upscale so the art stays blocky. */
+.game-canvas {
+  display: block;
+  width: 100%;
+  max-width: 340px;
+  height: auto;
+  margin: 0 auto;
+  background: var(--hop-board);
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  border: 2px solid var(--hop-deep);
+  box-sizing: border-box;
+}
+
+.game-message {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  bottom: 10px;
+  left: 10px;
+  /* Light enough that the garden still reads through it. The dark games can
+     sit behind an opaque scrim, but washing a bright scene out to a flat green
+     slab loses the one thing a player wants to see after a run ends: where
+     they actually hit. */
+  background: rgba(21, 48, 18, 0.62);
+  z-index: 100;
+  text-align: center;
+  padding: 12px;
+  box-sizing: border-box;
+}
+.game-message.visible { display: flex; }
+
+.game-message-text {
+  font-size: 20px;
+  letter-spacing: 2px;
+  color: var(--hop-light);
+  margin: 0;
+  text-shadow: 2px 2px 0 var(--hop-deep);
+}
+
+.final-score {
+  font-size: 13px;
+  letter-spacing: 2px;
+  color: var(--hop-carrot);
+  margin: 0;
+}
+.final-score:empty { display: none; }
+
+.game-message .lower {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* Each overlay state shows only the relevant buttons. Default hides all; the
+   per-state rules opt the right ones back in. The leaderboard button carries
+   `hidden` from the markup until js/leaderboard.js clears it, so it needs the
+   attribute honoured over the display rule below. */
+.game-message .lower button { display: none; }
+.game-message[data-state="idle"] .start-button { display: inline-block; }
+.game-message[data-state="paused"] .resume-button { display: inline-block; }
+.game-message[data-state="over"] .retry-button,
+.game-message[data-state="over"] .share-button,
+.game-message[data-state="over"] .leaderboard-button-overlay { display: inline-block; }
+.game-message .lower button[hidden] { display: none; }
+
+.new-best-note {
+  font-size: 12px;
+  letter-spacing: 2px;
+  color: var(--hop-leaf);
+  margin: 0;
+  text-shadow: 1px 1px 0 var(--hop-deep);
+}
+.new-best-note:empty { display: none; }
+.game-message[data-state="idle"] .new-best-note,
+.game-message[data-state="paused"] .new-best-note { display: none; }
+
+.game-explanation {
+  margin-top: 24px;
+  font-size: 10px;
+  line-height: 1.7;
+  color: var(--hop-dim);
+}
+strong.important {
+  color: var(--hop-text);
+  text-transform: uppercase;
+}
+
+/* Bootstrap error fallback — surfaces a fatal bridge/hydrate failure to the
+   DOM rather than leaving a dead canvas. */
+.bootstrap-error {
+  margin: 20px auto;
+  padding: 16px 20px;
+  max-width: 460px;
+  background: var(--hop-panel);
+  color: var(--hop-light);
+  font-size: 11px;
+  line-height: 1.6;
+  text-align: center;
+  border: 2px solid var(--hop-line);
+}
+
+/* Share modal. Same visual language as the rest of the game so it doesn't
+   look like a stock browser dialog. */
+.share-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(31, 74, 27, 0.86);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  box-sizing: border-box;
+}
+.share-modal {
+  background: var(--hop-bg);
+  color: var(--hop-text);
+  border: 2px solid var(--hop-line);
+  box-shadow: 6px 6px 0 var(--hop-deep);
+  padding: 20px;
+  width: 100%;
+  max-width: 380px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  text-align: center;
+}
+.share-modal h2 {
+  margin: 0;
+  font-size: 14px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+.share-preview {
+  background: var(--hop-deep);
+  color: var(--hop-light);
+  padding: 14px;
+  font-size: 11px;
+  line-height: 1.6;
+  letter-spacing: 1px;
+  border: 2px solid var(--hop-line);
+  word-break: break-word;
+  white-space: pre-line;
+}
+.share-action {
+  background: var(--hop-panel);
+  color: var(--hop-light);
+  border: 2px solid var(--hop-line);
+  border-bottom-width: 4px;
+  border-right-width: 4px;
+  padding: 10px 16px;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+.share-action:active {
+  border-bottom-width: 2px;
+  border-right-width: 2px;
+  transform: translate(2px, 2px);
+}
+.share-section-label {
+  font-size: 9px;
+  letter-spacing: 1px;
+  color: var(--hop-dim);
+  text-transform: uppercase;
+  margin-top: 4px;
+}
+.share-buttons {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.share-button-social {
+  background: var(--hop-panel);
+  color: var(--hop-light);
+  border: 2px solid var(--hop-line);
+  border-bottom-width: 4px;
+  border-right-width: 4px;
+  padding: 10px 4px;
+  font: inherit;
+  font-size: 9px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+.share-button-social:active {
+  border-bottom-width: 2px;
+  border-right-width: 2px;
+  transform: translate(2px, 2px);
+}
+
+/* Toast. Bottom-centred slide-up; auto-dismissed by application.js. */
+.toast {
+  position: fixed;
+  bottom: 32px;
+  left: 50%;
+  transform: translate(-50%, 20px);
+  background: var(--hop-deep);
+  color: var(--hop-light);
+  padding: 10px 16px;
+  font-size: 10px;
+  letter-spacing: 1px;
+  border: 2px solid var(--hop-line);
+  opacity: 0;
+  transition: opacity 200ms ease, transform 200ms ease;
+  z-index: 300;
+  pointer-events: none;
+}
+.toast.toast-show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+@media screen and (max-width: 540px), screen and (max-height: 720px) {
+  body { margin: 12px 0; }
+  .container { width: auto; padding: 0 14px; }
+  h1.title { font-size: 20px; margin-top: 6px; }
+  .score-container, .best-container {
+    font-size: 14px;
+    padding: 13px 12px;
+    height: 14px;
+    line-height: 27px;
+    min-width: 32px;
+    margin-top: 0;
+  }
+  .score-container::after, .best-container::after { font-size: 9px; top: 6px; }
+  .above-game { margin-top: 16px; }
+  .game-intro { font-size: 9px; max-width: 46%; }
+  .restart-button, .leaderboard-button { padding: 8px 10px; font-size: 9px; }
+  .leaderboard-button { margin-right: 6px; }
+  .board-frame { padding: 6px; }
+  .game-message { top: 6px; right: 6px; bottom: 6px; left: 6px; }
+  .game-message-text { font-size: 16px; }
+  .game-explanation { font-size: 9px; margin-top: 16px; }
+}

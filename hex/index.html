@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <title>Hex Rush</title>
+    <!-- Shared leaderboard component. Stylesheet first so our own styles.css
+         keeps the last word; the script installs window.OddsRabbitUI, which
+         js/leaderboard.js reads. This game has no bundler, so both arrive as
+         plain tags rather than an import. -->
+    <link rel="stylesheet" href="../leaderboard-v1.css?v=__UI_VERSION__" />
+    <link rel="stylesheet" href="./styles.css?v=__BUILD_ID__" />
+    <script src="../sdk-v1.js?v=__SDK_VERSION__"></script>
+    <script src="../leaderboard-v1.js?v=__UI_VERSION__"></script>
+  </head>
+  <body>
+    <div class="container">
+      <div class="heading">
+        <h1 class="title">HEX RUSH</h1>
+        <div class="scores-container">
+          <div class="score-container" aria-label="Score 0">0</div>
+          <div class="best-container" aria-label="Best 0">0</div>
+        </div>
+      </div>
+
+      <div class="above-game">
+        <p class="game-intro">Turn the hex. Land 3 in a row to clear.</p>
+        <!-- Both leaderboard buttons start `hidden`; js/leaderboard.js reveals
+             them only once the host has said it can serve a global board. -->
+        <button type="button" class="restart-button">New Game</button>
+        <button type="button" class="leaderboard-button" hidden>Leaderboard</button>
+      </div>
+
+      <div class="control-row">
+        <!-- Pause needs its own control in this game: every tap on the board
+             is a rotation, so there is no spare tap gesture to overload the
+             way snake does. Hidden outside a live run by application.js. -->
+        <button type="button" class="pause-button" aria-label="Pause" hidden>❚❚ Pause</button>
+        <!-- Procedural audio (js/sound_manager.js) is on by default; this lets
+             a player silence it. aria-pressed reflects the muted state and is
+             kept in sync from application.js. -->
+        <button type="button" class="sound-toggle" aria-label="Mute sound" aria-pressed="false">🔊</button>
+      </div>
+
+      <div class="game-container">
+        <div class="board-frame">
+          <!-- No width/height attributes: the renderer sizes the pixel buffer
+               from the element's CSS box and the device pixel ratio, and
+               re-derives it on resize. Hard-coding them here would fight that
+               on the first frame. -->
+          <canvas class="game-canvas" aria-label="Hex Rush board"></canvas>
+        </div>
+
+        <!-- Chain-clear banner. Pops on multiplier >= 2; hidden by default.
+             aria-live=off — a long chain would otherwise spam screen readers
+             with "COMBO x2" through "COMBO x6" in rapid succession. The final
+             score in the game-over overlay IS announced. -->
+        <div class="combo-banner" aria-live="off"></div>
+
+        <div class="game-message" data-state="idle">
+          <p class="game-message-text"></p>
+          <p class="final-score"></p>
+          <p class="new-best-note"></p>
+          <div class="lower">
+            <button type="button" class="start-button">Start</button>
+            <button type="button" class="resume-button">Resume</button>
+            <button type="button" class="retry-button">Try again</button>
+            <button type="button" class="share-button">Share</button>
+            <button type="button" class="leaderboard-button-overlay" hidden>Leaderboard</button>
+          </div>
+        </div>
+      </div>
+
+      <p class="game-explanation">
+        <strong class="important">How to play:</strong> Tap the left or right half of the board (or press ← →) to turn the hexagon. Blocks stick to whichever side faces them. Three or more touching blocks of one colour clear, and back-to-back clears multiply the score. Let any side stack too high and the run ends.
+      </p>
+    </div>
+
+    <script src="./js/input_manager.js?v=__BUILD_ID__"></script>
+    <script src="./js/storage_manager.js?v=__BUILD_ID__"></script>
+    <script src="./js/sound_manager.js?v=__BUILD_ID__"></script>
+    <script src="./js/game.js?v=__BUILD_ID__"></script>
+    <script src="./js/renderer.js?v=__BUILD_ID__"></script>
+    <script src="./js/application.js?v=__BUILD_ID__"></script>
+    <script src="./js/leaderboard.js?v=__BUILD_ID__"></script>
+  </body>
+</html>
