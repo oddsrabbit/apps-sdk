@@ -1,6 +1,22 @@
 import { OddsRabbitSDK, type OddsRabbitGlobal } from './sdk';
 
-export type { OddsRabbitGlobal } from './sdk';
+export type {
+  OddsRabbitGlobal,
+  MatchCreatePayload,
+  MatchJoinPayload,
+  MatchListPayload,
+  MatchMovePayload,
+  MatchWatchOptions,
+  MatchView,
+  MatchSummary,
+  MatchPlayer,
+  MatchLastMove,
+  MatchStatus,
+  MatchPlayerStatus,
+  MatchListFilter,
+  InvitablePlayer,
+} from './sdk';
+export { MATCH_ERROR_CODES } from './sdk';
 export type {
   BridgeUser,
   AppColorScheme,

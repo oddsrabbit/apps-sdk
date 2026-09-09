@@ -7,6 +7,13 @@ import {
   SeasonEntrySchema,
   RoundRankSchema,
   SeasonRankSchema,
+  MatchViewSchema,
+  MatchSummarySchema,
+  InvitablePlayerSchema,
+  type MatchView,
+  type MatchSummary,
+  type MatchListFilter,
+  type InvitablePlayer,
   type SeasonBoard,
   type SeasonEntry,
   type SeasonMetric,
@@ -34,7 +41,60 @@ export type {
   SeasonMetric,
   RoundRank,
   SeasonRank,
+  MatchView,
+  MatchSummary,
+  MatchPlayer,
+  MatchLastMove,
+  MatchStatus,
+  MatchPlayerStatus,
+  MatchListFilter,
+  InvitablePlayer,
 } from '../schemas/messages';
+
+export { MATCH_ERROR_CODES } from '../schemas/messages';
+
+export interface MatchCreatePayload {
+  /** Rules-class id, e.g. `'connect4'`. Must be one the server knows for this app. */
+  game: string;
+  /** 2..4. */
+  maxPlayers: number;
+  /**
+   * Player UUIDs to invite. Each must be connected to the creator on the
+   * follow graph in either direction, or the whole create rejects with
+   * `match/not-connected`. At most `maxPlayers - 1`.
+   */
+  invitees?: string[];
+  /** Mint a join code for any seats invitees do not fill. */
+  open?: boolean;
+}
+
+export type MatchJoinPayload = { matchUuid: string } | { joinCode: string };
+
+export interface MatchListPayload {
+  /** `'active'` (default) is lobby + active; `'all'` adds finished and abandoned. */
+  status?: MatchListFilter;
+  /** Max rows, clamped server-side to 1..100 (default 20). */
+  limit?: number;
+}
+
+export interface MatchMovePayload {
+  matchUuid: string;
+  /** The `version` of the view this move was decided on. */
+  version: number;
+  /** Game-specific action, e.g. `{ col: 3 }`. Never a board. Capped at 2 KB. */
+  move: Record<string, unknown>;
+}
+
+export interface MatchWatchOptions {
+  /** Poll interval while the page is visible. Default 5000 ms, floor 1000. */
+  intervalMs?: number;
+  /**
+   * Called when a poll rejects. Polling continues — a transient failure on
+   * one tick is not a reason to stop watching — unless the host reports the
+   * verb unsupported, in which case the watch stops on its own.
+   */
+  onError?: (error: unknown) => void;
+}
 
 export interface RankPayload {
   roundKey: string;
@@ -111,6 +171,8 @@ const LEGACY_CAPABILITIES: readonly string[] = [
   'actions.requestSignIn',
   'session.refresh',
   'ready',
+  // `matches.*` are deliberately absent: no pre-handshake host has them, and
+  // this list is a historical snapshot, not a mirror of the schema.
 ];
 
 /**
@@ -127,6 +189,11 @@ const LEGACY_CAPABILITIES: readonly string[] = [
  * a verb the host does implement) must stay out: it's the caller's bug and the
  * next call can succeed. Caching it would mean one non-integer score retires
  * `scores.submit` for the session, silently ending score recording.
+ *
+ * The same goes for every `match/*` code (`MATCH_ERROR_CODES`): a rejected
+ * move, a stale version, a full table are outcomes of one call in a working
+ * match system, and caching any of them would end multiplayer for the session
+ * on the first illegal move.
  */
 const UNSUPPORTED_CODES = [
   'bridge/unknown-action',
@@ -163,6 +230,14 @@ function parseRows<T>(
 // unknown message type — the transport has no global timeout), resolve null so
 // the app can fall back to bundled content instead of hanging.
 const CONTENT_DAILY_TIMEOUT_MS = 4000;
+
+/** Default `matches.watch` poll interval. Turn-based; nobody is waiting on a frame. */
+const MATCH_WATCH_INTERVAL_MS = 5000;
+
+/** True only when there is a document and it is hidden. Node (tests) has neither. */
+function documentHidden(): boolean {
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+}
 
 export interface OddsRabbitGlobal {
   readonly user: BridgeUser | null;
@@ -294,6 +369,74 @@ export interface OddsRabbitGlobal {
      * before use.
      */
     daily(payload: { roundKey: string }): Promise<DailyContent | null>;
+  };
+
+  /**
+   * Async turn-based multiplayer. See docs/proposals/multiplayer-matches.md.
+   *
+   * Every verb is authenticated and every read is PER-VIEWER: the server
+   * filters `view` to what the requesting seat may see, so a game reads
+   * `view`, never raw state, and a client can never hold an opponent's rack.
+   * Moves are actions applied server-side, never boards.
+   *
+   * Gate the whole multiplayer entry point on
+   * `capabilities.has('matches.get')` and render nothing without it: the
+   * mobile host ships these behind App Store review, and a button that always
+   * fails is worse than no button.
+   *
+   * Writes and single-match reads REJECT on failure with a `match/*` code
+   * (`MATCH_ERROR_CODES`) — a game has to know a move did not land. Only
+   * `list` degrades, to `[]`, since an empty list is what an unsupported host
+   * or a signed-out viewer should see.
+   */
+  readonly matches: {
+    /**
+     * Start a match. Resolves the new match's view: `lobby` while seats are
+     * empty, or straight to `active` when invitees fill the table and the game
+     * needs no accept step. The creator always holds seat 0.
+     */
+    create(payload: MatchCreatePayload): Promise<MatchView>;
+    /** Take a seat, by invitation (`matchUuid`) or by join code. */
+    join(payload: MatchJoinPayload): Promise<MatchView>;
+    /**
+     * The viewer's matches, newest activity first. `[]` when signed out (no
+     * round trip) or on a host without the verb. One malformed match drops
+     * itself rather than the list.
+     */
+    list(payload?: MatchListPayload): Promise<MatchSummary[]>;
+    /** One match, filtered for this viewer. Rejects `match/not-found` for non-participants. */
+    get(payload: { matchUuid: string }): Promise<MatchView>;
+    /**
+     * Play a move. Rejects with `match/version-conflict` when `version` is
+     * stale (refetch, re-render, let the player decide again),
+     * `match/not-your-turn`, or `match/illegal-move` (the message says why).
+     * Resolves the post-move view, already advanced to the next seat.
+     */
+    move(payload: MatchMovePayload): Promise<MatchView>;
+    /** Leave the match. Ends a 2-player match; a larger table plays on without you. */
+    resign(payload: { matchUuid: string }): Promise<MatchView>;
+    /**
+     * People the viewer may invite — connected on the follow graph in either
+     * direction, which is exactly the set `create` accepts. `[]` when signed
+     * out or on a host without the verb; one malformed row drops itself.
+     */
+    invitable(payload?: { limit?: number }): Promise<InvitablePlayer[]>;
+    /**
+     * Poll one match while the page is visible and the match is unfinished,
+     * calling `onChange` with each view whose `version` moved (the first poll
+     * always fires). Pauses on `lifecycle` pause and while the document is
+     * hidden, resumes on the way back, and stops itself once the match is
+     * `finished` or `abandoned` — after delivering that final view. Returns a
+     * stop function.
+     *
+     * Turn-based play needs nothing faster than this, and it needs no host
+     * work — which is the whole reason the platform has no socket channel.
+     */
+    watch(
+      matchUuid: string,
+      onChange: (view: MatchView) => void,
+      options?: MatchWatchOptions
+    ): () => void;
   };
 
   readonly actions: {
@@ -548,6 +691,143 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
         setTimeout(() => resolve(null), CONTENT_DAILY_TIMEOUT_MS);
       });
       return Promise.race([fetched, timeout]);
+    },
+  };
+
+  /**
+   * Every single-match verb answers with a view. A malformed one REJECTS
+   * rather than resolving something partial: a game cannot render half a
+   * match, and a silent null here would read as "match gone" to the player
+   * while the server thinks it is their move.
+   */
+  private requestMatchView(
+    type: BridgeRequest['type'],
+    payload: unknown
+  ): Promise<MatchView> {
+    return this.request<unknown>(type, payload).then((result): MatchView => {
+      const parsed = MatchViewSchema.safeParse(result);
+      if (!parsed.success) throw new Error(`${type}: malformed match view`);
+      return parsed.data;
+    });
+  }
+
+  readonly matches = {
+    create: (payload: MatchCreatePayload): Promise<MatchView> =>
+      this.requestMatchView('matches.create', payload),
+    join: (payload: MatchJoinPayload): Promise<MatchView> =>
+      this.requestMatchView('matches.join', payload),
+    // Authenticated, so a signed-out viewer is answered here rather than by a
+    // round trip that can only 401 — same as the rank reads.
+    list: (payload: MatchListPayload = {}): Promise<MatchSummary[]> => {
+      if (!this.user) return Promise.resolve([]);
+      return this.requestRows<MatchSummary>('matches.list', payload, MatchSummarySchema);
+    },
+    get: (payload: { matchUuid: string }): Promise<MatchView> =>
+      this.requestMatchView('matches.get', payload),
+    move: (payload: MatchMovePayload): Promise<MatchView> =>
+      this.requestMatchView('matches.move', payload),
+    resign: (payload: { matchUuid: string }): Promise<MatchView> =>
+      this.requestMatchView('matches.resign', payload),
+    invitable: (payload: { limit?: number } = {}): Promise<InvitablePlayer[]> => {
+      if (!this.user) return Promise.resolve([]);
+      return this.requestRows<InvitablePlayer>('matches.invitable', payload, InvitablePlayerSchema);
+    },
+    watch: (
+      matchUuid: string,
+      onChange: (view: MatchView) => void,
+      options: MatchWatchOptions = {}
+    ): (() => void) => {
+      const intervalMs = Math.max(1000, options.intervalMs ?? MATCH_WATCH_INTERVAL_MS);
+      let stopped = false;
+      let paused = false;
+      let inFlight = false;
+      let lastVersion: number | null = null;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+
+      const clearTimer = (): void => {
+        if (timer !== null) clearTimeout(timer);
+        timer = null;
+      };
+
+      const schedule = (): void => {
+        clearTimer();
+        if (stopped || paused) return;
+        timer = setTimeout(tick, intervalMs);
+      };
+
+      const tick = (): void => {
+        if (stopped || paused || inFlight) return;
+        inFlight = true;
+        this.matches
+          .get({ matchUuid })
+          .then((view) => {
+            if (stopped) return;
+            if (view.version !== lastVersion) {
+              lastVersion = view.version;
+              onChange(view);
+            }
+            // Deliver the terminal view, then let go: nothing about a finished
+            // match changes, and a poll that never ends is a battery drain the
+            // player cannot see.
+            if (view.status === 'finished' || view.status === 'abandoned') {
+              stop();
+            }
+          })
+          .catch((error: unknown) => {
+            if (stopped) return;
+            if (isUnsupportedError(error)) {
+              stop();
+              return;
+            }
+            options.onError?.(error);
+          })
+          .then(() => {
+            inFlight = false;
+            schedule();
+          });
+      };
+
+      const pause = (): void => {
+        paused = true;
+        clearTimer();
+      };
+      const resume = (): void => {
+        if (!paused) return;
+        paused = false;
+        // Poll straight away on return: the interesting change (the opponent
+        // moved) almost certainly happened while we were away.
+        tick();
+      };
+
+      // Two independent pause signals: the host's lifecycle (mobile WebView
+      // backgrounded) and the document's own visibility (web tab hidden).
+      // Either one pauses; both must clear before polling resumes.
+      const offPause = this.transport.onLifecycle('pause', pause);
+      const offResume = this.transport.onLifecycle('resume', () => {
+        if (!documentHidden()) resume();
+      });
+      const onVisibility = (): void => {
+        if (documentHidden()) pause();
+        else resume();
+      };
+      if (typeof document !== 'undefined') {
+        document.addEventListener('visibilitychange', onVisibility);
+      }
+
+      const stop = (): void => {
+        if (stopped) return;
+        stopped = true;
+        clearTimer();
+        offPause();
+        offResume();
+        if (typeof document !== 'undefined') {
+          document.removeEventListener('visibilitychange', onVisibility);
+        }
+      };
+
+      if (documentHidden()) paused = true;
+      else tick();
+      return stop;
     },
   };
 

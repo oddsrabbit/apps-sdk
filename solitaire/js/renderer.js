@@ -37,24 +37,146 @@
   var CH = CARD_H * SCALE;       // 180 — on-board card height
 
   // Board geometry, in on-board (post-scale) pixels.
+  //
+  // The HORIZONTAL half is fixed. Seven tableau columns side by side is what
+  // Klondike is, so the card width is always the viewport's width divided by
+  // seven — no layout can make a card wider on a phone. INTERNAL_W therefore
+  // never moves, and neither does anything derived from it (COL_X, MARGIN,
+  // the atlas scale). This is also what keeps the pixel art crisp: one
+  // authored pixel is always SCALE internal pixels.
+  //
+  // The VERTICAL half is ELASTIC. The board is nearly square (998 x 1036) and
+  // a phone is not, so a fixed aspect ratio strands a third of a portrait
+  // screen as empty felt while the tableau columns stay crammed at their
+  // minimum peek. `Renderer.prototype.resize` fits by width and then spends
+  // whatever height the viewport has left on the vertical offsets, via
+  // applyLayout() below. Everything under `--- Elastic vertical layout ---`
+  // is a live value, not a constant: read it, never cache it.
   var COL_GAP = 12;
   var MARGIN = 22;
-  var TOP_ROW_Y = 40;
-  // Below the top row (TOP_ROW_Y + CH = 220), with room for the stock's
-  // pile-depth badge, which prints just under it and is 5 * SCALE tall. At
-  // SCALE 2 the top row ended at 200 and 220 was clear; at SCALE 3 the row
-  // reaches 220 on its own and the badge would print under the tableau.
-  var TABLEAU_Y = 250;
-  var FACE_DOWN_OFFSET = 5 * SCALE;   // 15 — a face-down peek shows 5 authored px
+  var INTERNAL_W = 2 * MARGIN + 7 * CW + 6 * COL_GAP;   // 998
+
+  // --- Elastic vertical layout ---
+
+  // Floors. These are exactly the values the board shipped with when the
+  // layout was fixed, so the tightest possible screen still gets the old
+  // board rather than something worse.
+  var MIN_TOP_ROW_Y = 40;
+  // Gap between the bottom of the top row and the tableau, sized for the
+  // stock's pile-depth badge, which prints just under the stock and is
+  // 5 * SCALE tall. At SCALE 2 the top row ended at 200 and 220 was clear;
+  // at SCALE 3 the row reaches 220 on its own, so the badge needs this.
+  var MIN_BADGE_ROOM = 30;
+  var MIN_FACE_DOWN_OFFSET = 5 * SCALE;   // 15 — a face-down peek shows 5 authored px
   // 14 authored px. The atlas rank glyph occupies authored rows 5–12, so this
   // clears it with a row to spare — a face-up peek strip always shows the
   // whole rank, which is the entire point of the deck swap.
-  var FACE_UP_OFFSET = 14 * SCALE;    // 42
-  var INTERNAL_W = 2 * MARGIN + 7 * CW + 6 * COL_GAP;   // 998
-  // Tallest legal tableau column is 6 face-down + a 13-card K→A run, so the
-  // deepest card starts at 6 down-offsets + 12 up-offsets. Plus a card and a
-  // little breathing room under it.
-  var INTERNAL_H = TABLEAU_Y + 6 * FACE_DOWN_OFFSET + 12 * FACE_UP_OFFSET + CH + 4 * SCALE;  // 1036
+  var MIN_FACE_UP_OFFSET = 14 * SCALE;    // 42
+
+  // Ceilings, in authored pixels so they read against the art rather than
+  // against the board.
+  //
+  // A face-up peek can usefully grow to 26 authored px: rank, the pip beside
+  // it and a band of the face below, which is as much as a stacked card ever
+  // needs to show. Past that the column just gets long and the player scrolls
+  // their eyes instead of reading. A face-down peek stays much smaller — it
+  // carries no information at all, it only has to look like depth.
+  var MAX_FACE_UP_OFFSET = 26 * SCALE;    // 78
+  var MAX_FACE_DOWN_OFFSET = 8 * SCALE;   // 24
+  var MAX_BADGE_ROOM = 90;
+
+  // Height of everything below TOP_ROW_Y at the tightest layout: the top row
+  // itself, the badge gap, the deepest legal tableau column (6 face-down plus
+  // a 13-card K→A run, so 6 down-offsets and 12 up-offsets before the last
+  // card), and a little breathing room under it. resize() solves for the
+  // scale that makes this fit, so it is the one number the fit depends on.
+  var BOARD_MIN_H = CH + MIN_BADGE_ROOM +
+                    6 * MIN_FACE_DOWN_OFFSET + 12 * MIN_FACE_UP_OFFSET +
+                    CH + 4 * SCALE;                     // 996
+  var MIN_INTERNAL_H = MIN_TOP_ROW_Y + BOARD_MIN_H;     // 1036 — the old fixed height
+
+  // Live values. applyLayout() rewrites all five on every resize; they start
+  // at the floors so a draw that somehow lands before the first resize gets
+  // the old board instead of a divide-by-zero.
+  var TOP_ROW_Y = MIN_TOP_ROW_Y;
+  var TABLEAU_Y = MIN_TOP_ROW_Y + CH + MIN_BADGE_ROOM;  // 250
+  var FACE_DOWN_OFFSET = MIN_FACE_DOWN_OFFSET;
+  var FACE_UP_OFFSET = MIN_FACE_UP_OFFSET;
+  var INTERNAL_H = MIN_INTERNAL_H;
+
+  // CSS pixels reserved at the top of the board for the floating HUD (the
+  // undo / new-deal / sound controls and the moves + time chips). The band is
+  // inside the canvas rather than a bar above it, so the felt runs edge to
+  // edge and the controls sit on it — but it has to be reserved in the fit,
+  // or on a short window the chips land on the foundations. 8px of padding,
+  // a 36px control, 10px of clearance.
+  var HUD_BAND_CSS = 54;
+
+  // Every vertical offset must stay a multiple of SCALE. The peek strips
+  // slice the card sprite, and a slice that lands mid-authored-pixel shears
+  // the art differently on each card in a column.
+  function quantizeUp(v) { return Math.ceil(v / SCALE) * SCALE; }
+  function quantizeDown(v) { return Math.floor(v / SCALE) * SCALE; }
+
+  // Spend `h - topRowY - BOARD_MIN_H` of spare internal height on the
+  // vertical offsets, in priority order, and publish the result.
+  //
+  // The face-up peek goes first and takes as much as it can: it is the only
+  // one of these that changes what the player can read off a stacked column,
+  // which is the whole reason the layout flexes. Face-down depth is next but
+  // capped low — six hidden cards eat 6px of the budget per step and tell the
+  // player nothing. The badge gap takes a share of what is left so the top
+  // row doesn't sit flush against the tableau, and everything still spare
+  // stays as felt under the bottom of the board, which is where the Finish
+  // button and the dead-end banner float.
+  function applyLayout(h, topRowY) {
+    TOP_ROW_Y = topRowY;
+    INTERNAL_H = h;
+    var spare = Math.max(0, h - topRowY - BOARD_MIN_H);
+
+    var upRoom = (MAX_FACE_UP_OFFSET - MIN_FACE_UP_OFFSET) / SCALE;
+    var upSteps = Math.max(0, Math.min(Math.floor(spare / (12 * SCALE)), upRoom));
+    FACE_UP_OFFSET = MIN_FACE_UP_OFFSET + upSteps * SCALE;
+    spare -= 12 * upSteps * SCALE;
+
+    var downRoom = (MAX_FACE_DOWN_OFFSET - MIN_FACE_DOWN_OFFSET) / SCALE;
+    var downSteps = Math.max(0, Math.min(Math.floor(spare / (6 * SCALE)), downRoom));
+    FACE_DOWN_OFFSET = MIN_FACE_DOWN_OFFSET + downSteps * SCALE;
+    spare -= 6 * downSteps * SCALE;
+
+    var badgeRoom = MIN_BADGE_ROOM +
+      Math.min(quantizeDown(spare * 0.4), MAX_BADGE_ROOM - MIN_BADGE_ROOM);
+    TABLEAU_Y = TOP_ROW_Y + CH + badgeRoom;
+
+    // Keep the published layout object in step. It is handed out live (see
+    // Renderer.prototype.layout) rather than rebuilt, so callers holding a
+    // reference from boot still read today's numbers.
+    LAYOUT.INTERNAL_H = INTERNAL_H;
+    LAYOUT.TOP_ROW_Y = TOP_ROW_Y;
+    LAYOUT.TABLEAU_Y = TABLEAU_Y;
+    LAYOUT.FACE_UP_OFFSET = FACE_UP_OFFSET;
+    LAYOUT.FACE_DOWN_OFFSET = FACE_DOWN_OFFSET;
+  }
+
+  // env(safe-area-inset-top) is only readable from CSS, and resize() needs it
+  // as a number: on a notched phone the HUD band has to clear the inset as
+  // well as its own height, or the time chip lands under the status bar.
+  // A zero-sized probe carrying the inset as padding is the cheapest way to
+  // get the resolved value; it is created once and read per resize.
+  var safeProbe = null;
+  function safeAreaTop() {
+    if (!safeProbe) {
+      if (!document.body) return 0;
+      safeProbe = document.createElement("div");
+      safeProbe.setAttribute("aria-hidden", "true");
+      safeProbe.style.cssText =
+        "position:fixed;top:0;left:0;width:0;height:0;visibility:hidden;" +
+        "pointer-events:none;padding-top:env(safe-area-inset-top,0px);";
+      document.body.appendChild(safeProbe);
+    }
+    var v = parseFloat(window.getComputedStyle(safeProbe).paddingTop);
+    return v > 0 ? v : 0;
+  }
 
   // 7 column x-positions reused by top row (stock/waste/foundations) and
   // tableau columns. Stock at col 0, waste at col 1, foundations at cols
@@ -254,6 +376,23 @@
     canvas.width = INTERNAL_W;
     canvas.height = INTERNAL_H;
 
+    // The renderer owns the canvas's CSS size as well as its buffer: the
+    // board is the page, so there is no column for CSS to fit it into.
+    // No redraw is scheduled here — solitaire repaints on demand rather than
+    // on a frame loop, so application.js re-renders after a resize.
+    var self = this;
+    this._onResize = function () {
+      self.resize();
+      // Resizing the buffer clears it, and there is no frame loop to repaint
+      // on the next tick — solitaire draws on demand.
+      if (self._lastBoard) self.draw(self._lastBoard, self._lastDrag, null);
+      else self.drawEmptyTable();
+    };
+    window.addEventListener("resize", this._onResize);
+    // iOS fires this before `resize` has the new dimensions on some versions,
+    // and Android WebViews sometimes fire only this one.
+    window.addEventListener("orientationchange", this._onResize);
+
     // Sprite cache.
     this._cardSprites = new Array(Deck.DECK_SIZE);
     for (var i = 0; i < Deck.DECK_SIZE; i++) {
@@ -266,7 +405,106 @@
     // Frame state (set per draw call).
     this._lastBoard = null;
     this._lastDrag = null;
+
+    // Sizes the buffer and the element, and spends the height budget. Must
+    // run before the first draw: the width/height attributes in index.html
+    // are only what the browser lays out with before the scripts run.
+    this.resize();
   }
+
+  // Size the buffer and the element to the viewport, and re-spend the height
+  // budget on the vertical offsets. Safe to call as often as you like — it is
+  // pure arithmetic plus two style writes, and it skips the buffer assignment
+  // (which clears the canvas and resets the 2D context) when the height is
+  // unchanged.
+  //
+  // THE FIT. Card width is bound by seven columns across, so the natural move
+  // is to fit by width and let the height fall where it may. That works on a
+  // phone and fails on anything short: the board would run off the bottom.
+  // The board must therefore satisfy, all in CSS pixels,
+  //
+  //     hudCss + scale * BOARD_MIN_H  <=  vh
+  //
+  // — the reserved HUD band plus the tightest legal board has to fit the
+  // viewport — which rearranges to a plain upper bound on `scale`, so there
+  // is no iteration here despite the HUD band being specified in CSS pixels
+  // and consumed in internal ones. The `+ SCALE` in that denominator is slack
+  // for quantising TOP_ROW_Y up to the art grid below; without it a window
+  // that fits to the pixel comes out one quantum short. The third term covers
+  // the case where MIN_TOP_ROW_Y is taller than the HUD band needs (a big
+  // desktop window), where the binding constraint is the old fixed height.
+  Renderer.prototype.resize = function () {
+    var vw = Math.max(1, window.innerWidth || INTERNAL_W);
+    var vh = Math.max(1, window.innerHeight || MIN_INTERNAL_H);
+    var hudCss = HUD_BAND_CSS + safeAreaTop();
+
+    var scale = Math.min(
+      vw / INTERNAL_W,
+      (vh - hudCss) / (BOARD_MIN_H + SCALE),
+      vh / MIN_INTERNAL_H
+    );
+    // A viewport shorter than the HUD band itself is not a real device, but
+    // it must not produce a zero or negative scale.
+    if (!(scale > 0)) scale = vh / MIN_INTERNAL_H;
+
+    // Crisp-scale snapping. Nearest-neighbour renders art pixels in
+    // alternating widths — a subtle wobble in the 1px card borders — unless
+    // the upscale lands on a whole number of device pixels per art pixel. One
+    // art pixel is SCALE internal px, so the board is wobble-free when
+    // (cssWidth x dpr) is a multiple of INTERNAL_W / SCALE. Snap down to that
+    // when it costs less than 8% of the width; past that, keep the wobble —
+    // a narrow phone at 3x would otherwise give up ~15% of the board. What
+    // the snap gives up is invisible either way now that the page background
+    // is the same felt as the board.
+    var dpr = window.devicePixelRatio || 1;
+    var cssW = INTERNAL_W * scale;
+    var step = (INTERNAL_W / SCALE) / dpr;
+    var snapped = Math.floor(cssW / step) * step;
+    if (snapped > 0 && cssW - snapped <= cssW * 0.08) {
+      cssW = snapped;
+      scale = cssW / INTERNAL_W;
+    }
+
+    // The canvas covers the viewport's full height; the fit above guarantees
+    // the board fits inside it, and any surplus is felt below the tableau.
+    var h = Math.max(MIN_INTERNAL_H, Math.round(vh / scale));
+    var topRowY = Math.max(MIN_TOP_ROW_Y, quantizeUp(hudCss / scale));
+    // Only reachable if the quantise slack above was not enough (a fractional
+    // devicePixelRatio, say). Losing a pixel or two of HUD clearance beats
+    // pushing the last tableau card off the bottom of the board.
+    if (topRowY + BOARD_MIN_H > h) {
+      topRowY = Math.max(MIN_TOP_ROW_Y, quantizeDown(h - BOARD_MIN_H));
+    }
+    applyLayout(h, topRowY);
+
+    if (this.canvas.height !== h) {
+      // Assigning the buffer size clears the canvas and resets the 2D context
+      // state, so this is guarded and the nearest-neighbour flag is re-applied
+      // after it.
+      this.canvas.height = h;
+      this.ctx.imageSmoothingEnabled = false;
+    }
+    cssW = Math.round(cssW);
+    var cssH = Math.round(h * scale);
+    this.canvas.style.width = cssW + "px";
+    this.canvas.style.height = cssH + "px";
+
+    // Publish the board's size to CSS. The overlay's type and the HUD have to
+    // scale with the BOARD, and on a wide window the board is only part of the
+    // viewport — `vw` would size them against the letterbox as well. styles.css
+    // reads these with viewport fallbacks for the paint before the first call.
+    var root = document.documentElement;
+    root.style.setProperty("--stage-w", cssW + "px");
+    root.style.setProperty("--stage-h", cssH + "px");
+  };
+
+  // Drop the resize listeners. Nothing in the app tears a renderer down today
+  // — it is constructed once at boot and lives as long as the page — but the
+  // constructor registers on `window`, so the undo is worth having next to it.
+  Renderer.prototype.destroy = function () {
+    window.removeEventListener("resize", this._onResize);
+    window.removeEventListener("orientationchange", this._onResize);
+  };
 
   // Fetch and decode the card atlas. Resolves with the image; the caller
   // passes it straight to the constructor. Rejecting here (rather than
@@ -275,11 +513,14 @@
   Renderer.load = loadAtlas;
 
   Renderer.INTERNAL_W = INTERNAL_W;
-  Renderer.INTERNAL_H = INTERNAL_H;
+  // The FLOOR, not the current height — the buffer is as tall as the viewport
+  // (see resize). Named so nothing reads it as "the board is this tall".
+  Renderer.MIN_INTERNAL_H = MIN_INTERNAL_H;
   Renderer.CARD_W = CW;
   Renderer.CARD_H = CH;
-  // Exported so application.js can size its device-pixel snap to the art
-  // grid: one authored pixel is SCALE internal pixels.
+  // Exported so the crisp-scale snap in resize() and anything else that has to
+  // land on the art grid can size itself: one authored pixel is SCALE
+  // internal pixels.
   Renderer.SCALE = SCALE;
   // Exported so application.js paints the same felt on the pre-deal canvas
   // (it previously hardcoded a stale dark-wood hex that didn't match).
@@ -317,6 +558,26 @@
     // Drag preview last so it sits on top of everything.
     if (dragState && dragState.cards && dragState.cards.length) {
       this._drawDragPreview(dragState);
+    }
+  };
+
+  // The table before a deal: felt plus the slot ghosts, no cards. The idle
+  // overlay is translucent, and what shows through it is the difference
+  // between a card table waiting for a deal and a blank green screen — which
+  // is what a flat felt fill became once the board went full-bleed and the
+  // page had nothing else on it.
+  Renderer.prototype.drawEmptyTable = function () {
+    var ctx = this.ctx;
+    this._lastBoard = null;
+    this._lastDrag = null;
+    ctx.fillStyle = COL_FELT;
+    ctx.fillRect(0, 0, INTERNAL_W, INTERNAL_H);
+    ctx.drawImage(this._emptyStock, STOCK_X, TOP_ROW_Y);
+    for (var i = 0; i < 4; i++) {
+      ctx.drawImage(this._emptyFoundation, FOUNDATION_X[i], TOP_ROW_Y);
+    }
+    for (var col = 0; col < 7; col++) {
+      ctx.drawImage(this._emptyFoundation, COL_X[col], TABLEAU_Y);
     }
   };
 
@@ -563,7 +824,10 @@
     return { x: 0, y: 0 };
   };
 
-  Renderer.prototype.layout = {
+  // Live, not a snapshot: applyLayout() writes the elastic fields back into
+  // this same object on every resize, so a caller may hold the reference.
+  // INTERNAL_W and the card/column geometry are fixed and never rewritten.
+  var LAYOUT = {
     INTERNAL_W: INTERNAL_W,
     INTERNAL_H: INTERNAL_H,
     CARD_W: CW,
@@ -577,6 +841,7 @@
     WASTE_X: WASTE_X,
     FOUNDATION_X: FOUNDATION_X,
   };
+  Renderer.prototype.layout = LAYOUT;
 
   window.SolitaireRenderer = Renderer;
 })();

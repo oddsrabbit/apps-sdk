@@ -108,20 +108,9 @@ const GAME_MATCH3_JS = [
   'leaderboard.js',
 ];
 
-// Hex Rush. Original hexagonal block-stacker. Same drop-in pattern as the
-// other vanilla games; sound_manager loads before game.js because the game
-// constructs one.
-const GAME_HEX_JS = [
-  'input_manager.js',
-  'storage_manager.js',
-  'sound_manager.js',
-  'game.js',
-  'renderer.js',
-  'application.js',
-  'leaderboard.js',
-];
-
-// Hop. Original one-button side-scroller. Same file set as Hex Rush.
+// Flappy Rabbits (slug `flappy-rabbits`; developed as `hop`, which the identifiers keep).
+// Original one-button side-scroller. Same drop-in pattern as the other vanilla
+// games; sound_manager loads before game.js because the game constructs one.
 const GAME_HOP_JS = [
   'input_manager.js',
   'storage_manager.js',
@@ -145,6 +134,11 @@ const GAME_SOLITAIRE_JS = [
   'application.js',
 ];
 
+// Rabbit Word Battle. Async multiplayer word game on the matches surface
+// (docs/proposals/multiplayer-matches.md). Same vanilla drop-in pattern; no
+// assets, the board is canvas geometry and the rack is DOM.
+const GAME_WORD_BATTLE_JS = ['rules.js', 'board.js', 'application.js'];
+
 await rm('dist', { recursive: true, force: true });
 await mkdir('dist/host', { recursive: true });
 await mkdir('dist/rabbit-words', { recursive: true });
@@ -158,10 +152,9 @@ await mkdir('dist/solitaire/js', { recursive: true });
 await mkdir('dist/solitaire/fonts', { recursive: true });
 await mkdir('dist/solitaire/images', { recursive: true });
 await mkdir('dist/liquid/js', { recursive: true });
-await mkdir('dist/hex/js', { recursive: true });
-await mkdir('dist/hex/fonts', { recursive: true });
-await mkdir('dist/hop/js', { recursive: true });
-await mkdir('dist/hop/fonts', { recursive: true });
+await mkdir('dist/flappy-rabbits/js', { recursive: true });
+await mkdir('dist/flappy-rabbits/fonts', { recursive: true });
+await mkdir('dist/rabbit-word-battle/js', { recursive: true });
 
 const baseOpts = {
   bundle: true,
@@ -323,27 +316,25 @@ async function copyHostAssets() {
     // but the provenance of redistributed art belongs in the bundle.
     copyFile('solitaire/images/cards.png', 'dist/solitaire/images/cards.png'),
     copyFile('solitaire/images/KENNEY-LICENSE.txt', 'dist/solitaire/images/KENNEY-LICENSE.txt'),
-    // Hex Rush — original hexagonal block-stacker. Reuses snake's Press Start 2P
-    // for its chrome; the OFL.txt ships alongside so the redistributed font
-    // carries its license. No image assets: the board is drawn as canvas
-    // geometry (js/renderer.js), so the whole game is HTML + CSS + JS.
-    copyHtmlWithBuildId('hex/index.html', 'dist/hex/index.html'),
-    copyFile('hex/styles.css', 'dist/hex/styles.css'),
-    ...GAME_HEX_JS.map((name) =>
-      copyFile(`hex/js/${name}`, `dist/hex/js/${name}`)
-    ),
-    copyFile('snake/fonts/press-start-2p-latin.woff2', 'dist/hex/fonts/press-start-2p-latin.woff2'),
-    copyFile('snake/fonts/OFL.txt', 'dist/hex/fonts/OFL.txt'),
-    // Hop — original one-button side-scroller. Same pattern. Also asset-free:
-    // every sprite is drawn as integer rects at a fixed 320x480 internal
-    // resolution (js/renderer.js).
-    copyHtmlWithBuildId('hop/index.html', 'dist/hop/index.html'),
-    copyFile('hop/styles.css', 'dist/hop/styles.css'),
+    // Flappy Rabbits — original one-button side-scroller. Reuses snake's Press
+    // Start 2P for its chrome; the OFL.txt ships alongside so the redistributed
+    // font carries its license. Asset-free otherwise: every sprite is drawn as
+    // integer rects at a fixed 320px internal width, and the buffer's HEIGHT is
+    // set at runtime from the viewport, since the board is full-bleed
+    // (js/renderer.js).
+    copyHtmlWithBuildId('flappy-rabbits/index.html', 'dist/flappy-rabbits/index.html'),
+    copyFile('flappy-rabbits/styles.css', 'dist/flappy-rabbits/styles.css'),
     ...GAME_HOP_JS.map((name) =>
-      copyFile(`hop/js/${name}`, `dist/hop/js/${name}`)
+      copyFile(`flappy-rabbits/js/${name}`, `dist/flappy-rabbits/js/${name}`)
     ),
-    copyFile('snake/fonts/press-start-2p-latin.woff2', 'dist/hop/fonts/press-start-2p-latin.woff2'),
-    copyFile('snake/fonts/OFL.txt', 'dist/hop/fonts/OFL.txt'),
+    copyFile('snake/fonts/press-start-2p-latin.woff2', 'dist/flappy-rabbits/fonts/press-start-2p-latin.woff2'),
+    copyFile('snake/fonts/OFL.txt', 'dist/flappy-rabbits/fonts/OFL.txt'),
+    // Rabbit Word Battle — async multiplayer word game. System font, no assets.
+    copyHtmlWithBuildId('rabbit-word-battle/index.html', 'dist/rabbit-word-battle/index.html'),
+    copyFile('rabbit-word-battle/styles.css', 'dist/rabbit-word-battle/styles.css'),
+    ...GAME_WORD_BATTLE_JS.map((name) =>
+      copyFile(`rabbit-word-battle/js/${name}`, `dist/rabbit-word-battle/js/${name}`)
+    ),
     // Liquid — WebGL fluid simulation. Vendored vanilla JS, no bundling needed.
     copyHtmlWithBuildId('liquid/index.html', 'dist/liquid/index.html'),
     copyFile('liquid/js/script.js', 'dist/liquid/js/script.js'),

@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <title>Flappy Rabbits</title>
+    <!-- Shared leaderboard component. Stylesheet first so our own styles.css
+         keeps the last word; the script installs window.OddsRabbitUI, which
+         js/leaderboard.js reads. This game has no bundler, so both arrive as
+         plain tags rather than an import. -->
+    <link rel="stylesheet" href="../leaderboard-v1.css?v=__UI_VERSION__" />
+    <link rel="stylesheet" href="./styles.css?v=__BUILD_ID__" />
+    <script src="../sdk-v1.js?v=__SDK_VERSION__"></script>
+    <script src="../leaderboard-v1.js?v=__UI_VERSION__"></script>
+  </head>
+  <body>
+    <!-- FULL-BLEED BY DESIGN. There is no page chrome around the board: the
+         canvas is the screen, and every piece of UI is either drawn into the
+         scene or floated over it. The game's own text (title, how to play)
+         lives on the idle overlay, where it is read once and then gone,
+         instead of framing the board forever.
+
+         The stage shrink-wraps the canvas — js/renderer.js sets the canvas's
+         CSS size to fill the viewport — so the HUD and the overlay, which are
+         positioned against the stage, always land exactly over the picture and
+         never in the letterbox a wide desktop window leaves. -->
+    <div class="stage">
+      <!-- Fixed 320px internal WIDTH, upscaled by CSS with
+           `image-rendering: pixelated`. The height of the buffer is set at
+           runtime from the viewport (see HopRenderer.resize): the play field
+           is always the same 320x480 world the physics in js/game.js is
+           expressed in, and any spare screen height is drawn as extra sky
+           above it and extra earth below it. That keeps the game identical on
+           every device — a taller screen shows more scenery, never more
+           playable room. -->
+      <canvas class="game-canvas" width="320" height="480" aria-label="Flappy Rabbits game board"></canvas>
+
+      <!-- HUD. Floats over the sky, which is the emptiest part of the scene
+           and the one part no obstacle ever occupies (js/game.js keeps every
+           gap clear of the ceiling by GAP_MARGIN_TOP). `pointer-events: none`
+           on the bar, restored on the controls, so the dead space between them
+           still passes a tap through to the board as a hop. -->
+      <div class="hud">
+        <div class="hud-controls">
+          <!-- Pause needs its own control: every tap on the board is a hop, so
+               there is no spare tap gesture to overload. Hidden outside a live
+               run by application.js. -->
+          <button type="button" class="pause-button" aria-label="Pause" hidden>❚❚</button>
+          <button type="button" class="sound-toggle" aria-label="Mute sound" aria-pressed="false">🔊</button>
+        </div>
+        <div class="scores-container">
+          <div class="score-container" aria-label="Score 0">0</div>
+          <div class="best-container" aria-label="Best 0">0</div>
+        </div>
+      </div>
+
+      <div class="game-message" data-state="idle">
+        <h1 class="title">FLAPPY<br />RABBITS</h1>
+        <p class="game-message-text"></p>
+        <p class="final-score"></p>
+        <p class="new-best-note"></p>
+        <div class="lower">
+          <button type="button" class="start-button">Start</button>
+          <button type="button" class="resume-button">Resume</button>
+          <button type="button" class="restart-button">New Game</button>
+          <button type="button" class="retry-button">Try again</button>
+          <button type="button" class="share-button">Share</button>
+          <!-- Both leaderboard buttons start `hidden`; js/leaderboard.js reveals
+               them only once the host has said it can serve a global board. One
+               for the idle/paused overlay and one for game over, because the
+               two sit in different button rows. -->
+          <button type="button" class="leaderboard-button" hidden>Leaderboard</button>
+          <button type="button" class="leaderboard-button-overlay" hidden>Leaderboard</button>
+        </div>
+        <p class="game-explanation">
+          Tap or press space to hop. Every gap you clear scores a point. The gaps
+          narrow and the garden speeds up the further you get — touch a hedge or
+          the ground and the run ends.
+        </p>
+      </div>
+    </div>
+
+    <script src="./js/input_manager.js?v=__BUILD_ID__"></script>
+    <script src="./js/storage_manager.js?v=__BUILD_ID__"></script>
+    <script src="./js/sound_manager.js?v=__BUILD_ID__"></script>
+    <script src="./js/game.js?v=__BUILD_ID__"></script>
+    <script src="./js/renderer.js?v=__BUILD_ID__"></script>
+    <script src="./js/application.js?v=__BUILD_ID__"></script>
+    <script src="./js/leaderboard.js?v=__BUILD_ID__"></script>
+  </body>
+</html>

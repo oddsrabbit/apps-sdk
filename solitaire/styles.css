@@ -42,42 +42,47 @@
 html, body {
   margin: 0;
   padding: 0;
-  /* Body bg is transparent so the host shell shows through (chosen in the
-     redesign). Drag is locked to the canvas only (see .game-canvas) — that
-     lets the page scroll if the board pushes past the viewport on short
-     screens, which is the playability fix for the prior shrink-to-fit. */
-  background: transparent;
+  height: 100%;
+  /* The felt, not the host shell. The board is the page now, so the only
+     thing this colour is ever seen as is the letterbox js/renderer.js leaves
+     at the sides of a wide desktop window — and painting that in the felt the
+     canvas paints means the board reads as edge to edge at every size, which
+     also makes the crisp-scale snap (which can give up to 8% of the width
+     back) invisible rather than a pair of margins. */
+  background: var(--wood);
   color: var(--wood-darkest);
   font-family: "Press Start 2P", ui-monospace, "Menlo", "Consolas", monospace;
   font-size: 14px;
   -webkit-font-smoothing: none;
   font-smooth: never;
+  /* Nothing scrolls: the renderer fits the whole board into the viewport, so
+     a scroll port would only ever be somewhere to lose the board to. Removing
+     it is also what stops an Android WebView claiming a drag for scroll —
+     `overscroll-behavior` covers the pull-to-refresh the compositor owns.
+     `touch-action: none` stays on the canvas alone (see .game-canvas) so the
+     leaderboard list inside the overlay can still be flicked. */
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
-/* Flex column that GROWS past the viewport when needed (was a fixed 100dvh
-   that shrank the board into unreadable cards on short screens). The board
-   now sizes by width with an aspect-ratio, so a short viewport just means
-   the bottom tableau falls below the fold and the page scrolls to reach it. */
-.container {
-  /* Solitaire needs a wider footprint than the action games (snake/2048 use
-     520px): seven tableau columns side by side want real width or the cards
-     shrink to thumbnails. The board fills this, so the cards land ~90–100px
-     wide instead of ~56px. */
-  width: 760px;
-  max-width: calc(100vw - 24px);
-  margin: 0 auto;
-  min-height: 100vh;
-  min-height: 100dvh;
-  box-sizing: border-box;
-  padding: 10px 0 6px;
+body {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
-.heading,
-.above-game,
-.game-explanation {
-  flex: 0 0 auto;
+/* Shrink-wraps the canvas, and is therefore exactly the board's box. The HUD,
+   the Finish button, the dead-end banner and the overlay position against
+   THIS rather than against the viewport, so on a wide desktop window they
+   stay over the felt instead of drifting out into the letterbox.
+   `line-height: 0` keeps the inline canvas from adding a descender's worth of
+   height to the box. */
+.stage {
+  position: relative;
+  line-height: 0;
 }
 
 /* Dead-end nudge. Sits low over the felt, where a stuck board has empty
@@ -86,7 +91,7 @@ html, body {
    stuck), so the two can share the same bottom slot without collision. */
 .stuck-banner {
   position: absolute;
-  bottom: 24px;
+  bottom: calc(24px + env(safe-area-inset-bottom, 0px));
   left: 50%;
   transform: translateX(-50%);
   z-index: 60;
@@ -144,7 +149,7 @@ html, body {
 
 @media (max-width: 420px) {
   .stuck-banner {
-    bottom: 14px;
+    bottom: calc(14px + env(safe-area-inset-bottom, 0px));
     gap: 8px;
     padding: 8px 10px;
     font-size: 9px;
@@ -152,45 +157,68 @@ html, body {
   .stuck-banner button { padding: 5px 6px; font-size: 8px; }
 }
 
-.heading::after {
-  content: "";
-  display: block;
-  clear: both;
-}
+/* -------- HUD -------- */
 
-h1.title {
-  font-size: 32px;
-  font-weight: bold;
-  margin: 0;
-  display: block;
-  float: left;
-  letter-spacing: 2px;
-  color: var(--wood-darkest);
+/* Floats over the band renderer.js reserves at the top of the board
+   (HUD_BAND_CSS = 54px + the safe-area inset, which the renderer reads back
+   out of a probe element so its fit can account for it). Nothing else on the
+   board is allowed to paint there, so the bar does not need a scrim.
+
+   `pointer-events: none` on the bar so the dead space between the controls
+   and the chips still passes a tap through to the felt; the two groups opt
+   back in. The safe-area insets are additive on the sides and resolve to 0
+   where the host already excludes them. */
+.hud {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: calc(8px + env(safe-area-inset-top, 0px))
+           calc(8px + env(safe-area-inset-right, 0px))
+           0
+           calc(8px + env(safe-area-inset-left, 0px));
+  line-height: 1;
+  pointer-events: none;
+}
+.hud > * { pointer-events: auto; }
+
+.hud-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .stats-container {
-  float: right;
-  text-align: right;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* Inline "0" / "00:00" placeholders hold the layout but stay invisible
+     until application.js writes the hydrated values and toggles `.ready`. */
   visibility: hidden;
 }
 .stats-container.ready {
   visibility: visible;
 }
 
-/* Stats chips. Same embossed shape as snake's score chip. */
+/* Stats chips. Same embossed shape as snake's and flappy-rabbits' score chip,
+   now floated over the felt rather than sat above it. Smaller than they were
+   in the framed layout: the bar has to hold four controls and two chips
+   inside seven card-widths, and on a 390px phone the old 20px type did not
+   leave room for the time. */
 .moves-container, .time-container {
   position: relative;
-  display: inline-block;
   background: var(--wood-darkest);
-  padding: 15px 22px;
-  font-size: 20px;
-  height: 22px;
-  line-height: 40px;
-  min-width: 40px;
+  padding: 15px 10px 5px;
+  font-size: 14px;
+  line-height: 1;
+  min-width: 30px;
   font-weight: bold;
   color: var(--wood-pale);
-  margin-top: 8px;
-  margin-left: 8px;
   text-align: center;
   border: 2px solid var(--wood-mid);
   box-shadow: inset 0 0 0 2px rgba(0, 0, 0, 0.45);
@@ -198,10 +226,10 @@ h1.title {
 .moves-container::after, .time-container::after {
   position: absolute;
   width: 100%;
-  top: 8px;
+  top: 5px;
   left: 0;
-  font-size: 11px;
-  line-height: 11px;
+  font-size: 8px;
+  line-height: 8px;
   text-align: center;
   color: var(--wood-pale);
   opacity: 0.65;
@@ -210,35 +238,11 @@ h1.title {
 .moves-container::after { content: "MOVES"; }
 .time-container::after { content: "TIME"; }
 
-.above-game {
-  margin-top: 12px;
-}
-.above-game::after {
-  content: "";
-  display: block;
-  clear: both;
-}
-
-.game-intro {
-  float: left;
-  font-size: 10px;
-  line-height: 1.6;
-  margin: 8px 0 0;
-  max-width: 55%;
-  color: var(--wood-darkest);
-}
-
-.button-row {
-  float: right;
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-/* Sound and vibration toggles, leftmost in the button row. An emoji glyph
+/* Sound and vibration toggles, the quiet half of the HUD. An emoji glyph
    carries the state (🔊 / 🔇 and 📳 / 📴); the buttons themselves are flat tap
-   targets with no chrome so they read as small controls, not primary actions
-   like Undo / New Deal.
+   targets with no chrome so they read as settings rather than as actions on
+   the deal, which is the distinction the undo / new-deal pair beside them
+   carries with a border.
 
    `aria-pressed="true"` means the thing is OFF for both — pressed-in is the
    silenced state — which is what the dimmed opacity below is showing. The
@@ -255,7 +259,11 @@ h1.title {
   font-size: 16px;
   line-height: 1;
   cursor: pointer;
-  opacity: 0.7;
+  /* Pale, not the chrome dark. These used to sit on the host page's light
+     background above the board; on the felt itself the dark green went
+     near-invisible. */
+  color: var(--wood-pale);
+  opacity: 0.75;
   transition: opacity 0.15s ease, transform 0.1s ease;
   -webkit-tap-highlight-color: transparent;
 }
@@ -267,7 +275,7 @@ h1.title {
 .haptic-toggle[aria-pressed="true"] { opacity: 0.45; }
 .sound-toggle:focus-visible,
 .haptic-toggle:focus-visible {
-  outline: 2px solid var(--wood-darkest);
+  outline: 2px solid var(--wood-pale);
   outline-offset: 2px;
 }
 
@@ -277,7 +285,6 @@ h1.title {
 .haptic-toggle {
   display: flex;
   align-items: center;
-  color: var(--wood-darkest);
 }
 .haptic-toggle[hidden] { display: none; }
 
@@ -301,6 +308,21 @@ h1.title {
   font-weight: bold;
   text-transform: uppercase;
 }
+
+/* Icon-sized, because they sit on the board: a labelled UNDO / NEW DEAL pair
+   is about 145px of a 390px phone's HUD, which the moves and time chips need
+   more than the words do. Both carry an aria-label, and new-deal confirms
+   before it discards a deal, so the glyph can't cost anyone their game. */
+.undo-button, .restart-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  width: 36px;
+  height: 36px;
+  -webkit-tap-highlight-color: transparent;
+}
+
 .undo-button:disabled {
   opacity: 0.4;
   cursor: default;
@@ -313,39 +335,27 @@ h1.title {
   border-right-width: 2px;
   transform: translate(2px, 2px);
 }
+/* `display: flex` above outranks the UA rule that makes [hidden] disappear,
+   so any [hidden] on these needs saying again here. */
+.undo-button[hidden], .restart-button[hidden] { display: none; }
 
-.game-container {
-  margin-top: 12px;
-  display: flex;
-  justify-content: center;
-  cursor: default;
-  -webkit-touch-callout: none;
-  -webkit-user-select: none;
-  user-select: none;
-}
+/* js/renderer.js overwrites the buffer height and BOTH CSS dimensions on load
+   and on every resize (Renderer.prototype.resize). The declarations here are
+   only the pre-boot fallback — the paint between first byte and the atlas
+   resolving, or a fatal bridge error where the renderer is never constructed
+   — which is why they are expressed against the viewport and carry the old
+   fixed 998x1036 aspect. Nearest neighbour on the upscale so the art stays
+   blocky.
 
-/* Canvas wrapper. No frame chrome anymore — purely a positioning context for
-   the game-message overlay, sized to the canvas so the overlay covers exactly
-   the board (not the surrounding column). The painted canvas felt is the only
-   "background" the player sees behind the cards. application.js may snap this
-   frame's width down a few px (inline style.width) so art pixels land on
-   whole device pixels — the snap targets the frame (not the canvas) so the
-   overlay and Finish button stay aligned with the board. */
-.board-frame {
-  position: relative;
-  display: block;
-  width: 100%;
-  max-width: 720px;
-}
-
+   `touch-action: none` is on the canvas alone rather than on the page: it is
+   the only surface with a gesture on it, and putting it higher would also
+   catch the leaderboard list inside the overlay, which has to be flickable.
+   The Android compositor consults this before our (non-passive) touch
+   listeners run, so it is required, not belt-and-braces — see the touch
+   checklist in the root README. */
 .game-canvas {
   display: block;
-  /* Width-driven sizing with an explicit aspect-ratio matching the canvas's
-     internal 998×1036; the page scrolls vertically if the resulting height
-     overruns the viewport. touch-action:none stays on the canvas only —
-     drags don't initiate scroll — while the rest of the page can pan
-     normally. */
-  width: 100%;
+  width: 100vw;
   height: auto;
   aspect-ratio: 998 / 1036;
   background: var(--wood);
@@ -353,26 +363,48 @@ h1.title {
   image-rendering: crisp-edges;
   box-sizing: border-box;
   touch-action: none;
+  cursor: default;
 }
 
+/* -------- overlay -------- */
+
+/* The only chrome with words on it, and it exists only between deals. Covers
+   the whole board (inset 0 of the stage, which IS the board) so the state it
+   announces is unmissable. It used to inset 16px to show a frame of felt
+   around itself; with the board running to the edges of the screen that read
+   as a misaligned panel rather than as a card table. */
 .game-message {
   display: none;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 18px;
+  gap: 16px;
   position: absolute;
-  top: 16px;
-  right: 16px;
-  bottom: 16px;
-  left: 16px;
+  inset: 0;
   background: rgba(27, 77, 48, 0.92);
   z-index: 100;
   text-align: center;
-  padding: 16px;
+  line-height: 1.4;
+  padding: 24px 18px calc(24px + env(safe-area-inset-bottom, 0px));
   box-sizing: border-box;
 }
 .game-message.visible { display: flex; }
+
+/* Both states stay centred. flappy-rabbits splits its idle overlay top and
+   bottom so the rabbit bobbing between them stays visible; there is nothing
+   to leave room for here — an undealt solitaire board is an empty table — and
+   the split just opened a hole down the middle of a tall screen. */
+
+h1.title {
+  margin: 0;
+  font-size: clamp(16px, calc(var(--stage-w, 100vw) * 0.075), 38px);
+  font-weight: bold;
+  line-height: 1.35;
+  letter-spacing: 2px;
+  color: var(--card-cream);
+  text-shadow: 3px 3px 0 var(--wood-shadow);
+}
+.game-message:not([data-state="idle"]) h1.title { display: none; }
 
 .game-message-text {
   font-size: 22px;
@@ -381,6 +413,7 @@ h1.title {
   margin: 0;
   text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.5);
 }
+.game-message-text:empty { display: none; }
 .game-message-sub {
   font-size: 11px;
   letter-spacing: 1px;
@@ -404,50 +437,56 @@ h1.title {
 .game-message[data-state="won"] .retry-random-button,
 .game-message[data-state="won"] .share-button { display: inline-block; }
 
-/* Finish button is a sibling of the canvas inside .board-frame, so it
-   positions against the canvas box directly and is independent of the
-   game-message overlay's display state — that's what lets it actually
-   render during the playing state (when the overlay is display:none and
-   canAutoComplete is true). Application.js toggles display:inline-block. */
+/* Finish button is a sibling of the canvas inside .stage, so it positions
+   against the board directly and is independent of the game-message overlay's
+   display state — that's what lets it actually render during the playing
+   state (when the overlay is display:none and canAutoComplete is true).
+   Application.js toggles display:inline-block. It sits in the felt the
+   renderer leaves under the deepest legal column; the safe-area inset keeps
+   it clear of a home indicator now that the board runs to the screen edge. */
 .finish-button {
   display: none;
   position: absolute;
-  bottom: 32px;
+  bottom: calc(32px + env(safe-area-inset-bottom, 0px));
   left: 50%;
   transform: translateX(-50%);
   z-index: 50;
 }
 
+/* How to play. On the idle overlay, and idle only: it is the answer to a
+   question the player only has before their first deal, and after that it is
+   furniture. It used to sit under the board as a permanent footer. */
 .game-explanation {
-  margin-top: 10px;
-  margin-bottom: 0;
+  margin: 4px 0 0;
   font-size: 9px;
-  line-height: 1.6;
-  color: var(--wood-darkest);
-  opacity: 0.7;
+  line-height: 1.8;
+  max-width: 40ch;
+  color: var(--wood-pale);
+  opacity: 0.85;
 }
-strong.important {
-  color: var(--wood-darkest);
-  text-transform: uppercase;
-  opacity: 1;
-}
+.game-message:not([data-state="idle"]) .game-explanation { display: none; }
 
+/* Bootstrap error fallback — surfaces a fatal bridge/atlas failure to the DOM
+   rather than leaving a dead canvas. Fixed and centred because it can fire
+   before the renderer has sized anything, so there is no layout to sit in. */
 .bootstrap-error {
-  margin: 20px auto;
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
   padding: 16px 20px;
+  width: calc(100% - 40px);
   max-width: 460px;
+  box-sizing: border-box;
   background: var(--wood-darkest);
   color: var(--card-cream);
   font-size: 11px;
   line-height: 1.6;
   text-align: center;
   border: 2px solid var(--wood-mid);
+  z-index: 400;
 }
 
-/* Friends panel on the won overlay. Populated by application.js after the
-   daily-leaderboard fetch resolves; cleared (and hidden via :empty) on idle,
-   random wins, and new deals. Sits on the dark translucent overlay, so text
-   is in the light end of the felt palette. */
 .friends-panel {
   width: 100%;
   max-width: 320px;
@@ -712,26 +751,24 @@ strong.important {
   transform: translate(-50%, 0);
 }
 
-@media screen and (max-width: 540px), screen and (max-height: 800px) {
-  /* Trim the side padding on small viewports. board-frame no longer has any
-     padding/border of its own — the canvas defines the board's footprint
-     and the page scrolls if the resulting height overruns the viewport. */
-  .container { width: auto; padding: 8px 12px 6px; }
-  h1.title { font-size: 22px; margin-top: 6px; }
+/* Small viewports. The HUD is the one row here that can actually run out of
+   room — four controls and two chips inside seven card-widths — so it gives up
+   type size first, and the overlay loses padding and the how-to-play line
+   before anything else. The board itself needs no breakpoint: renderer.js
+   fits it at every size. */
+@media screen and (max-width: 380px), screen and (max-height: 560px) {
   .moves-container, .time-container {
+    padding: 13px 8px 4px;
     font-size: 12px;
-    padding: 13px 10px;
-    height: 14px;
-    line-height: 27px;
-    min-width: 32px;
-    margin-top: 0;
+    min-width: 26px;
   }
-  .moves-container::after, .time-container::after { font-size: 9px; top: 6px; line-height: 9px; }
-  .game-intro { font-size: 9px; max-width: 50%; }
-  .undo-button, .restart-button { font-size: 9px; padding: 8px 10px; }
-  .game-message { top: 10px; right: 10px; bottom: 10px; left: 10px; gap: 12px; }
+  .moves-container::after, .time-container::after { font-size: 7px; top: 4px; line-height: 7px; }
+  .undo-button, .restart-button { width: 32px; height: 32px; }
+  .sound-toggle, .haptic-toggle { padding: 2px; font-size: 15px; }
+  .hud { gap: 6px; padding-left: calc(6px + env(safe-area-inset-left, 0px)); }
+  .game-message { gap: 10px; padding: 12px; }
+  .game-message[data-state="idle"] .game-explanation { display: none; }
   .game-message-text { font-size: 16px; }
   .game-message-sub { font-size: 9px; }
-  .game-explanation { font-size: 9px; }
-  .finish-button { bottom: 16px; }
+  .finish-button { bottom: calc(16px + env(safe-area-inset-bottom, 0px)); }
 }

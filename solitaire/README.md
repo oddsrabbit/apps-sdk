@@ -4,9 +4,38 @@ Klondike solitaire for the OddsRabbit Games surface. Original implementation; no
 
 ## Design
 
-Green felt with white pixel-art cards. Internal canvas resolution is 998×1036 with `image-rendering: pixelated`, upscaled by CSS to whatever the column allows (≤720 px on desktop, ~350 px on a phone). Card art is authored at 42×60 and blitted at `SCALE = 3`, so a card is 126×180 on the board and every art pixel is a crisp 3×3 block. `SCALE` in `js/renderer.js` is the one knob that resizes the deck; every layout offset is expressed as a multiple of it, so nothing shears when it moves.
+Green felt with white pixel-art cards. Card art is authored at 42×60 and blitted at `SCALE = 3`, so a card is 126×180 on the board and every art pixel is a crisp 3×3 block. `SCALE` in `js/renderer.js` is the one knob that resizes the deck; every layout offset is expressed as a multiple of it, so nothing shears when it moves.
 
-Card faces come from [Kenney's Playing Cards Pack](https://kenney.nl/assets/playing-cards-pack) (CC0). They replaced a hand-drawn deck whose 3×5 rank glyphs rendered at roughly 2×4 device pixels on a phone — unreadable, and unfixable without redrawing all 52 faces, since there was no room to make the glyph bigger. Kenney's ranks are 8 px tall and sit clear of `FACE_UP_OFFSET`, so a face-up card's peek strip in a tableau column always shows its whole rank. That is the property the whole deck exists to provide; if you change `FACE_UP_OFFSET`, check it against the glyph's authored rows (5–12) first.
+### Full-bleed, on an elastic board
+
+The felt **is** the page. There is no title bar, no framed board, no intro line and no how-to-play footer: the canvas fills the viewport, the undo / new-deal / sound controls and the moves and time chips float over a band reserved at the top of the board, and every word of text — the name, how to play, the buttons — lives on the overlay, where it is read between deals and gone during them.
+
+The board itself flexes, and it does **not** flex the way `flappy-rabbits` does. That game has a fixed 320×480 world and paints spare height as scenery; solitaire has no scenery, and its board is nearly square (998×1036) against a phone's 0.46. Stretching a fixed aspect ratio to fill the screen would leave a small board floating in half a screen of dead felt.
+
+So only the horizontal half is fixed. Seven tableau columns side by side is what Klondike is, so `INTERNAL_W` is a constant 998 and the card width is always the viewport's width over seven — no layout can make a card bigger on a phone. The **vertical** half is recomputed on every resize by `Renderer.prototype.resize`, which fits by width and then spends whatever height is left on the offsets that actually change what a player can read:
+
+| | floor | ceiling | what it buys |
+|---|---|---|---|
+| `FACE_UP_OFFSET` | 42 (14 authored px) | 78 (26) | how much of a stacked card is visible. Takes the budget first. |
+| `FACE_DOWN_OFFSET` | 15 (5) | 24 (8) | depth cue only — a hidden card tells the player nothing, so it is capped low. |
+| badge gap | 30 | 90 | clearance between the top row and the tableau. |
+| bottom felt | — | — | whatever is still spare, which is where the Finish button and the dead-end banner float. |
+
+On a 390×750 phone that lands the buffer at 998×1919, the peek at its 78 ceiling, and about 30 CSS px of every stacked card visible — double the 15 px the fixed layout gave, in the same physical space.
+
+Three things to know before changing any of it:
+
+- **The fit is closed-form, and the HUD is part of it.** The bar is specified in CSS pixels (`HUD_BAND_CSS`, plus the safe-area inset read back out of a probe element) and consumed in internal ones, which looks circular. It isn't: the constraint is `hudCss + scale * BOARD_MIN_H <= vh`, which rearranges to a plain upper bound on `scale`. Reserving the band matters — unlike a side-scroller there is no empty sky here, and an unreserved bar sits on the foundations.
+- **`BOARD_MIN_H` is the deepest *legal* column, not the current one.** Six face-down plus a 13-card K→A run. Sizing to the board actually on screen would make the whole layout jump every time a column grew.
+- **Everything under `--- Elastic vertical layout ---` in `renderer.js` is a live value.** `TOP_ROW_Y`, `TABLEAU_Y`, both offsets and `INTERNAL_H` are rewritten by `applyLayout()` on each resize, and `Renderer.prototype.layout` is the same object rather than a snapshot. Read them; never cache them.
+
+The one case this loses on is a **landscape phone**. A 0.96-aspect board in a 1.9-aspect window fits by height, so the cards come out around 42 px and the sides letterbox. The old framed layout gave 90 px cards there — by overflowing the viewport and making the player scroll the page mid-drag, which is worse for a game whose whole interaction is dragging. Portrait is the orientation this is tuned for.
+
+Undo and New deal are icons rather than labelled buttons: labelled, the pair is about 145 px of a 390 px phone's HUD, which the moves and time chips need more. Both keep an `aria-label`, and New deal already confirms before discarding a deal, so the glyph cannot cost anyone their game.
+
+The page background is the same felt the canvas paints, so the letterbox a wide desktop window leaves is invisible — which is also what makes the crisp-scale snap in `resize()` free. It can hand back up to 8% of the width to land art pixels on whole device pixels, and in the framed layout that showed up as a pair of margins.
+
+Card faces come from [Kenney's Playing Cards Pack](https://kenney.nl/assets/playing-cards-pack) (CC0). They replaced a hand-drawn deck whose 3×5 rank glyphs rendered at roughly 2×4 device pixels on a phone — unreadable, and unfixable without redrawing all 52 faces, since there was no room to make the glyph bigger. Kenney's ranks are 8 px tall and sit clear of `FACE_UP_OFFSET`, so a face-up card's peek strip in a tableau column always shows its whole rank. That is the property the whole deck exists to provide, and it is why the offset now has a **floor** rather than a value: `MIN_FACE_UP_OFFSET` is 14 authored px, which clears the glyph's authored rows (5–12) with a row to spare. The elastic layout only ever grows it. If you change that floor, check it against those rows first.
 
 The card back is ours, not Kenney's: deep green with a carrot lattice. A face-down card in a column shows only its top 5 authored pixels, so those carry a hard light/orange/shadow band — a column of face-downs reads as crisp repeating pinstripes rather than a flat slab.
 
@@ -55,7 +84,12 @@ A **Random deal** button is available too — random deals are playable but do n
 - `bridge:storage` — `bestTimeMs`, `winStreak`, `savedGame`, `lastDailyId` + `lastDailyWon` so we don't double-count daily completions. `savedGame` is flushed on **both** `lifecycle.pause` and the browser `pagehide` event, so a backgrounded app *or* a hard tab-close mid-deal is resumable on next launch.
 - `bridge:share` — user-initiated only. The Share button on the won overlay opens a share modal (copy / native-on-touch / X / Threads / Bluesky / Reddit / WhatsApp / Facebook), mirroring snake + rabbit-words. We never auto-fire share on win — the OS sheet would step on the "I solved it" moment.
 - `bridge:scores` — daily deals submit to a per-deal leaderboard (`roundKey = daily-{seed}`). The score inverts solve time (faster = higher; `metadata = { timeMs, moves }`), and the won overlay renders a friends panel from `scores.friends`. Anonymous players get a `requestSignIn` CTA; signed-in players with no friend scores yet get an invite CTA. Random deals have no shared round and skip scores entirely.
-- Haptics: `light` on card pickup and successful drop, `error` on rejected drop, `success` on a card sent to foundation, `success` again on the win.
+- Haptics: `light` on card pickup and successful drop, `error` on rejected drop, `success` on a card sent to foundation, `success` again on the win. Every one of them routes through a single `haptic()` shim, which is the only reason one switch can turn them all off.
+- **Vibration toggle** (`hapticsOff` in storage, `"1"` meaning off). Stored separately from the mute setting, because sound and vibration get silenced for different reasons — somewhere quiet versus the buzzing being distracting — and one switch for both would make a player who wants neither give up the other. Inverted so that a missing key, a failed read and an explicit "on" all agree: haptics default to on, and a storage failure must not quietly disable something the player never turned off.
+
+  Shown on **touch devices only**, and deliberately not gated on `capabilities.has('actions.haptic')`. That check is the house pattern for host-dependent UI but the wrong instrument here: the web host declares `actions.haptic` and answers it as a no-op, so gating on it puts the button on desktops where nothing can buzz. The trade is that a player who switches vibration off on their phone can't switch it back on from a desktop; the setting syncs, so their phone still shows it off and can undo it.
+
+  The icon is inline SVG, not an emoji, unlike the sound toggle beside it. The two candidate glyphs (`📳` / `📴`) are both orange rounded squares that are near-indistinguishable at 16px, and the orange fights a palette that is otherwise entirely green. Drawn, it inherits `currentColor` and borrows the slash convention from `🔇` next door, which is the part players actually read. CSS draws the slash off `aria-pressed`, so the visual and accessible states can't drift apart.
 - `OR.lifecycle.on('resume')` is a no-op (the saved state is already on screen).
 
 ## Manifest scopes required
@@ -68,9 +102,9 @@ A **Random deal** button is available too — random deals are playable but do n
 
 Drag-heavy game — both rules from the parent README are required. Both are wired in:
 
-- `touch-action: none` on `html, body` and `.game-canvas`.
+- `touch-action: none` on `.game-canvas`, and **only** there. It is the one surface with a gesture on it, and putting it on `html, body` would also catch the leaderboard list inside the won overlay, which has to stay flickable.
 - `{ passive: false }` on every `touchstart` / `touchmove` listener in `input_manager.js`.
-- `overscroll-behavior: none` on `html, body`.
+- `overflow: hidden` and `overscroll-behavior: none` on `html, body`. The renderer fits the whole board into the viewport, so a scroll port would only ever be somewhere to lose the board to — and removing it is also what stops the WebView compositor claiming a drag for scroll, with `overscroll-behavior` covering pull-to-refresh.
 
 ## License
 

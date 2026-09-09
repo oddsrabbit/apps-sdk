@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <title>Rabbit Word Battle</title>
+    <!-- Shared leaderboard component, for its avatar renderer: player strips,
+         match rows and the invite picker all hash usernames to the same colour
+         as every board on the platform. Stylesheet first so styles.css keeps
+         the last word. -->
+    <link rel="stylesheet" href="../leaderboard-v1.css?v=__UI_VERSION__" />
+    <link rel="stylesheet" href="./styles.css?v=__BUILD_ID__" />
+    <script src="../sdk-v1.js?v=__SDK_VERSION__"></script>
+    <script src="../leaderboard-v1.js?v=__UI_VERSION__"></script>
+  </head>
+  <body>
+    <p class="fatal" hidden></p>
+
+    <!-- Screen 1: your games. -->
+    <section class="screen screen-list">
+      <header class="bar">
+        <h1 class="title">Rabbit Word Battle</h1>
+        <button type="button" class="new-game-button primary">New game</button>
+      </header>
+      <p class="unsupported" hidden>Playing against friends isn't available on this version of the app yet.</p>
+      <div class="sign-in-wrap">
+        <button type="button" class="sign-in primary" hidden>Sign in to play against friends</button>
+      </div>
+      <form class="join-form">
+        <input class="join-input" type="text" inputmode="text" autocapitalize="characters" autocomplete="off"
+               maxlength="6" placeholder="Join with a code" aria-label="Join code" />
+        <button type="submit">Join</button>
+      </form>
+      <p class="list-status muted"></p>
+      <div class="match-list"></div>
+      <p class="match-list-empty muted" hidden>No games yet. Start one and challenge a friend.</p>
+    </section>
+
+    <!-- Screen 2: set the table. -->
+    <section class="screen screen-new" hidden>
+      <header class="bar">
+        <button type="button" class="back-button" aria-label="Back">‹</button>
+        <h1 class="title">New game</h1>
+      </header>
+      <h2 class="group-title">Invite friends</h2>
+      <div class="invitable-list"></div>
+      <p class="invitable-empty muted" hidden>Follow people on OddsRabbit to invite them, or open the table with a code.</p>
+      <h2 class="group-title">Seats</h2>
+      <div class="seats">
+        <button type="button" class="seats-minus" aria-label="Fewer seats">−</button>
+        <span class="seats-value">2</span>
+        <button type="button" class="seats-plus" aria-label="More seats">+</button>
+        <label class="open-label"><input type="checkbox" class="open-toggle" /> Open table (anyone with the code can join)</label>
+      </div>
+      <p class="create-status muted"></p>
+      <button type="button" class="create-button primary">Start</button>
+    </section>
+
+    <!-- Screen 3: one match. -->
+    <section class="screen screen-match" hidden>
+      <header class="bar">
+        <button type="button" class="back-button" aria-label="Back">‹</button>
+        <div class="players"></div>
+        <button type="button" class="resign-button subtle" hidden>Resign</button>
+      </header>
+      <p class="turn-line muted"></p>
+      <div class="lobby" hidden>
+        <span>Join code</span>
+        <strong class="lobby-code"></strong>
+        <button type="button" class="share-code-button">Share</button>
+      </div>
+      <div class="board-wrap">
+        <!-- touch-action: none in styles.css; the renderer owns every gesture. -->
+        <canvas class="board-canvas" aria-label="Game board"></canvas>
+        <div class="game-over" hidden>
+          <h2 class="game-over-title"></h2>
+          <p class="game-over-text"></p>
+          <button type="button" class="game-over-back primary">Back to games</button>
+        </div>
+      </div>
+      <p class="preview"></p>
+      <div class="rack"></div>
+      <div class="actions">
+        <button type="button" class="shuffle-button subtle">Shuffle</button>
+        <button type="button" class="recall-button subtle">Recall</button>
+        <button type="button" class="exchange-button subtle">Swap</button>
+        <button type="button" class="pass-button subtle">Pass</button>
+        <button type="button" class="play-button primary" disabled>Play</button>
+      </div>
+    </section>
+
+    <div class="picker" hidden>
+      <div class="picker-card">
+        <h2 class="picker-title"></h2>
+        <div class="picker-body"></div>
+        <div class="picker-actions">
+          <button type="button" class="picker-cancel subtle">Cancel</button>
+          <button type="button" class="picker-confirm primary">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <p class="toast" hidden></p>
+
+    <script src="./js/rules.js?v=__BUILD_ID__"></script>
+    <script src="./js/board.js?v=__BUILD_ID__"></script>
+    <script src="./js/application.js?v=__BUILD_ID__"></script>
+  </body>
+</html>

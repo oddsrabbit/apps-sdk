@@ -4,9 +4,9 @@
 // one upward hop. Hedges grow from the ground and hang from the sky with a gap
 // between them; clearing a gap scores a point, touching anything ends the run.
 //
-// FIXED TIMESTEP, DELIBERATELY. Unlike Hex Rush — whose blocks move linearly,
-// so integrating them over a variable delta is exact — this game integrates
-// gravity, and that is NOT delta-invariant: applying one 32ms step and two
+// FIXED TIMESTEP, DELIBERATELY. A game whose pieces move linearly can integrate
+// them over a variable delta exactly; this one integrates gravity, and that is
+// NOT delta-invariant: applying one 32ms step and two
 // 16ms steps to the same rabbit gives two different heights. Left variable,
 // the hop arc would be measurably different on a 60Hz phone and a 120Hz one,
 // and the gaps are tuned tightly enough that players would notice. So the

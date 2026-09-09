@@ -5,7 +5,7 @@ The SDK for building games and apps on [OddsRabbit](https://www.oddsrabbit.com).
 > 🚧 **Alpha.** APIs subject to change.
 
 - **Full developer guide:** [oddsrabbit.com/developers/games](https://www.oddsrabbit.com/developers/games/)
-- **Reference games:** [`rabbit-words/`](./rabbit-words/), [`rabbit-globe/`](./rabbit-globe/), [`2048/`](./2048/), [`snake/`](./snake/), [`match3/`](./match3/), [`solitaire/`](./solitaire/), [`hex/`](./hex/), [`hop/`](./hop/), [`liquid/`](./liquid/)
+- **Reference games:** [`rabbit-words/`](./rabbit-words/), [`rabbit-globe/`](./rabbit-globe/), [`2048/`](./2048/), [`snake/`](./snake/), [`match3/`](./match3/), [`solitaire/`](./solitaire/), [`flappy-rabbits/`](./flappy-rabbits/), [`rabbit-word-battle/`](./rabbit-word-battle/), [`liquid/`](./liquid/)
 
 ## Hello world
 
@@ -58,6 +58,7 @@ Everything available on `window.OddsRabbit` once `await OR.whenReady()` resolves
 - **`OR.scores.rank` / `OR.scores.seasonRank`** — where the *viewer* placed, for the pinned `…  #412 @you` row under a board they didn't make. `rank` takes `{ roundKey, order? }` and `seasonRank` takes `{ period, metric? }`; pass the same `order`/`metric` as the board, or the rank describes a different ordering than the rows above it. Both are **authenticated** companions to the public boards rather than flags on them, so `scores.top` and `scores.season` stay guest-readable and server-cached. Both resolve **`null`** when there is nothing to pin — no session, no rank verb on this host, or (for `rank`) the viewer hasn't played that round; a caller does the same thing with all of those. `seasonRank` still resolves an envelope when the viewer played no day this month (`rank`/`entry` null, but `puzzleDays`/`qualifyingDays` populated), because the qualifier is exactly what such a player needs to be told. Prefer wiring these through the shared panel's `loadPinned` / `createSeasonTab({ loadRank })` hooks rather than `Promise.all`-ing them with the board: the panel loads the pinned row in its own chain, so a rank failure costs one row instead of the whole board.
 - **`OR.capabilities.has(verb)` / `OR.capabilities.all()`** — which bridge verbs *this host* implements, e.g. `OR.capabilities.has('scores.top')`. Gate optional UI on this, **not** on `typeof OR.scores.top === 'function'`: every SDK bundle exposes every method, while hosts differ (the mobile app has no `actions.requestSignIn`, and a native host can trail the SDK by an App Store review). **Read it only after `await OR.whenReady()`** — the host's answer arrives with `init`, so a call before that quietly returns the pre-handshake baseline instead of this host's real answer. Hosts that predate the handshake don't declare capabilities; the SDK then assumes that baseline and narrows it as verbs are actually rejected, so a `has()` call after a failed attempt still tells the truth.
 - **`OR.content.daily`** — fetch server-authored, date-gated content for a round (e.g. the day's puzzle or answer), so apps don't bundle every future answer into the client where it's trivially readable. Public (works for guests). The server only serves rounds whose publish time has passed — a future round resolves to `null`. Returns `{ roundKey, content }` where `content` is your app-specific shape; resolves `null` on an unsupported host or unavailable round so you can fall back to bundled content.
+- **`OR.matches.create` / `join` / `list` / `get` / `move` / `resign` / `watch`** — async turn-based multiplayer for 2–4 players (see [`docs/proposals/multiplayer-matches.md`](./docs/proposals/multiplayer-matches.md)). All authenticated. Every read is **per-viewer**: the server's rules class for the match's `game` filters `view` to what the requesting seat may see, so a client never holds an opponent's hidden information and there is no raw-state verb. A `move` is an *action* (`{ col: 3 }`), never a board — the server applies it to its own state and answers with the new view, or rejects with a `match/*` code (`MATCH_ERROR_CODES`): `version-conflict` when the `version` you sent is behind (refetch and let the player decide again), `not-your-turn`, or `illegal-move` with the reason in `message`. Those codes describe one call, not the host, and never retire a capability. `list` resolves `[]` when signed out or on a host without the verb; everything else rejects. `watch(matchUuid, onChange)` polls `get` every 5 s while the page is visible and the match is unfinished, pauses on `lifecycle` pause and hidden tabs, and stops itself after delivering a `finished` view. Gate the whole multiplayer entry point on `OR.capabilities.has('matches.get')` — the mobile host ships these behind App Store review.
 - **`OR.actions.share`** — system share sheet on mobile, Web Share API on web.
 - **`OR.actions.haptic`** — `'light' | 'medium' | 'success' | 'error'`. No-op on web.
 - **`OR.actions.requestSignIn`** — prompt the user to sign in at a natural friction moment.
@@ -120,7 +121,10 @@ rabbit-globe/   RabbitGlobe — daily photo-pin geo-guess (Leaflet map)
 2048/           2048 port — reference game
 snake/          Snake — Game Boy-styled reference game
 match3/         Fruit Match — match-3 reference game
-solitaire/      Solitaire — Klondike with daily deals + pixel rabbit court cards
+solitaire/      Solitaire — Klondike with daily deals, full-bleed elastic board
+flappy-rabbits/ Flappy Rabbits — one-button side-scroller, full-bleed board
+rabbit-word-battle/
+                Rabbit Word Battle — async 2–4 player word game (matches surface)
 liquid/         Liquid WebGL toy — reference app, no scopes
 ```
 

@@ -13,34 +13,78 @@
     <script src="../leaderboard-v1.js?v=__UI_VERSION__"></script>
   </head>
   <body>
-    <div class="container">
-      <div class="heading">
-        <h1 class="title">SOLITAIRE</h1>
-        <div class="stats-container">
-          <div class="moves-container" aria-label="Moves 0">0</div>
-          <div class="time-container" aria-label="Time 00:00">00:00</div>
-        </div>
-      </div>
+    <!-- FULL-BLEED BY DESIGN. There is no page chrome around the board: the
+         felt is the screen, and every piece of UI is either painted into it or
+         floated over it. The game's own text (title, how to play) lives on the
+         idle overlay, where it is read once and then gone, instead of framing
+         the board forever.
 
-      <div class="above-game">
-        <p class="game-intro">Aces up, Kings down. Drag cards to build down by alternating colour.</p>
-        <div class="button-row">
+         The stage shrink-wraps the canvas — js/renderer.js sets the canvas's
+         CSS size from the viewport — so the HUD, the Finish button, the
+         dead-end banner and the overlay, which are all positioned against the
+         stage, land exactly over the board and never in the letterbox a wide
+         desktop window leaves at the sides. -->
+    <div class="stage">
+      <!-- Fixed 998px internal WIDTH (renderer.js INTERNAL_W), upscaled by CSS
+           with `image-rendering: pixelated`. The HEIGHT of the buffer is set at
+           runtime from the viewport (see Renderer.prototype.resize): seven
+           columns across fixes the card width on any device, and the spare
+           height a portrait screen leaves is spent on the tableau's peek
+           strips instead of being stranded as empty felt. The attributes here
+           are only what the browser lays out with before the scripts run.
+
+           data-atlas carries the card-art URL so it can be cache-busted: the
+           build only substitutes __BUILD_ID__ in index.html, and JS is copied
+           verbatim, so an atlas path hardcoded in renderer.js would go stale
+           on every art change. See docs/deploy-cache-policy.md. -->
+      <canvas class="game-canvas" width="998" height="1036"
+              data-atlas="./images/cards.png?v=__BUILD_ID__"
+              aria-label="Solitaire game board"></canvas>
+
+      <!-- HUD. Floats over the band renderer.js reserves at the top of the
+           board (HUD_BAND_CSS), which is why the fit has to know the bar's
+           height: unlike a side-scroller there is no empty sky here, and an
+           unreserved bar would sit on the foundations.
+
+           Undo and New deal are icons rather than labelled buttons because
+           this bar has to hold six controls inside seven card-widths on a
+           phone. Both keep their aria-label, and New deal already confirms
+           before it throws a deal away, so an icon can't cost a player their
+           game. -->
+      <div class="hud">
+        <div class="hud-controls">
+          <button type="button" class="undo-button" aria-label="Undo" disabled>
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
+              <path d="M3.2 7.5h6.3a3.4 3.4 0 1 1 0 6.8H6.6"
+                    fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+              <path d="M6.2 4.2 2.6 7.5l3.6 3.3" fill="none" stroke="currentColor"
+                    stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+          <button type="button" class="restart-button" aria-label="New deal">
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
+              <path d="M13 8a5 5 0 1 1-1.7-3.8" fill="none" stroke="currentColor"
+                    stroke-width="1.6" stroke-linecap="round" />
+              <path d="M12.9 1.6v3.1H9.8" fill="none" stroke="currentColor"
+                    stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
           <!-- Sound on/off. Procedural audio (js/sound_manager.js) is on by
                default; this lets a player silence it. aria-pressed reflects
                the muted state and is kept in sync from application.js. -->
-          <button type="button" class="sound-toggle" aria-label="Mute sound" aria-pressed="false">🔊</button>
+          <button type="button" class="sound-toggle" aria-label="Mute sound" aria-pressed="false">&#128266;</button>
           <!-- Vibration on/off. Starts `hidden`; application.js reveals it only
                on a touch device, since nothing on a desktop can buzz and a
                control that cannot do anything is worse than no control.
 
                Inline SVG rather than an emoji, unlike the sound toggle beside
-               it. The two candidate glyphs (📳 / 📴) are both orange rounded
-               squares that are near-indistinguishable at this 16px size, and
-               the orange fights a palette that is otherwise entirely green.
-               Drawing it means it inherits `currentColor` and picks up the
-               slash convention from 🔇 next door, which is the part players
-               actually read. The slash is shown by CSS off `aria-pressed`, so
-               the state lives in exactly one place. -->
+               it. The two candidate glyphs are both orange rounded squares that
+               are near-indistinguishable at this size, and the orange fights a
+               palette that is otherwise entirely green. Drawing it means it
+               inherits `currentColor` and picks up the slash convention from
+               the muted speaker next door, which is the part players actually
+               read. The slash is shown by CSS off `aria-pressed`, so the state
+               lives in exactly one place. -->
           <button type="button" class="haptic-toggle" aria-label="Turn off vibration" aria-pressed="false" hidden>
             <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
               <rect x="5.25" y="2.25" width="5.5" height="11.5" rx="1.25"
@@ -51,63 +95,55 @@
                     stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
             </svg>
           </button>
-          <button type="button" class="undo-button" disabled>Undo</button>
-          <button type="button" class="restart-button">New Deal</button>
+        </div>
+        <div class="stats-container">
+          <div class="moves-container" aria-label="Moves 0">0</div>
+          <div class="time-container" aria-label="Time 00:00">00:00</div>
         </div>
       </div>
 
-      <div class="game-container">
-        <div class="board-frame">
-          <!-- width/height match renderer.js INTERNAL_W/INTERNAL_H. The
-               constructor overwrites them, but these are what the browser
-               lays out with before the scripts run.
+      <!-- Floating action button. Sibling of the canvas (not nested in
+           .game-message) so it can paint during the playing state when
+           the overlay is display:none. application.js toggles its
+           display inline based on game.canAutoComplete(). -->
+      <button type="button" class="finish-button">Finish</button>
 
-               data-atlas carries the card-art URL so it can be cache-busted:
-               the build only substitutes __BUILD_ID__ in index.html, and JS
-               is copied verbatim, so an atlas path hardcoded in renderer.js
-               would go stale on every art change. See
-               docs/deploy-cache-policy.md. -->
-          <canvas class="game-canvas" width="998" height="1036"
-                  data-atlas="./images/cards.png?v=__BUILD_ID__"
-                  aria-label="Solitaire game board"></canvas>
-
-          <!-- Floating action button. Sibling of the canvas (not nested in
-               .game-message) so it can paint during the playing state when
-               the overlay is display:none. application.js toggles its
-               display inline based on game.canAutoComplete(). -->
-          <button type="button" class="finish-button">Finish</button>
-
-          <!-- Dead-end nudge. Deliberately NOT the .game-message overlay:
-               that one is a full-board scrim, and covering the board is the
-               opposite of useful when the whole point is to let the player
-               look at it and undo. This is a bar over the empty felt at the
-               bottom, the board stays live behind it, and it is dismissible.
-               role=status + aria-live announces it without stealing focus. -->
-          <div class="stuck-banner" role="status" aria-live="polite" hidden>
-            <span class="stuck-text">No moves left</span>
-            <button type="button" class="stuck-undo">Undo</button>
-            <button type="button" class="stuck-new">New deal</button>
-            <button type="button" class="stuck-dismiss" aria-label="Dismiss">&times;</button>
-          </div>
-
-          <div class="game-message" data-state="idle">
-            <p class="game-message-text" role="status" aria-live="polite"></p>
-            <p class="game-message-sub" aria-live="polite"></p>
-            <div class="friends-panel"></div>
-            <div class="lower">
-              <button type="button" class="start-daily-button">Daily deal</button>
-              <button type="button" class="start-random-button">Random</button>
-              <button type="button" class="retry-daily-button">Today's deal</button>
-              <button type="button" class="retry-random-button">New random</button>
-              <button type="button" class="share-button">Share</button>
-            </div>
-          </div>
-        </div>
+      <!-- Dead-end nudge. Deliberately NOT the .game-message overlay:
+           that one is a full-board scrim, and covering the board is the
+           opposite of useful when the whole point is to let the player
+           look at it and undo. This is a bar over the empty felt at the
+           bottom, the board stays live behind it, and it is dismissible.
+           role=status + aria-live announces it without stealing focus. -->
+      <div class="stuck-banner" role="status" aria-live="polite" hidden>
+        <span class="stuck-text">No moves left</span>
+        <button type="button" class="stuck-undo">Undo</button>
+        <button type="button" class="stuck-new">New deal</button>
+        <button type="button" class="stuck-dismiss" aria-label="Dismiss">&times;</button>
       </div>
 
-      <p class="game-explanation">
-        <strong class="important">How to play:</strong> Drag cards to build tableau columns down by alternating colour. Build foundations up by suit, ace to king. Tap a card to auto-send to its foundation. Tap the stock to draw.
-      </p>
+      <div class="game-message" data-state="idle">
+        <!-- The name of the game, shown once — on the idle screen — and then
+             gone. A permanent title bar spends the best real estate on the
+             screen telling the player something they already know. -->
+        <h1 class="title">SOLITAIRE</h1>
+        <p class="game-message-text" role="status" aria-live="polite"></p>
+        <p class="game-message-sub" aria-live="polite"></p>
+        <div class="friends-panel"></div>
+        <div class="lower">
+          <button type="button" class="start-daily-button">Daily deal</button>
+          <button type="button" class="start-random-button">Random</button>
+          <button type="button" class="retry-daily-button">Today's deal</button>
+          <button type="button" class="retry-random-button">New random</button>
+          <button type="button" class="share-button">Share</button>
+        </div>
+        <!-- How to play. Idle only: it is the answer to a question the player
+             only has before their first deal, and after that it is furniture. -->
+        <p class="game-explanation">
+          Drag cards to build tableau columns down by alternating colour. Build
+          foundations up by suit, ace to king. Tap a card to auto-send it to its
+          foundation. Tap the stock to draw.
+        </p>
+      </div>
     </div>
 
     <script src="./js/input_manager.js?v=__BUILD_ID__"></script>

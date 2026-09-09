@@ -175,10 +175,15 @@
   function render() {
     var board = game.getBoard();
     if (!board) {
-      // Pre-deal — paint the empty wooden table so the canvas doesn't flash
-      // white behind the idle overlay. Uses the renderer's exported felt
-      // colour so the idle board can't drift from the in-game one again (a
-      // stale dark-wood hex used to live here).
+      // Pre-deal. Once the atlas is in, paint the slot ghosts so the idle
+      // overlay has a card table behind it rather than a green field.
+      if (renderer) {
+        renderer.drawEmptyTable();
+        return;
+      }
+      // Before that, plain felt — enough that the canvas doesn't flash white.
+      // Uses the renderer's exported felt colour so the idle board can't drift
+      // from the in-game one again (a stale dark-wood hex used to live here).
       var ctx = canvas.getContext("2d");
       ctx.fillStyle = RendererClass.COL_FELT;
       ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -1308,41 +1313,15 @@
     });
   }
 
-  // --- Crisp-scale snapping ---
-
-  // The canvas is CSS-scaled to the column width, which generally lands the
-  // pixel art at a fractional device-pixel ratio — nearest-neighbour then
-  // renders art pixels in alternating widths, a subtle wobble in the 1px
-  // card borders. Each art pixel is SCALE internal px, so the art is
-  // wobble-free when (cssWidth × dpr) is a multiple of INTERNAL_W / SCALE.
-  // Reading SCALE off the renderer rather than repeating the literal is what
-  // keeps this honest — it was hardcoded to 2, and would have silently
-  // targeted the wrong grid the moment SCALE moved. When the column
-  // width is within 8% of such a size, snap down to it; otherwise keep the
-  // full width — a small wobble beats giant side margins (e.g. narrow phones
-  // at 3× would lose ~15% of the board).
+  // --- Sizing ---
   //
-  // The snap is applied to .board-frame, NOT the canvas: the frame is the
-  // positioning context for the game-message overlay and the Finish button,
-  // so shrinking only the canvas would leave both overhanging the board.
-  // The canvas stays width:100% of the frame; flex centering on
-  // .game-container keeps the narrower frame centred.
-  function snapCanvasWidth() {
-    var frame = canvas.parentElement; // .board-frame
-    if (!frame) return;
-    // Clear any previous snap so clientWidth reports the natural CSS width
-    // (100% of the column, capped by the frame's max-width).
-    frame.style.width = "";
-    var avail = frame.clientWidth;
-    if (!avail) return;
-    var dpr = window.devicePixelRatio || 1;
-    var step = (RendererClass.INTERNAL_W / RendererClass.SCALE) / dpr;
-    var snapped = Math.floor(avail / step) * step;
-    if (snapped > 0 && avail - snapped <= avail * 0.08) {
-      frame.style.width = snapped + "px";
-    }
-  }
-  window.addEventListener("resize", snapCanvasWidth);
+  // The board's CSS size, the canvas buffer height and the crisp-scale snap
+  // that used to live here all belong to the renderer now
+  // (Renderer.prototype.resize): with the board running edge to edge there is
+  // no column for CSS to fit it into, and the vertical layout is recomputed
+  // from the viewport on every resize, so the two have to move together.
+  // The renderer registers its own resize/orientationchange listeners and
+  // repaints the last board itself.
 
   // --- Bootstrap sequence ---
 
@@ -1353,7 +1332,6 @@
       renderer = new RendererClass(canvas, results[1]);
       initSound();
       initHaptics();
-      snapCanvasWidth();
       // Restore an in-progress deal if we have one. Daily deals only
       // restore if the seed still matches today — yesterday's deal
       // wouldn't count toward today's streak, so silently discarding it
@@ -1390,9 +1368,9 @@
     banner.className = "bootstrap-error";
     banner.setAttribute("role", "alert");
     banner.textContent = message;
-    var target = document.querySelector(".container") || document.body;
-    if (target === document.body) target.appendChild(banner);
-    else target.insertBefore(banner, target.firstChild);
+    // Fixed and centred by styles.css, so it needs no particular parent —
+    // and there is no page column left to insert it into.
+    document.body.appendChild(banner);
   }
 
   bootstrap();

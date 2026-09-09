@@ -1,30 +1,44 @@
-// Bootstrap. Mirrors match3/js/application.js in shape: wait for the OddsRabbit
-// bridge to deliver init, hydrate the persisted bests, construct
+// Bootstrap. Mirrors the shape of the other arcade games: wait for the
+// OddsRabbit bridge to deliver init, hydrate the persisted bests, construct
 // game/renderer/input/sound, then call OR.ready() so the host can hide its
-// loading skeleton. The Hex-Rush-specific parts are the combo banner and the
-// pause button, which this game needs because every tap on the board is a
-// rotation and pausing therefore can't share the tap.
+// loading skeleton.
+//
+// Two things are specific to this game. The pause button, which it needs
+// because every tap on the board is a hop and pausing therefore can't share
+// the tap — and which setOverlay hides outside a live run, since it sits over
+// the picture. And the layout: the scene is full-bleed, so the chips and the
+// controls float over the canvas and every word of text lives on the overlay,
+// which is why every string here is short enough to survive on one.
+//
+// The game ships as "Flappy Rabbits" under the slug `flappy-rabbits`. It was
+// developed under the working slug `hop`, and the code identifiers (HopGame,
+// HopRenderer, window.HopRounds, the `hop:` log prefix) deliberately kept the
+// short name — see README.md.
 
 (function () {
-  var LANDING_URL = "https://www.oddsrabbit.com/games/hex/";
+  var LANDING_URL = "https://www.oddsrabbit.com/games/flappy-rabbits/";
 
   // `maxTouchPoints` is the modern signal and handles desktops with
   // touchscreens correctly; `ontouchstart` is the fallback for engines that
   // don't report it. Either being truthy means we prefer tap wording.
   var IS_TOUCH = (typeof navigator !== "undefined" && navigator.maxTouchPoints > 0)
     || ("ontouchstart" in window);
-  var IDLE_TEXT = IS_TOUCH ? "TAP TO START" : "PRESS ← → TO START";
+  // Short on purpose. This sits on the full-screen idle overlay in Press
+  // Start 2P, whose advance is a full em per character: "PRESS SPACE TO HOP"
+  // wraps to three ragged lines on a phone, and the same instruction is spelt
+  // out in full in the how-to line below it either way.
+  var IDLE_TEXT = IS_TOUCH ? "TAP TO HOP" : "SPACE TO HOP";
 
   var OR = window.OddsRabbit;
   if (!OR) {
-    console.error("hex: OddsRabbit bridge not available — game requires the SDK host.");
+    console.error("hop: OddsRabbit bridge not available — game requires the SDK host.");
     showFatalError("This game needs to run inside the OddsRabbit app or website.");
     return;
   }
 
-  var storage = new HexStorageManager();
-  var sound = new HexSoundManager();
-  var ROUNDS = window.HexRounds;
+  var storage = new HopStorageManager();
+  var sound = new HopSoundManager();
+  var ROUNDS = window.HopRounds;
 
   function noop() {}
 
@@ -59,7 +73,7 @@
   // one where everything landed. Nothing user-facing: the player has no action
   // to take and the retry is already running.
   function warnSubmitFailed(roundKey, err) {
-    try { console.warn("hex: score submit failed for " + roundKey, err); } catch (_) {}
+    try { console.warn("hop: score submit failed for " + roundKey, err); } catch (_) {}
   }
 
   // Submit whatever the platform hasn't confirmed yet, for both rounds.
@@ -146,12 +160,11 @@
     banner.className = "bootstrap-error";
     banner.setAttribute("role", "alert");
     banner.textContent = message;
-    var target = document.querySelector(".container") || document.body;
-    if (target === document.body) {
-      target.appendChild(banner);
-    } else {
-      target.insertBefore(banner, target.firstChild);
-    }
+    // Appended to the body, not to a wrapper: the layout is full-bleed and the
+    // canvas has no sized container to insert above. The banner is fixed and
+    // centred in CSS, which also means it works before the renderer has sized
+    // anything — the case this exists for.
+    document.body.appendChild(banner);
   }
 
   // -------- score chips --------
@@ -206,27 +219,6 @@
     else if (state === "over") overlayTextEl.textContent = "GAME OVER";
   }
 
-  // -------- combo banner --------
-  // aria-live is off: a long chain would otherwise fire "COMBO x2" through
-  // "COMBO x6" at a screen reader in rapid succession. The final score in the
-  // game-over overlay IS announced.
-  var comboBannerEl = document.querySelector(".combo-banner");
-  var comboHideHandle = null;
-  function showCombo(info) {
-    if (!comboBannerEl || info.multiplier < 2) return;
-    comboBannerEl.textContent = "COMBO ×" + info.multiplier + "  +" + info.gained;
-    comboBannerEl.classList.add("visible");
-    // Restart the keyframe so back-to-back clears each get their own pop.
-    comboBannerEl.classList.remove("bump");
-    void comboBannerEl.offsetWidth;
-    comboBannerEl.classList.add("bump");
-    if (comboHideHandle) window.clearTimeout(comboHideHandle);
-    comboHideHandle = window.setTimeout(function () {
-      comboBannerEl.classList.remove("visible");
-      comboBannerEl.classList.remove("bump");
-    }, 1200);
-  }
-
   // -------- share modal --------
   // User-initiated only, opened from the Share button on the game-over overlay.
   // Mirrors snake's modal: a text preview, primary actions (copy, plus native
@@ -235,8 +227,8 @@
   // native picker — one tap to a specific contact — only exists on phones.
   function buildShareTitle(result) {
     return result.isNewBest
-      ? "Hex Rush — new high score: " + result.score
-      : "Hex Rush — score: " + result.score;
+      ? "Flappy Rabbits — new high score: " + result.score
+      : "Flappy Rabbits — score: " + result.score;
   }
 
   function buildShareText(result) {
@@ -318,7 +310,7 @@
         // doesn't gate navigator.share.
         try {
           OR.actions
-            .share({ title: "Hex Rush", text: text })
+            .share({ title: "Flappy Rabbits", text: text })
             .catch(function () { showToast("Could not share"); });
         } catch (_) {
           showToast("Could not share");
@@ -405,10 +397,10 @@
       sound.setMuted(storage.isMuted());
 
       var canvas = document.querySelector(".game-canvas");
-      var renderer = new HexRenderer(canvas);
-      var input = new HexInputManager(canvas);
+      var renderer = new HopRenderer(canvas);
+      var input = new HopInputManager();
 
-      var game = new HexGame({
+      var game = new HopGame({
         renderer: renderer,
         storage: storage,
         input: input,
@@ -417,13 +409,11 @@
           onState: function (state) { setOverlay(state); },
           onScore: function (score) { setScore(score); },
           onBest: function (best) { setBest(best); },
-          onClear: function (info) {
-            showCombo(info);
-            // Light for an ordinary clear, medium once a chain is running —
-            // the same two levels snake uses for food versus bonus food, so a
-            // player moving between the games reads the same vocabulary.
-            var level = info.multiplier >= 2 ? "medium" : "light";
-            try { OR.actions.haptic(level).catch(noop); } catch (_) {}
+          onPass: function () {
+            // One light tap per gate cleared. Deliberately not on the hop
+            // itself: a hop fires several times a second, and a haptic at that
+            // rate stops reading as feedback and starts reading as a fault.
+            try { OR.actions.haptic("light").catch(noop); } catch (_) {}
           },
           onGameOver: function (info) {
             try { OR.actions.haptic("error").catch(noop); } catch (_) {}
@@ -444,17 +434,17 @@
         },
       });
 
-      // Opening the leaderboard mid-run must not cost the player the board:
-      // blocks keep falling behind a modal. js/leaderboard.js calls this before
+      // Opening the leaderboard mid-run must not cost the player the run: the
+      // world keeps scrolling behind a modal. js/leaderboard.js calls this before
       // it opens — a no-op unless a run is in progress, so the idle and
       // game-over entry points are unaffected. Deliberately not a resume: the
       // player closes the board when they're ready, and the paused overlay
       // behind it already offers Resume.
-      window.HexPauseForModal = function () { game.pause(); };
+      window.HopPauseForModal = function () { game.pause(); };
 
       try {
-        // Auto-pause when the host backgrounds the app. Blocks fall in real
-        // time, so a backgrounded run would silently end.
+        // Auto-pause when the host backgrounds the app. The world scrolls in
+        // real time, so a backgrounded run would silently end.
         OR.lifecycle.on("pause", function () {
           game.pause();
           // Also a retry point for anything unconfirmed — covers a player who
@@ -492,8 +482,8 @@
       if (soundToggleEl) {
         soundToggleEl.addEventListener("click", function (e) {
           e.preventDefault();
-          // Without this the click also reaches document.body and rotates the
-          // hexagon behind the button.
+          // Without this the click also reaches document.body and hops the
+          // rabbit behind the button.
           e.stopPropagation();
           var next = !sound.isMuted();
           sound.setMuted(next);
@@ -517,7 +507,7 @@
       });
     })
     .catch(function (err) {
-      console.error("hex: bootstrap failed", err);
+      console.error("hop: bootstrap failed", err);
       showFatalError("Couldn't start the game. Try reloading the page.");
     });
 })();

@@ -3,8 +3,8 @@
 // hop, or resume depending on the state the game is in (see HopGame.tap).
 //
 // Because every tap on the board is a hop, pausing gets its own on-screen
-// button rather than sharing the tap the way snake does — the same trade Hex
-// Rush makes, for the same reason.
+// button rather than sharing the tap the way snake does: there is no spare
+// gesture left to overload.
 
 (function () {
   // A touch that travels further than this is a drag, not a tap. There is no

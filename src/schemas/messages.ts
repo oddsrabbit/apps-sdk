@@ -38,6 +38,64 @@ const RoundKey = z.string().min(1).max(128);
 
 export const SCORE_METADATA_MAX_BYTES = 2 * 1024;
 
+// ---- Matches (async turn-based multiplayer) ----
+// See docs/proposals/multiplayer-matches.md. The bridge is game-agnostic: a
+// `move` and a `view` are opaque objects that the server-side rules class for
+// `game` validates and filters. Nothing here knows what Connect Four is.
+
+/** A move is a human action, never a board: 2 KB is generous for any game. */
+export const MATCH_MOVE_MAX_BYTES = 2 * 1024;
+
+export const MATCH_MIN_PLAYERS = 2;
+export const MATCH_MAX_PLAYERS = 4;
+
+export const MATCH_STATUSES = ['lobby', 'active', 'finished', 'abandoned'] as const;
+export const MatchStatusSchema = z.enum(MATCH_STATUSES);
+export type MatchStatus = z.infer<typeof MatchStatusSchema>;
+
+export const MATCH_PLAYER_STATUSES = ['invited', 'joined', 'resigned', 'forfeited'] as const;
+export const MatchPlayerStatusSchema = z.enum(MATCH_PLAYER_STATUSES);
+export type MatchPlayerStatus = z.infer<typeof MatchPlayerStatusSchema>;
+
+/** `matches.list` filter. `all` includes finished and abandoned matches. */
+export const MATCH_LIST_FILTERS = ['active', 'finished', 'all'] as const;
+export const MatchListFilterSchema = z.enum(MATCH_LIST_FILTERS);
+export type MatchListFilter = z.infer<typeof MatchListFilterSchema>;
+
+/**
+ * Per-call outcomes a move can have. These describe ONE request, not the host,
+ * so the SDK must never treat them as "unsupported" — a rejected move is a
+ * normal part of play and the next call can succeed.
+ */
+export const MATCH_ERROR_CODES = {
+  /** The `version` sent is behind the server's: refetch and retry on the new view. */
+  versionConflict: 'match/version-conflict',
+  /** It is another seat's turn (or the match is not active). */
+  notYourTurn: 'match/not-your-turn',
+  /** The rules class rejected the move; `message` carries the reason. */
+  illegalMove: 'match/illegal-move',
+  /** No such match, or the viewer is not a participant in it. */
+  notFound: 'match/not-found',
+  /** The join code's table is already full or the lobby has closed. */
+  full: 'match/full',
+  /** An invitee is not connected to the creator on the follow graph. */
+  notConnected: 'match/not-connected',
+} as const;
+
+const MatchUuid = z.string().uuid();
+/** Six characters from an unambiguous alphabet (no 0/O/1/I). */
+export const JOIN_CODE_PATTERN = /^[A-HJ-NP-Z2-9]{6}$/;
+const JoinCode = z.string().regex(JOIN_CODE_PATTERN);
+/** Rules-class id, e.g. `connect4`. */
+const MatchGame = z.string().min(1).max(32);
+const MatchSeat = z.number().int().min(0).max(MATCH_MAX_PLAYERS - 1);
+
+const MatchMove = z
+  .record(z.unknown())
+  .refine((m) => JSON.stringify(m).length <= MATCH_MOVE_MAX_BYTES, {
+    message: `move exceeds ${MATCH_MOVE_MAX_BYTES}-byte cap`,
+  });
+
 export const BridgeRequestSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('storage.get'),
@@ -175,6 +233,81 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
     correlationId: CorrelationId,
     payload: z.object({
       roundKey: RoundKey,
+    }),
+  }),
+  // ---- Matches. All authenticated: a guest cannot be in a match. Every read
+  // is PER-VIEWER (the server filters `view` to what this seat may see — other
+  // players' racks are never on the wire), so none of these are public or
+  // cacheable the way `scores.top` is. Six verbs rather than fields on
+  // existing ones: a new field is undetectable through the capability
+  // handshake, a new verb is not.
+  z.object({
+    type: z.literal('matches.create'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      game: MatchGame,
+      maxPlayers: z.number().int().min(MATCH_MIN_PLAYERS).max(MATCH_MAX_PLAYERS),
+      // Seats to fill by invitation. The server requires each to be connected
+      // to the creator on the follow graph (either direction), so nobody can
+      // be pulled into a match by a stranger. The creator's own seat is
+      // implicit, hence at most maxPlayers - 1.
+      invitees: z.array(z.string().uuid()).max(MATCH_MAX_PLAYERS - 1).optional(),
+      // Mint a join code so seats left after invitees can be filled by anyone
+      // who has it. A table with neither invitees nor `open` is a lobby nobody
+      // can enter, which the server rejects.
+      open: z.boolean().optional(),
+    }),
+  }),
+  z.object({
+    type: z.literal('matches.join'),
+    correlationId: CorrelationId,
+    payload: z.union([
+      z.object({ matchUuid: MatchUuid }),
+      z.object({ joinCode: JoinCode }),
+    ]),
+  }),
+  z.object({
+    type: z.literal('matches.list'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      status: MatchListFilterSchema.optional(),
+      limit: z.number().int().min(1).max(100).optional(),
+    }),
+  }),
+  z.object({
+    type: z.literal('matches.get'),
+    correlationId: CorrelationId,
+    payload: z.object({ matchUuid: MatchUuid }),
+  }),
+  z.object({
+    type: z.literal('matches.move'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      matchUuid: MatchUuid,
+      // The `version` of the view this move was made against. A stale value
+      // rejects with `match/version-conflict` rather than applying a move to a
+      // position the player never saw (two tabs; a WebView resumed hours
+      // later). Optimistic concurrency, no row locks held across a round trip.
+      version: z.number().int().nonnegative(),
+      // Opaque to the bridge: the rules class for the match's `game` decides
+      // what a move is. Always an ACTION (column dropped, tiles placed) and
+      // never a board — the server applies it to its own state.
+      move: MatchMove,
+    }),
+  }),
+  z.object({
+    type: z.literal('matches.resign'),
+    correlationId: CorrelationId,
+    payload: z.object({ matchUuid: MatchUuid }),
+  }),
+  // People the viewer may invite: connected on the follow graph in either
+  // direction. Scoped to matches rather than a general social read, so it
+  // exposes exactly the set `matches.create` will accept and nothing more.
+  z.object({
+    type: z.literal('matches.invitable'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      limit: z.number().int().min(1).max(200).optional(),
     }),
   }),
   z.object({
@@ -463,6 +596,90 @@ export const DailyContentSchema = z.object({
 });
 
 export type DailyContent = z.infer<typeof DailyContentSchema>;
+
+// One seat in a match. The `uuid`/`username`/`avatar`/`isSelf` quartet is the
+// same as a score row on purpose, so the shared leaderboard renderer can draw
+// the player strip without a second avatar path.
+export const MatchPlayerSchema = z.object({
+  seat: MatchSeat,
+  uuid: z.string().uuid(),
+  username: z.string().min(1).max(64),
+  avatar: z.string().url().nullable().default(null),
+  status: MatchPlayerStatusSchema,
+  score: z.number().int().default(0),
+  isSelf: z.boolean().default(false),
+});
+
+export type MatchPlayer = z.infer<typeof MatchPlayerSchema>;
+
+// One person the viewer may invite (`matches.invitable`). Same identity
+// triple as every other row so the shared renderer draws it.
+export const InvitablePlayerSchema = z.object({
+  uuid: z.string().uuid(),
+  username: z.string().min(1).max(64),
+  avatar: z.string().url().nullable().default(null),
+  // Whether the viewer follows them, is followed by them, or both. Purely
+  // for the picker's ordering and badge; the server accepts any of the three.
+  relation: z.enum(['following', 'follower', 'mutual']).default('following'),
+});
+
+export type InvitablePlayer = z.infer<typeof InvitablePlayerSchema>;
+
+// The list-screen shape: everything a row needs to show whose turn it is and
+// who is playing, and nothing that costs a per-viewer filter (`view`) or is
+// private to the lobby (`joinCode`).
+//
+// `players` is validated strictly, unlike a board's rows. Dropping one bad row
+// from a board loses one line; dropping a seat from a match misreports whose
+// turn it is and how many people are playing, which is worse than dropping the
+// match. The LIST is still parsed per match (see `parseRows` in the SDK), so
+// one broken match hides itself rather than the whole screen.
+export const MatchSummarySchema = z.object({
+  matchUuid: z.string().uuid(),
+  game: MatchGame,
+  status: MatchStatusSchema,
+  // Bumps on every server-side state write. Echoed back in `matches.move` so
+  // the server can refuse a move made against a position the player no longer
+  // sees. Also the cheapest "has anything changed" test for a poll.
+  version: z.number().int().nonnegative(),
+  maxPlayers: z.number().int().min(MATCH_MIN_PLAYERS).max(MATCH_MAX_PLAYERS),
+  players: z.array(MatchPlayerSchema),
+  // Seat on turn while `active`; null in every other status.
+  turnSeat: MatchSeat.nullable().default(null),
+  // ISO datetime after which the seat on turn is skipped or forfeited.
+  turnDeadline: z.string().nullable().default(null),
+  // Set when `finished`. Null with `finished` means a draw.
+  winnerSeat: MatchSeat.nullable().default(null),
+  mySeat: MatchSeat,
+  isMyTurn: z.boolean().default(false),
+  updatedAt: z.string(),
+});
+
+export type MatchSummary = z.infer<typeof MatchSummarySchema>;
+
+// One move as recorded in the match log, echoed on a view so the client can
+// animate what just happened without diffing two boards.
+export const MatchLastMoveSchema = z.object({
+  ply: z.number().int().nonnegative(),
+  seat: MatchSeat,
+  move: z.record(z.unknown()),
+  scoreDelta: z.number().int().default(0),
+});
+
+export type MatchLastMove = z.infer<typeof MatchLastMoveSchema>;
+
+// The full per-viewer picture of one match. `view` has ALREADY been filtered
+// for the requesting seat by the server's rules class: it is the only game
+// state that ever crosses the bridge, and a client cannot ask for more.
+export const MatchViewSchema = MatchSummarySchema.extend({
+  // Only while `lobby`, and only to participants (it is how they invite the
+  // fourth). Cleared once the match starts.
+  joinCode: JoinCode.nullable().default(null),
+  view: z.record(z.unknown()),
+  lastMove: MatchLastMoveSchema.nullable().default(null),
+});
+
+export type MatchView = z.infer<typeof MatchViewSchema>;
 
 export const BridgeInitSchema = z.object({
   type: z.literal('init'),

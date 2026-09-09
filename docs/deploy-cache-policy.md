@@ -136,7 +136,7 @@ Every variant must report the current `BUILD_ID` — check the ones the app
 actually loads, not just `/host/`, since each is a separate cache entry:
 
 ```sh
-for a in rabbit-words 2048 snake rabbit-globe solitaire match3 liquid; do
+for a in rabbit-words 2048 snake rabbit-globe solitaire match3 flappy-rabbits liquid; do
   for s in light dark; do
     printf '%-14s %-5s ' "$a" "$s"
     curl -s "https://apps.oddsrabbit.com/host/?app=$a&colorScheme=$s" \

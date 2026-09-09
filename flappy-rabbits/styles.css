@@ -1,0 +1,480 @@
+/* Press Start 2P (OFL 1.1, see fonts/OFL.txt). Latin subset only — covers all
+   the text the game shows; ~5KB. font-display: swap paints the system mono
+   fallback first, then upgrades when the woff2 arrives. Shared with snake and
+   solitaire so the games read as one family. */
+@font-face {
+  font-family: "Press Start 2P";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./fonts/press-start-2p-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* FULL-BLEED. The scene IS the page: no title bar, no framed board, no
+   explanation column. Everything the player needs mid-run (score, best, pause,
+   mute) floats over the sky; everything they need between runs (the name, how
+   to play, the buttons) lives on the overlay and is gone while they play.
+   js/renderer.js sizes the canvas to the viewport and draws the spare height as
+   scenery, so there is nothing left for CSS to lay out around it.
+
+   The palette is pulled from the sprite palette in js/renderer.js — the same
+   greens and browns the board is drawn with — so the chrome reads as part of
+   the scene rather than as a container around it. */
+:root {
+  color-scheme: light;
+  --hop-board: #7ec8ef;     /* canvas sky — matches SKY_TOP in renderer.js */
+  --hop-panel: #3f7d3c;     /* chips, buttons — GRASS_DARK */
+  --hop-line: #2f6b28;      /* borders — HEDGE_DARK */
+  --hop-deep: #1f4a1b;      /* deepest shadow, and the letterbox — HEDGE_EDGE */
+  --hop-text: #23401f;
+  --hop-light: #f3faee;     /* text on the dark panels */
+  --hop-dim: #cfe3c4;       /* secondary text, on the overlay scrim */
+  --hop-carrot: #f2873c;
+  --hop-leaf: #6fc25e;
+  --hop-bg: #dceecf;        /* pale wash of the grass green — modal surfaces */
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  /* Only ever seen where the viewport is wider than the world's 2:3 and
+     js/renderer.js letterboxes the sides. Deliberately the darkest green in the
+     palette: it frames a bright scene the way the board frame used to, and it
+     is the one colour that can't be mistaken for part of the garden. */
+  background: var(--hop-deep);
+  color: var(--hop-light);
+  font-family: "Press Start 2P", ui-monospace, "Menlo", "Consolas", monospace;
+  font-size: 14px;
+  -webkit-font-smoothing: none;
+  font-smooth: never;
+  overflow: hidden;
+  /* Tell the browser we own all touch gestures so Android Chrome's compositor
+     can't claim a tap for scroll/zoom before our (non-passive) touch listeners
+     run. `{ passive: false }` on the listeners alone isn't enough on Android —
+     the compositor consults `touch-action` first. */
+  touch-action: none;
+  overscroll-behavior: none;
+}
+
+body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Shrink-wraps the canvas, and is therefore exactly the picture's box. The HUD
+   and the overlay position against THIS rather than against the viewport, so on
+   a wide desktop window they stay over the scene instead of drifting out into
+   the letterbox. `line-height: 0` keeps the inline canvas from adding a
+   descender's worth of height to the box. */
+.stage {
+  position: relative;
+  line-height: 0;
+}
+
+/* The width/height attributes in index.html set the buffer; js/renderer.js
+   overwrites both the buffer height and the CSS size on load and on every
+   resize. The declarations here are only the pre-boot fallback (a fatal bridge
+   error, say, where the renderer is never constructed), which is why they are
+   expressed against the viewport too. Nearest neighbour on the upscale so the
+   art stays blocky. */
+.game-canvas {
+  display: block;
+  width: 100vw;
+  height: auto;
+  background: var(--hop-board);
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+/* -------- HUD -------- */
+
+/* Over the sky, which is the emptiest part of the scene and the one part no
+   obstacle ever occupies. `pointer-events: none` on the bar so the gap between
+   the controls and the chips still passes a tap through to the board as a hop;
+   the controls themselves opt back in. The safe-area insets are additive and
+   resolve to 0 where the host already excludes them. */
+.hud {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: calc(10px + env(safe-area-inset-top, 0px))
+           calc(10px + env(safe-area-inset-right, 0px))
+           0
+           calc(10px + env(safe-area-inset-left, 0px));
+  line-height: 1;
+  pointer-events: none;
+}
+.hud > * { pointer-events: auto; }
+
+.hud-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.scores-container {
+  display: flex;
+  gap: 6px;
+  text-align: right;
+  /* Inline "0" placeholders hold the layout but stay invisible until
+     application.js writes the hydrated values and toggles `.ready`. Otherwise
+     a stored best of 4210 flashes "0 → 4210" on first paint. */
+  visibility: hidden;
+}
+.scores-container.ready { visibility: visible; }
+
+/* Score / best chips. Same proportions as 2048, snake and match3 so
+   the chip shape is one shared element across the suite — now floated over the
+   scene rather than sat above it. */
+.score-container, .best-container {
+  position: relative;
+  background: var(--hop-panel);
+  padding: 16px 12px 6px;
+  font-size: 18px;
+  line-height: 1;
+  min-width: 34px;
+  font-weight: bold;
+  color: var(--hop-light);
+  text-align: center;
+  border: 2px solid var(--hop-line);
+  box-shadow: inset 0 0 0 2px var(--hop-deep);
+}
+.score-container::after, .best-container::after {
+  position: absolute;
+  width: 100%;
+  top: 6px;
+  left: 0;
+  font-size: 9px;
+  line-height: 9px;
+  text-align: center;
+  color: var(--hop-leaf);
+  letter-spacing: 1px;
+}
+.score-container::after { content: "SCORE"; }
+.best-container::after { content: "BEST"; }
+
+/* -------- buttons -------- */
+
+.pause-button,
+.sound-toggle,
+.game-message button {
+  background: var(--hop-panel);
+  color: var(--hop-light);
+  border: 2px solid var(--hop-line);
+  border-bottom-width: 4px;
+  border-right-width: 4px;
+  padding: 10px 16px;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+.pause-button:active,
+.sound-toggle:active,
+.game-message button:active {
+  border-bottom-width: 2px;
+  border-right-width: 2px;
+  transform: translate(2px, 2px);
+}
+
+/* Icon-sized, because they sit over the picture: a full-width PAUSE button
+   would cover the sky the player is reading the next gap against. */
+.pause-button,
+.sound-toggle {
+  padding: 0;
+  width: 36px;
+  height: 36px;
+  font-size: 13px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+/* `display: flex` above outranks the UA rule that makes [hidden] disappear, so
+   the attribute application.js toggles on the pause button needs saying again
+   here or the button shows through every non-playing state. */
+.pause-button[hidden],
+.sound-toggle[hidden] { display: none; }
+
+/* -------- overlay -------- */
+
+/* The only chrome with words on it, and it exists only between runs. Covers
+   the whole picture (inset 0 of the stage, which IS the picture) so the state
+   it announces is unmissable. */
+.game-message {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  position: absolute;
+  inset: 0;
+  /* Light enough that the garden still reads through it. The dark games can
+     sit behind an opaque scrim, but washing a bright scene out to a flat green
+     slab loses the one thing a player wants to see after a run ends: where
+     they actually hit. */
+  background: rgba(21, 48, 18, 0.62);
+  z-index: 100;
+  text-align: center;
+  line-height: 1.4;
+  padding: 24px 18px calc(24px + env(safe-area-inset-bottom, 0px));
+  box-sizing: border-box;
+}
+.game-message.visible { display: flex; }
+
+/* Idle keeps the middle of the screen clear: the title sits in the upper
+   third, the buttons and the how-to are pushed to the bottom, and the rabbit
+   bobbing between them is visible rather than hidden behind a paragraph. The
+   other two states stay centred — the rabbit is on the ground by then, so
+   there is nothing to leave room for. */
+.game-message[data-state="idle"] {
+  justify-content: flex-start;
+  /* Measured against the BOARD's height (js/renderer.js publishes it), not a
+     percentage — percentage padding resolves against the width even on the
+     block axis, which on a tall phone put the title under the score chips.
+     Clamped so it can't collide with the HUD on a short board or strand the
+     title mid-screen on a very tall one. */
+  padding-top: clamp(24px, calc(var(--stage-h, 100vh) * 0.12), 150px);
+}
+.game-message[data-state="idle"] .lower { margin-top: auto; }
+
+/* The name of the game, shown once — on the idle screen — and then gone. A
+   permanent title bar spends the best real estate on the screen telling the
+   player something they already know. */
+h1.title {
+  margin: 0;
+  font-size: clamp(16px, calc(var(--stage-w, 100vw) * 0.085), 42px);
+  line-height: 1.35;
+  letter-spacing: 2px;
+  color: var(--hop-light);
+  text-shadow: 3px 3px 0 var(--hop-deep);
+}
+.game-message:not([data-state="idle"]) h1.title { display: none; }
+
+.game-message-text {
+  font-size: clamp(11px, calc(var(--stage-w, 100vw) * 0.047), 22px);
+  letter-spacing: 2px;
+  color: var(--hop-light);
+  margin: 0;
+  max-width: 14ch;
+  text-shadow: 2px 2px 0 var(--hop-deep);
+}
+
+.final-score {
+  font-size: 13px;
+  letter-spacing: 2px;
+  color: var(--hop-carrot);
+  margin: 0;
+}
+.final-score:empty { display: none; }
+
+.new-best-note {
+  font-size: 12px;
+  letter-spacing: 2px;
+  color: var(--hop-leaf);
+  margin: 0;
+  text-shadow: 1px 1px 0 var(--hop-deep);
+}
+.new-best-note:empty { display: none; }
+
+.game-message .lower {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+/* Each overlay state shows only the relevant buttons. Default hides all; the
+   per-state rules opt the right ones back in. The leaderboard buttons carry
+   `hidden` from the markup until js/leaderboard.js clears it, so that attribute
+   needs to be honoured over the display rules below. */
+.game-message .lower button { display: none; }
+.game-message[data-state="idle"] .start-button,
+.game-message[data-state="idle"] .leaderboard-button { display: inline-block; }
+.game-message[data-state="paused"] .resume-button,
+.game-message[data-state="paused"] .restart-button,
+.game-message[data-state="paused"] .leaderboard-button { display: inline-block; }
+.game-message[data-state="over"] .retry-button,
+.game-message[data-state="over"] .share-button,
+.game-message[data-state="over"] .leaderboard-button-overlay { display: inline-block; }
+.game-message .lower button[hidden] { display: none; }
+
+/* How to play. Idle only: it is the answer to a question the player only has
+   before their first run, and after that it is furniture. */
+.game-explanation {
+  margin: 4px 0 0;
+  font-size: 10px;
+  line-height: 1.8;
+  max-width: 34ch;
+  color: var(--hop-dim);
+}
+.game-message:not([data-state="idle"]) .game-explanation { display: none; }
+
+/* Bootstrap error fallback — surfaces a fatal bridge/hydrate failure to the
+   DOM rather than leaving a dead canvas. Fixed and centred because it can fire
+   before the renderer has sized anything, so there is no layout to sit in. */
+.bootstrap-error {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  padding: 16px 20px;
+  width: calc(100% - 40px);
+  max-width: 420px;
+  box-sizing: border-box;
+  background: var(--hop-panel);
+  color: var(--hop-light);
+  font-size: 11px;
+  line-height: 1.6;
+  text-align: center;
+  border: 2px solid var(--hop-line);
+  z-index: 400;
+}
+
+/* Share modal. Same visual language as the rest of the game so it doesn't
+   look like a stock browser dialog. */
+.share-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(31, 74, 27, 0.86);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  box-sizing: border-box;
+}
+.share-modal {
+  background: var(--hop-bg);
+  color: var(--hop-text);
+  border: 2px solid var(--hop-line);
+  box-shadow: 6px 6px 0 var(--hop-deep);
+  padding: 20px;
+  width: 100%;
+  max-width: 380px;
+  max-height: calc(100% - 32px);
+  overflow-y: auto;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  text-align: center;
+  line-height: 1.4;
+}
+.share-modal h2 {
+  margin: 0;
+  font-size: 14px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+.share-preview {
+  background: var(--hop-deep);
+  color: var(--hop-light);
+  padding: 14px;
+  font-size: 11px;
+  line-height: 1.6;
+  letter-spacing: 1px;
+  border: 2px solid var(--hop-line);
+  word-break: break-word;
+  white-space: pre-line;
+}
+.share-action {
+  background: var(--hop-panel);
+  color: var(--hop-light);
+  border: 2px solid var(--hop-line);
+  border-bottom-width: 4px;
+  border-right-width: 4px;
+  padding: 10px 16px;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+.share-action:active {
+  border-bottom-width: 2px;
+  border-right-width: 2px;
+  transform: translate(2px, 2px);
+}
+.share-section-label {
+  font-size: 9px;
+  letter-spacing: 1px;
+  color: #55764f;
+  text-transform: uppercase;
+  margin-top: 4px;
+}
+.share-buttons {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.share-button-social {
+  background: var(--hop-panel);
+  color: var(--hop-light);
+  border: 2px solid var(--hop-line);
+  border-bottom-width: 4px;
+  border-right-width: 4px;
+  padding: 10px 4px;
+  font: inherit;
+  font-size: 9px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  font-weight: bold;
+  text-transform: uppercase;
+}
+.share-button-social:active {
+  border-bottom-width: 2px;
+  border-right-width: 2px;
+  transform: translate(2px, 2px);
+}
+
+/* Toast. Bottom-centred slide-up; auto-dismissed by application.js. */
+.toast {
+  position: fixed;
+  bottom: calc(32px + env(safe-area-inset-bottom, 0px));
+  left: 50%;
+  transform: translate(-50%, 20px);
+  background: var(--hop-deep);
+  color: var(--hop-light);
+  padding: 10px 16px;
+  font-size: 10px;
+  letter-spacing: 1px;
+  border: 2px solid var(--hop-line);
+  opacity: 0;
+  transition: opacity 200ms ease, transform 200ms ease;
+  z-index: 300;
+  pointer-events: none;
+}
+.toast.toast-show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* Short viewports: the overlay is the only thing here that can run out of
+   room, so it loses padding and the how-to-play line before anything else. */
+@media screen and (max-height: 560px) {
+  .game-message { gap: 10px; padding: 12px; }
+  .game-message[data-state="idle"] .game-explanation { display: none; }
+  .score-container, .best-container {
+    padding: 14px 10px 5px;
+    font-size: 15px;
+    min-width: 28px;
+  }
+  .pause-button, .sound-toggle { width: 32px; height: 32px; }
+  .hud { padding-top: calc(6px + env(safe-area-inset-top, 0px)); }
+}
