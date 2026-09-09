@@ -72,7 +72,24 @@
           <!-- Sound on/off. Procedural audio (js/sound_manager.js) is on by
                default; this lets a player silence it. aria-pressed reflects
                the muted state and is kept in sync from application.js. -->
-          <button type="button" class="sound-toggle" aria-label="Mute sound" aria-pressed="false">&#128266;</button>
+          <!-- Drawn, not an emoji. The colour glyphs (🔊 / 🔇) are the one thing
+               on the board rendered by the system's emoji font: full-colour,
+               rounded and anti-aliased, next to a bar built out of 2px borders
+               and a pixel typeface. Inline SVG inherits `currentColor`, so it
+               takes the HUD's own colour, and it carries the same slash
+               convention as the vibration toggle beside it. The slash is shown
+               by CSS off `aria-pressed`, so the state lives in one place. -->
+          <button type="button" class="sound-toggle" aria-label="Mute sound" aria-pressed="false">
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
+              <path d="M1.5 6h3.4L9 2.6v10.8L4.9 10H1.5z" fill="currentColor" />
+              <g class="sound-wave" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+                <path d="M11.3 5.6a3.4 3.4 0 0 1 0 4.8" />
+                <path d="M13.4 3.4a6.4 6.4 0 0 1 0 9.2" />
+              </g>
+              <path class="sound-slash" d="M2.2 13.8 13.8 2.2" fill="none" stroke="currentColor"
+                    stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+          </button>
           <!-- Vibration on/off. Starts `hidden`; application.js reveals it only
                on a touch device, since nothing on a desktop can buzz and a
                control that cannot do anything is worse than no control.

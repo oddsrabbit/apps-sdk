@@ -238,14 +238,15 @@ body {
 .moves-container::after { content: "MOVES"; }
 .time-container::after { content: "TIME"; }
 
-/* Sound and vibration toggles, the quiet half of the HUD. An emoji glyph
-   carries the state (🔊 / 🔇 and 📳 / 📴); the buttons themselves are flat tap
+/* Sound and vibration toggles, the quiet half of the HUD. Both are drawn
+   icons that inherit `currentColor`; the buttons themselves are flat tap
    targets with no chrome so they read as settings rather than as actions on
    the deal, which is the distinction the undo / new-deal pair beside them
    carries with a border.
 
    `aria-pressed="true"` means the thing is OFF for both — pressed-in is the
-   silenced state — which is what the dimmed opacity below is showing. The
+   silenced state — which is what the slash and the dimmed opacity below are
+   showing. The
    vibration button is `hidden` in the markup and only unhidden on touch
    devices, so this rule set covers a control that is usually absent on
    desktop. */
@@ -288,11 +289,22 @@ body {
 }
 .haptic-toggle[hidden] { display: none; }
 
-/* The slash is the whole state signal, and it is the same signal 🔇 gives next
-   to it. The dimming on [aria-pressed="true"] reinforces it but must not be
-   the only cue — opacity alone reads as "disabled", not as "switched off". */
-.haptic-slash { display: none; }
-.haptic-toggle[aria-pressed="true"] .haptic-slash { display: inline; }
+/* Both toggles are drawn icons, so both say "off" the same way: the waves or
+   the buzz lines go, a slash comes across. The dimming on [aria-pressed="true"]
+   reinforces it but must not be the only cue — opacity alone reads as
+   "disabled", not as "switched off". */
+.haptic-slash,
+.sound-slash { display: none; }
+.haptic-toggle[aria-pressed="true"] .haptic-slash,
+.sound-toggle[aria-pressed="true"] .sound-slash { display: inline; }
+.sound-toggle[aria-pressed="true"] .sound-wave { display: none; }
+
+/* `display: flex` centres the inline SVG instead of sitting it on the text
+   baseline, which would drop it a couple of pixels below the icon next door. */
+.sound-toggle {
+  display: flex;
+  align-items: center;
+}
 
 .undo-button, .restart-button, .game-message button, .finish-button {
   background: var(--wood-darkest);

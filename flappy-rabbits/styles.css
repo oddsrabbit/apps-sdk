@@ -39,10 +39,12 @@ html, body {
   margin: 0;
   padding: 0;
   height: 100%;
-  /* Only ever seen where the viewport is wider than the world's 2:3 and
-     js/renderer.js letterboxes the sides. Deliberately the darkest green in the
-     palette: it frames a bright scene the way the board frame used to, and it
-     is the one colour that can't be mistaken for part of the garden. */
+  /* Barely ever seen. A wide window widens the WORLD rather than letterboxing
+     the sides (js/renderer.js `resize`), so the only viewport that still shows
+     this is one past about 2.5:1, where the sky and earth caps stop the scene
+     growing and it letterboxes top and bottom instead. Deliberately the
+     darkest green in the palette: it is the one colour that can't be mistaken
+     for part of the garden. */
   background: var(--hop-deep);
   color: var(--hop-light);
   font-family: "Press Start 2P", ui-monospace, "Menlo", "Consolas", monospace;
@@ -198,17 +200,29 @@ body {
   padding: 0;
   width: 36px;
   height: 36px;
-  font-size: 13px;
   line-height: 1;
   display: flex;
   align-items: center;
   justify-content: center;
+  /* Both chips hold a drawn 16px icon and no text. The 1px tracking inherited
+     from the rule above is measured after the last glyph, so on a text icon it
+     shifted the ink half a pixel off centre; zeroed here so the flex centring
+     is the only thing positioning the icon. */
+  letter-spacing: 0;
 }
 /* `display: flex` above outranks the UA rule that makes [hidden] disappear, so
    the attribute application.js toggles on the pause button needs saying again
    here or the button shows through every non-playing state. */
 .pause-button[hidden],
 .sound-toggle[hidden] { display: none; }
+
+/* The mute state. The sound toggle is a drawn icon rather than an emoji — the
+   colour glyphs were the one anti-aliased, full-colour thing on a screen made
+   of flat integer rects — so "off" is the waves going and a slash coming
+   across, which is the same signal 🔇 gave and reads at 16px. */
+.sound-slash { display: none; }
+.sound-toggle[aria-pressed="true"] .sound-slash { display: inline; }
+.sound-toggle[aria-pressed="true"] .sound-wave { display: none; }
 
 /* -------- overlay -------- */
 

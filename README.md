@@ -122,7 +122,7 @@ rabbit-globe/   RabbitGlobe — daily photo-pin geo-guess (Leaflet map)
 snake/          Snake — Game Boy-styled reference game
 match3/         Fruit Match — match-3 reference game
 solitaire/      Solitaire — Klondike with daily deals, full-bleed elastic board
-flappy-rabbits/ Flappy Rabbits — one-button side-scroller, full-bleed board
+flappy-rabbits/ Flappy Rabbits — one-button side-scroller, full-bleed scene
 rabbit-word-battle/
                 Rabbit Word Battle — async 2–4 player word game (matches surface)
 liquid/         Liquid WebGL toy — reference app, no scopes

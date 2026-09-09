@@ -14,10 +14,18 @@
 // load-bearing: the game has global leaderboards, and a world that grew with
 // the screen would mean a tall device played an easier game for the same board.
 //
-// Width is the axis that CANNOT grow, even decoratively: gates spawn at world
-// x = 320 (js/game.js `_moveGates`), so a wider view would show them pop into
-// existence in open air. Anything wider than 2:3 therefore fits by height and
-// lets the page background letterbox the sides.
+// WIDTH grows instead of letterboxing. A window wider than the world's 2:3
+// used to fit by height and leave the page background as bars down both sides
+// — on a 1400x800 desktop that was 433 px of flat green either side of a
+// 533 px board, more of the screen than the game. So a wide view now fits by
+// HEIGHT and widens the world to fill the rest.
+//
+// What makes that safe is that the rabbit moves with the right edge: gates
+// spawn at the edge of the view and the rabbit sits SPAWN_LEAD (244 world px)
+// in from it on every screen, so the visible run-up in front of it is
+// identical everywhere and the extra width is garden the rabbit has already
+// passed. See the difficulty-invariant note in js/game.js. Gates still never
+// pop into existence in open air, because the spawn point is the edge itself.
 //
 // The rabbit is built out of rects rather than authored as a sprite sheet. At
 // this size that is fewer than twenty rects, and it buys two things a PNG
@@ -26,7 +34,10 @@
 // hand-drawn frames kept in sync.
 
 (function () {
-  var W = 320;
+  // The world's narrowest width, and what a portrait phone plays at. `this.w`
+  // is the live one — resize() may widen it, never narrow it. Mirrors
+  // MIN_WIDTH in js/game.js.
+  var MIN_W = 320;
   var H = 480;
   var GROUND_Y = 424;
 
@@ -96,12 +107,15 @@
 
   function HopRenderer(canvas) {
     this.canvas = canvas;
-    canvas.width = W;
+    canvas.width = MIN_W;
     this.ctx = canvas.getContext("2d");
     this.ctx.imageSmoothingEnabled = false;
 
-    // Buffer height and the world's vertical offset within it, both set by
+    // Buffer size and the world's vertical offset within it, all set by
     // resize(). `offsetY` is added to every world y on the way to the canvas.
+    // `w` is read by the game's frame loop, which is how the simulation finds
+    // out the view got wider.
+    this.w = MIN_W;
     this.h = H;
     this.offsetY = 0;
 
@@ -142,18 +156,25 @@
     // Measured from the viewport, NOT from the element box: the stage
     // shrink-wraps the canvas, so measuring the element would feed its own
     // previous size back in and it could never shrink.
-    var vw = Math.max(1, window.innerWidth || W);
+    var vw = Math.max(1, window.innerWidth || MIN_W);
     var vh = Math.max(1, window.innerHeight || H);
 
-    var scale = vw / W;
+    var scale = vw / MIN_W;
     var h = Math.round(vh / scale);
+    var w = MIN_W;
     var offset = 0;
 
     if (h < H) {
-      // Wider than the world's 2:3. Fit by height; styles.css letterboxes the
-      // sides in the frame colour.
+      // Wider than the world's 2:3, so the play field can't fill the width at
+      // this scale. Fit by HEIGHT and spend the surplus width on more world
+      // instead of on bars: the rabbit rides SPAWN_LEAD in from the right
+      // edge wherever that edge lands, so the widening happens behind it and
+      // the run-up in front is unchanged (see js/game.js). Rounded UP so the
+      // canvas can never come out a hair narrower than the viewport and leave
+      // a one-pixel seam of page background down one side.
       scale = vh / H;
       h = H;
+      w = Math.max(MIN_W, Math.ceil(vw / scale));
     } else {
       // Split the spare height between sky and earth, capped.
       var extra = h - H;
@@ -171,6 +192,13 @@
 
     this.offsetY = offset;
     this.h = h;
+    this.w = w;
+    if (this.canvas.width !== w) {
+      // Same guard as the height below: assigning either dimension clears the
+      // buffer and resets the context.
+      this.canvas.width = w;
+      this.ctx.imageSmoothingEnabled = false;
+    }
     if (this.canvas.height !== h) {
       // Assigning the buffer size also clears it and resets the 2D context
       // state, so this is guarded — an orientation change that lands on the
@@ -180,16 +208,17 @@
       this.canvas.height = h;
       this.ctx.imageSmoothingEnabled = false;
     }
-    var cssW = Math.round(W * scale);
+    var cssW = Math.round(w * scale);
     var cssH = Math.round(h * scale);
     this.canvas.style.width = cssW + "px";
     this.canvas.style.height = cssH + "px";
 
-    // Publish the picture's size to CSS. The overlay's type has to scale with
-    // the BOARD, and on a wide window the board is only part of the viewport —
-    // so `vw` would size the title against the letterbox as well and blow it
-    // out. styles.css reads these with `100vw`/`100vh` fallbacks for the paint
-    // before this first runs.
+    // Publish the picture's size to CSS, for the overlay's type and the HUD.
+    // These now track the viewport closely — the scene fills it on both axes
+    // in every normal case — but they stay the honest measurement rather than
+    // `100vw`/`100vh`, because a viewport past about 2.5:1 still letterboxes
+    // top and bottom (see the earth cap above). styles.css reads them with
+    // viewport fallbacks for the paint before this first runs.
     var root = document.documentElement;
     root.style.setProperty("--stage-w", cssW + "px");
     root.style.setProperty("--stage-h", cssH + "px");
@@ -207,9 +236,9 @@
     // covered whatever the height and no seam can open between them.
     var mid = Math.max(0, horizon - HAZE_MID_ABOVE_HORIZON);
     var low = Math.max(0, horizon - HAZE_LOW_ABOVE_HORIZON);
-    this._rect(0, 0, W, this.h, SKY_TOP);
-    this._rect(0, mid, W, this.h - mid, SKY_MID);
-    this._rect(0, low, W, this.h - low, SKY_BOTTOM);
+    this._rect(0, 0, this.w, this.h, SKY_TOP);
+    this._rect(0, mid, this.w, this.h - mid, SKY_MID);
+    this._rect(0, low, this.w, this.h - low, SKY_BOTTOM);
   };
 
   // A cloud is three overlapping bars — wide in the middle, narrower above.
@@ -217,12 +246,17 @@
   // edge is on a pixel boundary.
   HopRenderer.prototype._drawClouds = function (scroll, horizon) {
     var offset = (scroll * CLOUD_RATE) % this.cloudSpan;
-    for (var pass = 0; pass < 2; pass++) {
+    // One tile of the cloud field is `cloudSpan` wide, so a view wider than
+    // that needs more than the two passes a 320-wide world got — on a desktop
+    // the world runs to ~840 px and the right third of the sky would come out
+    // empty. Two spare passes cover the scroll offset at either end.
+    var passes = Math.ceil(this.w / this.cloudSpan) + 2;
+    for (var pass = 0; pass < passes; pass++) {
       var base = -offset + pass * this.cloudSpan;
       for (var i = 0; i < this.clouds.length; i++) {
         var c = this.clouds[i];
         var x = base + c.x;
-        if (x > W || x + c.w < 0) continue;
+        if (x > this.w || x + c.w < 0) continue;
         var cy = Math.round(c.yf * horizon);
         this._rect(x, cy + 6, c.w, 7, CLOUD);
         this._rect(x + 8, cy, c.w - 20, 7, CLOUD);
@@ -260,9 +294,9 @@
     // every mound in the layer snaps to its neighbour's height.
     var firstIndex = Math.floor((scroll * rate) / spacing) - 1;
 
-    for (var i = -1; i <= Math.ceil(W / spacing) + 1; i++) {
+    for (var i = -1; i <= Math.ceil(this.w / spacing) + 1; i++) {
       var cx = -offset + phase + i * spacing;
-      if (cx + spacing < 0 || cx - spacing > W) continue;
+      if (cx + spacing < 0 || cx - spacing > this.w) continue;
       // Height varies per mound, keyed to its position in the world rather
       // than to its position on screen, so it stays the same mound as it moves.
       var h = height * (0.66 + 0.34 * hash(firstIndex + i + 1));
@@ -284,9 +318,9 @@
   // there to the bottom of the buffer, so a tall screen deepens the foreground
   // instead of leaving a gap under a fixed-height strip.
   HopRenderer.prototype._drawGround = function (scroll, horizon) {
-    this._rect(0, horizon, W, this.h - horizon, EARTH);
-    this._rect(0, horizon, W, 10, GRASS);
-    this._rect(0, horizon + 10, W, 2, GRASS_DARK);
+    this._rect(0, horizon, this.w, this.h - horizon, EARTH);
+    this._rect(0, horizon, this.w, 10, GRASS);
+    this._rect(0, horizon + 10, this.w, 2, GRASS_DARK);
 
     // Scrolling texture: grass tufts on the surface and pebbles below, both
     // keyed to world position so they move at exactly the world's speed. This
@@ -294,7 +328,7 @@
     // legible.
     var tuftSpacing = 14;
     var offset = scroll % tuftSpacing;
-    for (var x = -offset; x < W; x += tuftSpacing) {
+    for (var x = -offset; x < this.w; x += tuftSpacing) {
       // Blades stand above the strip in the strip's own colour, so they read
       // as grass against the lighter hills behind rather than as loose specks.
       this._rect(x, horizon - 3, 2, 3, GRASS);
@@ -306,7 +340,7 @@
     // below the first row.
     var pebbleSpacing = 37;
     var pOffset = scroll % pebbleSpacing;
-    for (var px = -pOffset; px < W; px += pebbleSpacing) {
+    for (var px = -pOffset; px < this.w; px += pebbleSpacing) {
       this._rect(px + 6, horizon + 20, 4, 3, EARTH_DARK);
       this._rect(px + 20, horizon + 34, 3, 2, EARTH_DARK);
       if (this.h - horizon > 100) {
@@ -445,7 +479,7 @@
     this._drawHills(scroll, HILL_NEAR_RATE, horizon + 3, 33, HILL_NEAR, 68, 34);
     this._drawGates(state.gates, horizon);
     this._drawGround(scroll, horizon);
-    this._drawRabbit(76, state.y + off, state.tilt);
+    this._drawRabbit(state.rabbitX, state.y + off, state.tilt);
   };
 
   window.HopRenderer = HopRenderer;

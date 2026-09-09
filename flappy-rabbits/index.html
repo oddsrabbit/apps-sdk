@@ -25,14 +25,18 @@
          positioned against the stage, always land exactly over the picture and
          never in the letterbox a wide desktop window leaves. -->
     <div class="stage">
-      <!-- Fixed 320px internal WIDTH, upscaled by CSS with
-           `image-rendering: pixelated`. The height of the buffer is set at
-           runtime from the viewport (see HopRenderer.resize): the play field
-           is always the same 320x480 world the physics in js/game.js is
-           expressed in, and any spare screen height is drawn as extra sky
-           above it and extra earth below it. That keeps the game identical on
-           every device — a taller screen shows more scenery, never more
-           playable room. -->
+      <!-- 320x480 is the world's MINIMUM, and what these attributes give the
+           browser to lay out with before the scripts run. Both buffer
+           dimensions are then set from the viewport at runtime (see
+           HopRenderer.resize), and upscaled by CSS with
+           `image-rendering: pixelated`.
+
+           The play field inside that buffer never changes: spare height is
+           drawn as extra sky above and extra earth below, and spare width as
+           garden the rabbit has already passed — the rabbit rides a constant
+           244px in from the right edge, so the run-up in front of it is the
+           same on every device. A bigger screen shows more scenery, never more
+           playable room and never more warning. -->
       <canvas class="game-canvas" width="320" height="480" aria-label="Flappy Rabbits game board"></canvas>
 
       <!-- HUD. Floats over the sky, which is the emptiest part of the scene
@@ -45,8 +49,34 @@
           <!-- Pause needs its own control: every tap on the board is a hop, so
                there is no spare tap gesture to overload. Hidden outside a live
                run by application.js. -->
-          <button type="button" class="pause-button" aria-label="Pause" hidden>❚❚</button>
-          <button type="button" class="sound-toggle" aria-label="Mute sound" aria-pressed="false">🔊</button>
+          <!-- Drawn, not the ❚❚ glyph, for the same reason as the sound toggle
+               below: U+275A comes from a fallback font whose side bearings and
+               baseline sit where that font wants them, not centred on the em
+               box, so no amount of flex centring lands it in the middle of the
+               chip. Two rects on a 16x16 grid are centred by construction. -->
+          <button type="button" class="pause-button" aria-label="Pause" hidden>
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
+              <rect x="4" y="3" width="3" height="10" fill="currentColor" />
+              <rect x="9" y="3" width="3" height="10" fill="currentColor" />
+            </svg>
+          </button>
+          <!-- Drawn, not an emoji. The colour glyphs (🔊 / 🔇) are the one thing
+               on screen rendered by the system's emoji font: full-colour,
+               rounded and anti-aliased, floating over a scene made of flat
+               integer rects. Inline SVG inherits `currentColor`, so it takes
+               the chip's own colour, and CSS swaps the waves for a slash off
+               `aria-pressed` — so the state lives in one place. -->
+          <button type="button" class="sound-toggle" aria-label="Mute sound" aria-pressed="false">
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
+              <path d="M1.5 6h3.4L9 2.6v10.8L4.9 10H1.5z" fill="currentColor" />
+              <g class="sound-wave" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+                <path d="M11.3 5.6a3.4 3.4 0 0 1 0 4.8" />
+                <path d="M13.4 3.4a6.4 6.4 0 0 1 0 9.2" />
+              </g>
+              <path class="sound-slash" d="M2.2 13.8 13.8 2.2" fill="none" stroke="currentColor"
+                    stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+          </button>
         </div>
         <div class="scores-container">
           <div class="score-container" aria-label="Score 0">0</div>

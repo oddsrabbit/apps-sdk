@@ -19,13 +19,24 @@
 // keeps the game identical on every screen size.
 
 (function () {
-  var WIDTH = 320;
+  // The world's NARROWEST width, and the one a portrait phone plays at. The
+  // view can be wider than this — see setViewWidth — but never narrower.
+  var MIN_WIDTH = 320;
   var HEIGHT = 480;
   var GROUND_Y = 424;         // top of the ground strip; the floor that kills
   var CEILING_Y = 0;
 
   // The rabbit sits at a fixed x and the world moves past it.
-  var RABBIT_X = 76;
+  //
+  // THE DIFFICULTY INVARIANT. Gates spawn at the right edge of the view, so
+  // what decides how much warning a player gets is the gap between that edge
+  // and the rabbit — not the width of the view. This constant IS that gap, it
+  // is the same on every screen, and `rabbitX` is derived from it rather than
+  // being a number in its own right. A wide window therefore shows more garden
+  // BEHIND the rabbit, never more track ahead of it: the visible run-up stays
+  // 244 px, which is about 1.7 gates at GATE_SPACING, whatever the device.
+  // The game has global leaderboards; this is what makes them comparable.
+  var SPAWN_LEAD = 244;
   var RABBIT_W = 22;
   var RABBIT_H = 18;
   // The hitbox is inset from the drawn sprite. Pixel art reads as its silhouette
@@ -94,6 +105,12 @@
     this.scroll = 0;            // total world distance travelled, for parallax
     this.tilt = 0;              // -1 rising, 0 level, 1 diving (render hint)
 
+    // Live view geometry. Both are rewritten by setViewWidth, which the frame
+    // loop pulls off the renderer; these are the portrait defaults, and the
+    // ones every physics constant above was tuned against.
+    this.viewW = MIN_WIDTH;
+    this.rabbitX = MIN_WIDTH - SPAWN_LEAD;   // 76
+
     this._accumulator = 0;
     // null, not 0, means "no previous frame". A timestamp of exactly 0 is a
     // legal value for the clock the frame loop is handed, and a falsy sentinel
@@ -126,7 +143,7 @@
     this._accumulator = 0;
     // First gate starts off the right edge, so a run opens with a moment of
     // clear air to find the rhythm in rather than an immediate obstacle.
-    this._spawnGate(WIDTH + 60, HEIGHT / 2 - 30);
+    this._spawnGate(this.viewW + 60, HEIGHT / 2 - 30);
   };
 
   HopGame.prototype.start = function () {
@@ -202,6 +219,31 @@
     this.input.on("restart", function () { self.restart(); });
   };
 
+  // -------- view --------
+
+  // Widen (or narrow) the visible world. Called from the frame loop with
+  // whatever the renderer last fitted to the viewport, so a rotate or a
+  // desktop resize lands here.
+  //
+  // The rabbit MOVES with the right edge — it stays SPAWN_LEAD from it — and
+  // the whole garden is translated by the same delta. That second half is not
+  // cosmetic: gate x values are absolute world coordinates, and moving the
+  // rabbit without moving them would change every gate's distance from it. Mid
+  // run that would teleport the rabbit past a whole screen of hedges, scoring
+  // them all and possibly landing it inside one. Translating both keeps every
+  // relative position — which is all the simulation and the player care about
+  // — byte-identical across the resize.
+  HopGame.prototype.setViewWidth = function (w) {
+    w = Math.max(MIN_WIDTH, Math.round(w || 0));
+    if (w === this.viewW) return;
+    var dx = (w - SPAWN_LEAD) - this.rabbitX;
+    this.viewW = w;
+    this.rabbitX += dx;
+    for (var i = 0; i < this.gates.length; i++) {
+      this.gates[i].x += dx;
+    }
+  };
+
   // -------- main loop --------
 
   HopGame.prototype._startLoop = function () {
@@ -212,6 +254,14 @@
 
   HopGame.prototype._frame = function (now) {
     this._rafId = window.requestAnimationFrame(this._boundFrame);
+
+    // Pull the view width rather than having the renderer push it. The
+    // renderer owns the resize listener, and reading its answer at the top of
+    // a frame means the translation above can never land between a step and
+    // the draw that follows it.
+    if (this.renderer && this.renderer.w !== this.viewW) {
+      this.setViewWidth(this.renderer.w);
+    }
 
     var dt = 0;
     if (this._lastFrame !== null) dt = Math.min(now - this._lastFrame, MAX_FRAME_MS);
@@ -308,7 +358,7 @@
 
       // Scored the instant the gate's trailing edge clears the rabbit's leading
       // edge — the same moment the player sees themselves come through.
-      if (!gate.passed && gate.x + GATE_W < RABBIT_X + HIT_INSET_X) {
+      if (!gate.passed && gate.x + GATE_W < this.rabbitX + HIT_INSET_X) {
         gate.passed = true;
         this.score++;
         this._emitScore();
@@ -321,8 +371,8 @@
     this.gates = alive;
 
     var last = this.gates.length ? this.gates[this.gates.length - 1] : null;
-    if (!last || last.x < WIDTH - GATE_SPACING) {
-      this._spawnGate(last ? last.x + GATE_SPACING : WIDTH, null);
+    if (!last || last.x < this.viewW - GATE_SPACING) {
+      this._spawnGate(last ? last.x + GATE_SPACING : this.viewW, null);
     }
   };
 
@@ -330,8 +380,8 @@
 
   HopGame.prototype._hitbox = function () {
     return {
-      left: RABBIT_X + HIT_INSET_X,
-      right: RABBIT_X + RABBIT_W - HIT_INSET_X,
+      left: this.rabbitX + HIT_INSET_X,
+      right: this.rabbitX + RABBIT_W - HIT_INSET_X,
       top: this.y + HIT_INSET_Y,
       bottom: this.y + RABBIT_H - HIT_INSET_Y,
     };
@@ -392,6 +442,10 @@
 
     this.renderer.draw({
       y: drawY,
+      // The renderer draws the rabbit where the simulation says it is, rather
+      // than at a literal of its own — the two have to agree on a number that
+      // now moves with the viewport.
+      rabbitX: this.rabbitX,
       tilt: this.state === "idle" ? 0 : this.tilt,
       gates: this.gates,
       scroll: this.scroll,
@@ -401,10 +455,10 @@
   };
 
   HopGame.WORLD = {
-    WIDTH: WIDTH,
+    MIN_WIDTH: MIN_WIDTH,
     HEIGHT: HEIGHT,
     GROUND_Y: GROUND_Y,
-    RABBIT_X: RABBIT_X,
+    SPAWN_LEAD: SPAWN_LEAD,
     RABBIT_W: RABBIT_W,
     RABBIT_H: RABBIT_H,
     GATE_W: GATE_W,

@@ -50,7 +50,7 @@ matter how it is coloured.
 
 ## Design
 
-### Full-bleed, on a fixed play field
+### Full-bleed, on a constant play field
 
 The scene **is** the page. There is no title bar, no framed board and no
 explanation column: the canvas fills the viewport, the score/best chips and the
@@ -59,20 +59,40 @@ how to play, the buttons — lives on the overlay, where it is read between runs
 and gone during them. A permanent header spends the best real estate on the
 screen telling the player something they already know.
 
-What does **not** change with the screen is the play field. The physics in
-`js/game.js` is expressed in a fixed 320×480 world, and it stays that size on
-every device; the game has global leaderboards, and a world that grew with the
-viewport would mean a tall phone played an easier game for the same board. So
-`HopRenderer.resize` scales to fill the viewport's **width** and draws the spare
+The scene grows to fill any viewport. What does **not** grow is the *play
+field* — the game has global leaderboards, so what a run demands of a player has
+to be identical on a phone and a 27-inch monitor. Each axis buys that a
+different way.
+
+**Height.** The physics in `js/game.js` is expressed in a fixed 320×480 world,
+and the 480 never moves. `HopRenderer.resize` fits by width and draws the spare
 height as scenery: extra sky above the field, extra earth below it (about 70/30,
 both capped). A taller screen sees more garden, never more room to fly in.
 
-Width is the one axis that can't grow even decoratively. Gates spawn at world
-x = 320 (`_moveGates`), so a wider view would show them pop into existence in
-open air — anything wider than 2:3 therefore fits by height instead and the page
-background letterboxes the sides in the frame green.
+**Width.** A window wider than the world's 2:3 used to fit by height and let the
+page background letterbox the sides — on a 1400×800 desktop that was 433 px of
+flat green either side of a 533 px scene, more of the screen than the game. The
+world now widens instead, and what keeps that honest is `SPAWN_LEAD`:
 
-Two consequences worth knowing before changing any of it:
+> Gates spawn at the **right edge of the view**, and the rabbit sits
+> `SPAWN_LEAD` (244 world px) in from that edge on every screen. `rabbitX` is
+> derived from it — `viewW - SPAWN_LEAD` — rather than being a number of its
+> own.
+
+So the visible run-up in front of the rabbit is always 244 px, about 1.7 gates
+at `GATE_SPACING`, and every extra pixel of width is garden the rabbit has
+*already passed*. Gates still never pop into existence in open air, because the
+spawn point is the edge itself. Driving the same autopilot through view widths
+from 320 to 1600 gives the same score at the same step, with the gates ahead of
+the rabbit agreeing to within 2e-11 world px — float noise, not geometry.
+
+The cost is that on a wide desktop window the rabbit flies about 70% of the way
+across the screen rather than a quarter of the way. That is forced: a constant
+run-up plus a wide view puts the rabbit near the right edge, and the only
+alternative is letting a big screen see further ahead, which is exactly the
+advantage the leaderboard can't have.
+
+Four consequences worth knowing before changing any of it:
 
 - **The ceiling can't move with the screen.** It clamps the rabbit at world
   y = 0, so however much sky is drawn above that line, the rabbit still stops at
@@ -80,15 +100,37 @@ Two consequences worth knowing before changing any of it:
   it reads as the top of the world, and the hedges hanging from the ceiling are
   drawn from the top of the *canvas* rather than from world y = 0 so the line
   has something visible to be.
-- **The overlay's type is sized from the board, not the viewport.** `resize`
-  publishes the board's CSS size as `--stage-w` / `--stage-h`; sizing the title
-  in `vw` instead blows it out on a wide window, where most of the viewport is
-  letterbox.
+- **A resize translates the whole garden, not just the rabbit.** Gate `x` values
+  are absolute world coordinates, so `setViewWidth` moves every one of them by
+  the same delta it moves `rabbitX`. Skip that and a rotate mid-run teleports
+  the rabbit past a screenful of hedges, scoring them all and possibly landing
+  it inside one.
+- **The renderer draws the rabbit where the simulation says it is.** `rabbitX`
+  rides in the render state rather than being a literal in `renderer.js` (it was
+  `76`), because it is now a number that moves with the viewport and the two
+  have to agree.
+- **The overlay's type is sized from the scene, not the viewport.** `resize`
+  publishes the scene's CSS size as `--stage-w` / `--stage-h`. These now track
+  the viewport closely, but they stay the honest measurement: a viewport past
+  about 2.5:1 still letterboxes top and bottom, where the sky and earth caps
+  stop the scene growing.
+
+### The mute icon
+
+Drawn as inline SVG rather than set as `🔊` / `🔇`. The emoji were the one
+full-colour, rounded, anti-aliased thing on a screen otherwise made entirely of
+flat integer rects, and they render differently on every platform. The drawn
+speaker inherits `currentColor`, so it takes the chip's own colour and sits in
+the same visual family as the pause glyph beside it. Off is the waves going and
+a slash coming across — both CSS off `aria-pressed`, so `application.js` sets
+the ARIA state and nothing else, and the visual and accessible states can't
+drift apart. Solitaire's toggle is the same icon, for the same reasons.
 
 ### Pixel art
 
-Pixel art at a fixed **320 px** internal width — 320×480 of play field, plus
-whatever the screen adds — upscaled by CSS with `image-rendering: pixelated`.
+Pixel art at a **320 px** minimum internal width — 320×480 of play field, plus
+whatever the screen adds on either axis — upscaled by CSS with
+`image-rendering: pixelated`.
 The same approach as snake and solitaire, and the right one here because nothing
 in this scene rotates. Every draw call is an axis-aligned integer rect, so the
 upscale lands on exact pixel blocks at any size.

@@ -89,7 +89,9 @@ A **Random deal** button is available too — random deals are playable but do n
 
   Shown on **touch devices only**, and deliberately not gated on `capabilities.has('actions.haptic')`. That check is the house pattern for host-dependent UI but the wrong instrument here: the web host declares `actions.haptic` and answers it as a no-op, so gating on it puts the button on desktops where nothing can buzz. The trade is that a player who switches vibration off on their phone can't switch it back on from a desktop; the setting syncs, so their phone still shows it off and can undo it.
 
-  The icon is inline SVG, not an emoji, unlike the sound toggle beside it. The two candidate glyphs (`📳` / `📴`) are both orange rounded squares that are near-indistinguishable at 16px, and the orange fights a palette that is otherwise entirely green. Drawn, it inherits `currentColor` and borrows the slash convention from `🔇` next door, which is the part players actually read. CSS draws the slash off `aria-pressed`, so the visual and accessible states can't drift apart.
+  The icon is inline SVG, not an emoji. The two candidate glyphs (`📳` / `📴`) are both orange rounded squares that are near-indistinguishable at 16px, and the orange fights a palette that is otherwise entirely green. Drawn, it inherits `currentColor` and carries a slash, which is the part players actually read. CSS draws the slash off `aria-pressed`, so the visual and accessible states can't drift apart.
+
+- **Sound toggle.** Drawn too, and for the same reason the vibration one is. `🔊` / `🔇` were the one thing in the HUD rendered by the system's emoji font — full-colour, rounded and anti-aliased, sitting between an undo glyph and a moves chip built out of 2px borders and a pixel typeface, and different on every platform. The drawn speaker inherits `currentColor`, so the three icons in the bar are one set. Off is the waves going and the same slash coming across; both are CSS off `aria-pressed`, so `application.js` no longer swaps any glyph — it only sets the ARIA state.
 - `OR.lifecycle.on('resume')` is a no-op (the saved state is already on screen).
 
 ## Manifest scopes required

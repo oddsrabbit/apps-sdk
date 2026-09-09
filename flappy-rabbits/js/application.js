@@ -475,7 +475,9 @@
       function paintSoundToggle() {
         if (!soundToggleEl) return;
         var muted = sound.isMuted();
-        soundToggleEl.textContent = muted ? "🔇" : "🔊";
+        // Sets the ARIA state and nothing else: the icon is inline SVG, and
+        // styles.css swaps its waves for a slash off `aria-pressed`, so the
+        // visual and accessible states cannot drift apart.
         soundToggleEl.setAttribute("aria-pressed", muted ? "true" : "false");
         soundToggleEl.setAttribute("aria-label", muted ? "Unmute sound" : "Mute sound");
       }
