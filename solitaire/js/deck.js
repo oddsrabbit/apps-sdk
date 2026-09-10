@@ -33,7 +33,15 @@
   // Klondike daily-deal seed. Day index since the epoch below; resets daily
   // at UTC midnight. Choosing a recent fixed epoch (rather than Unix 0)
   // keeps the integer small enough to display cleanly as "Daily #142".
-  var EPOCH_MS = Date.UTC(2026, 0, 1);
+  //
+  // The epoch is the day BEFORE the re-release, so the first re-released
+  // deal is "Daily #1" rather than #252 off the original 2026-01-01 epoch.
+  // Moving it also moves the seed, so the numbering restart comes with a
+  // fresh sequence of shuffles instead of replaying January's. Round keys
+  // are namespaced alongside it (see dailyRoundKey in application.js) —
+  // the old daily-<id> boards from the 2026-01-01 epoch stay where they
+  // are rather than being walked back into by the restarted counter.
+  var EPOCH_MS = Date.UTC(2026, 8, 9);
   var DAY_MS = 24 * 60 * 60 * 1000;
 
   function dailyId(nowMs) {

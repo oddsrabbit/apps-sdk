@@ -537,7 +537,13 @@
 
   // roundKey is stable across the UTC day (matches the daily seed) so every
   // player on the same deal lands in the same leaderboard.
-  function dailyRoundKey(id) { return "daily-" + id; }
+  //
+  // The "daily2-" prefix belongs to the re-released numbering (deck.js's
+  // EPOCH_MS moved so the counter restarts at #1). Without it the restarted
+  // ids would eventually walk back over the "daily-" boards played between
+  // the original launch and the re-release, hanging old scores off a deal
+  // that no longer deals those cards.
+  function dailyRoundKey(id) { return "daily2-" + id; }
 
   // Faster solve → higher score. We cap at an hour and count down by the
   // second so a 2-minute solve (3480) outranks a 10-minute one (3000). Floor
