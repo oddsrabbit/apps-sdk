@@ -351,6 +351,16 @@ body {
   border-right-width: 2px;
   transform: translate(2px, 2px);
 }
+/* .finish-button is the one button in that list that is ALSO positioned by a
+   transform — it centres itself with `translateX(-50%)` (see its rule below).
+   `transform` is a single property rather than a list that accumulates, so the
+   press above doesn't add a 2px nudge to the centring, it REPLACES it: the
+   button jumps half its own width to the right for as long as the finger is
+   down, then snaps back on release. Restate the centring alongside the nudge.
+   The other three are laid out by flow, so the group rule is right for them. */
+.finish-button:active {
+  transform: translate(calc(-50% + 2px), 2px);
+}
 /* `display: flex` above outranks the UA rule that makes [hidden] disappear,
    so any [hidden] on these needs saying again here. */
 .undo-button[hidden], .restart-button[hidden] { display: none; }
