@@ -179,23 +179,38 @@
     return this.storage.getLastDailyId() === today && this.storage.getLastDailyWon();
   };
 
+  // Deals a new board. Returns true if a deal was made, false if it was
+  // refused — which only ever happens for the daily, when no winnable seed can
+  // be vouched for (see below). A refusal leaves game state untouched, so the
+  // caller can stay on whatever overlay it was showing.
   SolitaireGame.prototype.newDeal = function (mode, opts) {
     opts = opts || {};
-    this._mode = mode;
     var Solver = window.SolitaireSolver;
+    var dailyId = -1;
+    var seed;
     if (mode === MODE_DAILY) {
-      this._dailyId = Deck.dailyId();
+      dailyId = Deck.dailyId();
       // Daily is winnability-filtered so no streak hinges on an unwinnable
       // shuffle. The app precomputes the solvable seed during idle and hands it
       // in via opts.seed, making the tapped deal instant; if it isn't ready we
-      // resolve it here, and if the solver is absent we fall back to the raw
-      // day id. The search is deterministic, so however it's resolved every
-      // device lands on the same seed for a given day.
+      // resolve it here. The search is deterministic, so however it's resolved
+      // every device lands on the same seed for a given day.
+      //
+      // If the seed can't be proven winnable — no solver at all (a stale or
+      // partially-loaded bundle, since solver.js is a separate script) or the
+      // search exhausting its seed sequence — we refuse rather than deal the
+      // raw day id. Dealing unfiltered would silently hand every player the
+      // same possibly-unwinnable board, and the daily is precisely where that
+      // costs the most: one shared shuffle, everyone's streak, no way to tell
+      // a misplay from an impossible deal.
       if (opts.seed != null) {
-        this._seed = opts.seed | 0;
+        seed = opts.seed | 0;
       } else {
-        this._seed = Solver ? Solver.findSolvableSeed(this._dailyId) : this._dailyId;
+        seed = Solver ? Solver.findSolvableSeed(dailyId) : null;
+        if (seed == null) return false;
       }
+      this._dailyId = dailyId;
+      this._seed = seed;
     } else {
       // Random is freeplay — dealt straight from the seed, no winnability
       // filter. An unwinnable random costs nothing (no streak; the player just
@@ -205,6 +220,9 @@
       this._dailyId = -1;
       this._seed = (opts.seed != null) ? (opts.seed | 0) : ((Date.now() & 0x7fffffff) | 0);
     }
+    // Set only past the refusal above, so a declined daily leaves the previous
+    // mode (and the rest of the state) exactly as it was.
+    this._mode = mode;
     this._board = Deck.deal(this._seed);
     this._undo = [];
     this._moves = 0;
@@ -214,6 +232,7 @@
     this._frozenElapsedMs = null;
     this._setState(STATE_PLAYING);
     this._emitChange();
+    return true;
   };
 
   // Drop the current deal and return to the pre-deal idle state. Used by the

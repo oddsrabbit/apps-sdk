@@ -69,9 +69,13 @@ Court cards are currently Kenney's crowns. Replacing them with OddsRabbit rabbit
 
 ## Daily deal
 
-Every UTC day, all players see the same shuffle. The seed is the integer number of UTC days since `2026-01-01`, run through a mulberry32 PRNG → Fisher-Yates shuffle. The daily leaderboard (`scores.friends`) is keyed off this seed, so comparisons are meaningful.
+Every UTC day, all players see the same shuffle. The day id is the integer number of UTC days since `2026-01-01`; a seed derived from it is run through a mulberry32 PRNG → Fisher-Yates shuffle. The daily leaderboard (`scores.friends`) is keyed off the **day id**, so every player on a given day lands in the same round.
 
-A **Random deal** button is available too — random deals are playable but do not contribute to the streak or the daily leaderboard.
+**The dealt seed is winnability-filtered** (`js/solver.js`). Because everyone shares one daily shuffle, an unwinnable board would break every player's streak at once and leave nobody able to tell a misplay from an impossible deal — so the day id is only the *start* of a deterministic seed sequence, and the deal uses the first seed the solver can actually prove winnable. The search is pure and deterministic, so every device resolves the same seed for a given day. It is sound but not complete: a deal it approves is definitely winnable, while a hard-but-winnable deal may be skipped in favour of the next seed — which biases the daily toward the more tractable end of winnable.
+
+If no seed can be vouched for — `solver.js` missing (a stale or partially-loaded bundle) or the seed sequence exhausted, the latter being effectively unreachable — **the daily is disabled rather than dealt unfiltered**: `findSolvableSeed` returns `null`, `game.newDeal` refuses and returns `false`, and the overlay greys out the daily buttons with an explanation. Random stays fully playable, so the failure degrades the game instead of bricking it.
+
+A **Random deal** button is available too — random deals skip the solver entirely (an unwinnable one costs nothing: no streak, just reroll) and do not contribute to the streak or the daily leaderboard.
 
 ## Controls
 

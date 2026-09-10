@@ -308,6 +308,17 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
     correlationId: CorrelationId,
     payload: z.object({
       limit: z.number().int().min(1).max(200).optional(),
+      // Skip this many rows, so a client can page past `limit` and hold the
+      // whole set. Without it a follow graph larger than 200 is invisible past
+      // the first page, and a picker that searches only what it fetched tells
+      // the player someone is not there when they are.
+      //
+      // Deliberately an offset rather than a cursor: the response stays a bare
+      // `InvitablePlayer[]`, so this is additive and every existing host keeps
+      // answering it. A host that ignores the field returns page 1 again, which
+      // a caller detects as "no new rows" and stops on — the same result as
+      // today, never a loop.
+      offset: z.number().int().min(0).max(10000).optional(),
     }),
   }),
   z.object({

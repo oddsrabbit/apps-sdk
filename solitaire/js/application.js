@@ -297,12 +297,38 @@
     if (bestMs > 0) subParts.push("Best " + formatTime(bestMs));
     var alreadyWon = game.isDailyWonAlready();
     var mainText = alreadyWon ? "TODAY'S DEAL SOLVED" : "PICK A DEAL";
-    setOverlayText(mainText, subParts.join("   ·   "));
+    // The explanation replaces the streak/best line rather than joining it:
+    // when the daily is off, why it's off is the only thing worth the space.
+    var subText = isDailyUnavailable()
+      ? "Daily unavailable — reopen to retry. Random still plays."
+      : subParts.join("   ·   ");
+    setOverlayText(mainText, subText);
     clearFriendsPanel();
-    // Daily-button labelling: when we've already solved today, the
-    // primary button becomes a replay (won't double-count, won't move
-    // the streak). The Random button stays as-is for fresh boards.
-    startDailyBtn.textContent = alreadyWon ? "Replay daily" : "Daily deal";
+    syncDailyButtons();
+  }
+
+  // Daily-button state, shared by the idle chooser and the won overlay.
+  //
+  // Disabled means the solver couldn't vouch for today's deal — solver.js
+  // absent, or its seed sequence exhausted. We'd rather offer no daily than an
+  // unverified one: every player gets the same daily shuffle, so an unwinnable
+  // board would break everyone's streak at once with nothing to distinguish it
+  // from their own misplay. Random needs no filter and stays playable, so this
+  // degrades the game rather than bricking it.
+  //
+  // Otherwise it's normal labelling: when today is already solved the primary
+  // button becomes a replay (won't double-count, won't move the streak).
+  function syncDailyButtons() {
+    var unavailable = isDailyUnavailable();
+    startDailyBtn.disabled = unavailable;
+    retryDailyBtn.disabled = unavailable;
+    if (unavailable) {
+      startDailyBtn.textContent = "Daily unavailable";
+      retryDailyBtn.textContent = "Daily unavailable";
+      return;
+    }
+    startDailyBtn.textContent = game.isDailyWonAlready() ? "Replay daily" : "Daily deal";
+    retryDailyBtn.textContent = "Today's deal";
   }
 
   // --- Daily solvable-seed cache ---
@@ -314,11 +340,49 @@
   // the result. The tap then deals instantly from the cached seed. If they tap
   // before the idle precompute lands, getDailySeed() resolves it synchronously
   // as a fallback (the cost the precompute was hiding, but never lost).
-  var dailySeed = { id: -1, value: null, scheduled: false };
+  //
+  // `failed` records that today's seed could NOT be vouched for — either
+  // solver.js never loaded or its seed sequence ran out. That disables the
+  // daily rather than dealing an unverified board; see syncDailyButtons.
+  var dailySeed = { id: -1, value: null, scheduled: false, failed: false };
+
+  function isDailyUnavailable() {
+    return dailySeed.failed && dailySeed.id === Deck.dailyId();
+  }
+
+  // Record the failure against the day it happened. Keyed by day so crossing
+  // UTC midnight re-arms the daily instead of leaving it dead for the session.
+  function setDailyFailed(dayId) {
+    dailySeed.id = dayId;
+    dailySeed.value = null;
+    dailySeed.failed = true;
+    dailySeed.scheduled = false;
+  }
+
+  // Same, for a failure that lands asynchronously: whatever overlay is already
+  // on screen has to re-read it. Re-running the idle overlay wholesale (rather
+  // than just the buttons) is what swaps the sub-line to the explanation.
+  function markDailyFailed(dayId) {
+    setDailyFailed(dayId);
+    if (overlay.getAttribute("data-state") === "idle") showIdleOverlay();
+    else syncDailyButtons();
+  }
 
   function ensureDailySeedAsync() {
-    if (!window.SolitaireSolver) return; // no solver → game.js falls back to raw id
     var today = Deck.dailyId();
+    // Already given up on today. Load-bearing, not just an optimisation:
+    // markDailyFailed repaints the idle overlay, which calls back into here,
+    // and without this the search would relaunch and fail in a loop. Giving up
+    // is sticky until the page reloads or the UTC day turns over, which is
+    // what the overlay's "reopen to retry" tells the player.
+    if (isDailyUnavailable()) return;
+    // No solver at all (stale or partially-loaded bundle): known synchronously
+    // and permanent for this page load. Flag it without the refresh — every
+    // caller renders straight after this returns.
+    if (!window.SolitaireSolver) {
+      setDailyFailed(today);
+      return;
+    }
     if (dailySeed.id === today && dailySeed.value != null) return;
     if (dailySeed.scheduled) return;
     dailySeed.scheduled = true;
@@ -326,9 +390,9 @@
     // whole findSolvableSeed loop in one synchronous burst. A single attempt
     // is bounded by the solver's node budget (~tens of ms worst case), so
     // the main thread stays responsive on low-end devices even when several
-    // consecutive seeds fail to prove out. The attempt sequence (base+k,
-    // falling back to base) mirrors findSolvableSeed exactly, so this lands
-    // on the identical seed every device-and-path computes.
+    // consecutive seeds fail to prove out. The attempt sequence (base+k, then
+    // giving up after maxAttempts) mirrors findSolvableSeed exactly, so this
+    // lands on the identical seed every device-and-path computes.
     var Solver = window.SolitaireSolver;
     var maxAttempts = Solver._internal.MAX_SEED_ATTEMPTS;
     var k = 0;
@@ -338,20 +402,26 @@
         dailySeed.scheduled = false; // resolved elsewhere (sync fallback)
         return;
       }
+      // Given up on elsewhere (a tap that resolved synchronously and failed).
+      // Stop rather than race it back to available behind a disabled button.
+      if (isDailyUnavailable()) {
+        dailySeed.scheduled = false;
+        return;
+      }
       if (t !== today) { today = t; k = 0; } // crossed UTC midnight mid-search
       var seed = (today + k) | 0;
       if (Solver.isSolvable(Deck.deal(seed))) {
         dailySeed.value = seed;
         dailySeed.id = today;
+        dailySeed.failed = false;
         dailySeed.scheduled = false;
         return;
       }
       if (++k >= maxAttempts) {
-        // Same unfiltered fallback findSolvableSeed uses; effectively never
-        // reached in practice.
-        dailySeed.value = today;
-        dailySeed.id = today;
-        dailySeed.scheduled = false;
+        // Sequence exhausted — the same giving-up point findSolvableSeed
+        // reaches, and effectively never reached in practice. Disable the
+        // daily rather than dealing the unverified base seed.
+        markDailyFailed(today);
         return;
       }
       setTimeout(step, 0);
@@ -360,24 +430,47 @@
     setTimeout(step, 0);
   }
 
+  // Today's proven-winnable seed, or null if it can't be vouched for. Null is
+  // a refusal, not a fallback: callers must not deal the daily without a seed.
   function getDailySeed() {
     var today = Deck.dailyId();
     if (dailySeed.id === today && dailySeed.value != null) return dailySeed.value;
-    if (!window.SolitaireSolver) return null; // let game.js fall back to the raw id
-    dailySeed.value = window.SolitaireSolver.findSolvableSeed(today);
+    if (isDailyUnavailable()) return null;
+    if (!window.SolitaireSolver) {
+      setDailyFailed(today);
+      return null;
+    }
+    // Tapped before the idle precompute landed — pay the search synchronously.
+    var seed = window.SolitaireSolver.findSolvableSeed(today);
+    if (seed == null) {
+      setDailyFailed(today);
+      return null;
+    }
+    dailySeed.value = seed;
     dailySeed.id = today;
-    return dailySeed.value;
+    dailySeed.failed = false;
+    return seed;
   }
 
   function startDeal(mode) {
-    clearFriendsPanel();
-    storage.clearSavedGame();
+    var opts;
     if (mode === GameClass.MODE_DAILY) {
       var seed = getDailySeed();
-      game.newDeal(mode, seed != null ? { seed: seed } : undefined);
-    } else {
-      game.newDeal(mode);
+      // Resolved to a refusal (see getDailySeed). Only reachable by tapping
+      // during the window before the precompute lands — once we know, the
+      // buttons are disabled — so bounce back to the chooser, now carrying the
+      // explanation, instead of dealing an unverified board. Nothing is
+      // cleared on this path: the tap must not cost a saved game.
+      if (seed == null) {
+        if (game.getState() === GameClass.STATE_IDLE) showIdleOverlay();
+        else game.resetToIdle(); // fires onChange → showIdleOverlay
+        return;
+      }
+      opts = { seed: seed };
     }
+    clearFriendsPanel();
+    storage.clearSavedGame();
+    game.newDeal(mode, opts);
     sound.deal();
   }
 
@@ -420,6 +513,11 @@
 
     storage.clearSavedGame();
     setOverlayState("won");
+    // The won overlay offers "Today's deal" too, so it needs the same seed
+    // resolved and the same disabled state as the idle chooser — a player who
+    // resumed a saved deal on launch may never have passed through idle.
+    ensureDailySeedAsync();
+    syncDailyButtons();
     var mainText = isDaily ? "DAILY #" + game.getDailyId() + " SOLVED" : "YOU WON";
     var subText = formatTime(ms) + "  ·  " + moves + " moves" + (isNewBest ? "  ·  NEW BEST" : "");
     setOverlayText(mainText, subText);

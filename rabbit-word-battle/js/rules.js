@@ -143,6 +143,83 @@
     return { ok: true, words: scored, score: total, bingo: placed.length === RACK };
   }
 
+  /**
+   * Empty squares where the next tile would join what is already down.
+   *
+   * A HINT, not a rule: `onCellTap` still accepts any free square, because a
+   * word is often laid from its far end inward and the tiles only have to
+   * connect once the whole move is on the board. With nothing pending these
+   * are the anchors around the existing tiles (or the centre star on an empty
+   * board); once tiles are pending they are the two open ends of the line
+   * being built, hopping over tiles already on the board, which is what a
+   * player mid-word actually wants pointed out.
+   */
+  function hints(board, pending, boardEmpty) {
+    if (boardEmpty && !pending.length) return [[CENTER, CENTER]];
+    if (!board) return [];
+    var pend = {};
+    (pending || []).forEach(function (t) { pend[t.row + "," + t.col] = true; });
+    function inside(r, c) { return r >= 0 && c >= 0 && r < SIZE && c < SIZE; }
+    function filled(r, c) { return inside(r, c) && !!(pend[r + "," + c] || board[r][c]); }
+
+    var out = [], seen = {};
+    function push(r, c) {
+      if (!inside(r, c) || filled(r, c) || seen[r + "," + c]) return;
+      seen[r + "," + c] = true;
+      out.push([r, c]);
+    }
+
+    if (!pending || !pending.length) {
+      for (var r = 0; r < SIZE; r++) {
+        for (var c = 0; c < SIZE; c++) {
+          if (!board[r][c]) continue;
+          push(r - 1, c); push(r + 1, c); push(r, c - 1); push(r, c + 1);
+        }
+      }
+      return out;
+    }
+
+    var rows = {}, cols = {};
+    pending.forEach(function (t) { rows[t.row] = true; cols[t.col] = true; });
+    var dirs;
+    if (pending.length === 1) dirs = [[0, 1], [0, -1], [1, 0], [-1, 0]];
+    else if (Object.keys(rows).length === 1) dirs = [[0, 1], [0, -1]];
+    else if (Object.keys(cols).length === 1) dirs = [[1, 0], [-1, 0]];
+    else return out; // not a line yet; nothing honest to suggest
+    dirs.forEach(function (d) {
+      var r = pending[0].row, c = pending[0].col;
+      while (filled(r + d[0], c + d[1])) { r += d[0]; c += d[1]; }
+      push(r + d[0], c + d[1]);
+    });
+    return out;
+  }
+
+  /**
+   * The main word a set of cells spells on a board the move has ALREADY been
+   * applied to. Used to tell a player what their opponent just played, from
+   * the view alone — `lastMove.move.tiles` carries the squares, not the word,
+   * and the letters either side of them are only on the board.
+   */
+  function wordThrough(board, cells) {
+    if (!board || !cells || !cells.length) return "";
+    var at = function (r, c) {
+      return (r >= 0 && c >= 0 && r < SIZE && c < SIZE) ? board[r][c] : null;
+    };
+    var r0 = cells[0][0], c0 = cells[0][1];
+    var run;
+    if (cells.length === 1) {
+      var h = wordAt(at, r0, c0, 0, 1), v = wordAt(at, r0, c0, 1, 0);
+      run = h.length >= v.length ? h : v;
+    } else {
+      var sameRow = cells.every(function (cell) { return cell[0] === r0; });
+      run = sameRow ? wordAt(at, r0, c0, 0, 1) : wordAt(at, r0, c0, 1, 0);
+    }
+    return run.map(function (cell) {
+      var t = at(cell[0], cell[1]);
+      return t ? t.l : "";
+    }).join("");
+  }
+
   function rackValue(rack) {
     return rack.reduce(function (sum, l) { return sum + (VALUES[l] || 0); }, 0);
   }
@@ -155,6 +232,8 @@
     VALUES: VALUES,
     layout: layout,
     evaluate: evaluate,
+    hints: hints,
+    wordThrough: wordThrough,
     rackValue: rackValue
   };
 })();

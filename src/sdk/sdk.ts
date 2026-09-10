@@ -419,8 +419,14 @@ export interface OddsRabbitGlobal {
      * People the viewer may invite — connected on the follow graph in either
      * direction, which is exactly the set `create` accepts. `[]` when signed
      * out or on a host without the verb; one malformed row drops itself.
+     *
+     * `limit` caps one page at 200; `offset` skips that many rows, so a client
+     * with a follow graph larger than a page can fetch the rest instead of
+     * searching a truncated list. A host that does not implement `offset`
+     * answers with the first page again — page until a page is short or
+     * returns no unseen uuids, never on a fixed count.
      */
-    invitable(payload?: { limit?: number }): Promise<InvitablePlayer[]>;
+    invitable(payload?: { limit?: number; offset?: number }): Promise<InvitablePlayer[]>;
     /**
      * Poll one match while the page is visible and the match is unfinished,
      * calling `onChange` with each view whose `version` moved (the first poll
@@ -728,7 +734,7 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
       this.requestMatchView('matches.move', payload),
     resign: (payload: { matchUuid: string }): Promise<MatchView> =>
       this.requestMatchView('matches.resign', payload),
-    invitable: (payload: { limit?: number } = {}): Promise<InvitablePlayer[]> => {
+    invitable: (payload: { limit?: number; offset?: number } = {}): Promise<InvitablePlayer[]> => {
       if (!this.user) return Promise.resolve([]);
       return this.requestRows<InvitablePlayer>('matches.invitable', payload, InvitablePlayerSchema);
     },

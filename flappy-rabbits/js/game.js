@@ -103,7 +103,6 @@
     this.vy = 0;
     this.gates = [];
     this.scroll = 0;            // total world distance travelled, for parallax
-    this.tilt = 0;              // -1 rising, 0 level, 1 diving (render hint)
 
     // Live view geometry. Both are rewritten by setViewWidth, which the frame
     // loop pulls off the renderer; these are the portrait defaults, and the
@@ -138,7 +137,6 @@
     this.y = START_Y;
     this.vy = 0;
     this.scroll = 0;
-    this.tilt = 0;
     this.gates = [];
     this._accumulator = 0;
     // First gate starts off the right edge, so a run opens with a moment of
@@ -310,7 +308,6 @@
       if (this.vy < 0) this.vy = 0;
     }
 
-    this.tilt = this.vy < -1.5 ? -1 : (this.vy > 4 ? 1 : 0);
 
     this._moveGates(speed);
 
@@ -446,7 +443,15 @@
       // than at a literal of its own — the two have to agree on a number that
       // now moves with the viewport.
       rabbitX: this.rabbitX,
-      tilt: this.state === "idle" ? 0 : this.tilt,
+      // The renderer poses the rabbit off the RAW vertical speed — tilt, ear
+      // sweep and ground shadow are all continuous functions of it — so it gets
+      // the number rather than a three-valued hint computed here. Zeroed while
+      // idle so the title screen's bob doesn't tip the rabbit nose-down.
+      vy: this.state === "idle" ? 0 : this.vy,
+      // Presentational clock, for the parts driven by time-since-flap rather
+      // than by physics (the leg kick, the dust). Same value the bob above uses,
+      // so the two can never disagree about when "now" is.
+      elapsed: this._elapsed,
       gates: this.gates,
       scroll: this.scroll,
       state: this.state,

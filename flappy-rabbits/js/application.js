@@ -407,6 +407,10 @@
         sound: sound,
         listener: {
           onState: function (state) { setOverlay(state); },
+          // Purely presentational: the renderer starts the leg kick and sheds a
+          // puff of dust. Routed through the listener rather than called from
+          // the rules engine, so js/game.js stays unaware of how a hop is drawn.
+          onFlap: function () { renderer.flap(); },
           onScore: function (score) { setScore(score); },
           onBest: function (best) { setBest(best); },
           onPass: function () {

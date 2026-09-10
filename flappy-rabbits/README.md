@@ -36,7 +36,17 @@ Two reasons that matters for Clumsy Bird specifically:
 
 Game mechanics are not copyrightable, so the idea is fair to build on. Everything
 here is written and drawn from scratch, and the game ships no image assets at
-all — every sprite is drawn as integer rects at runtime.
+all — the scenery is drawn as integer rects at runtime, and the rabbit as paths.
+
+The rabbit is OddsRabbit's own mascot rather than a character invented for this
+game: it is a port of the hopping bunny the mobile app uses as its loading
+animation (`oddsrabbit-app/src/components/ui/RabbitLoader.tsx`), which is in turn
+a Skia recreation of the web app's CSS loader
+(`app/public/inc/css/elements/rabbit-loader.css`). Same silhouette and the same
+four moving parts — tilt, leg kick, dust, ground shadow — re-parameterised from
+the loader's fixed 1.2s clock onto the simulation's `vy` and the time since the
+last flap. `js/renderer.js` documents the port, including the two places it
+deliberately departs from the original.
 
 The name is a genre reference and nothing more: no code, art or asset from any
 of those games is in this one. Worth knowing that "Flappy Bird" is a mark of its

@@ -1,10 +1,13 @@
 // Hop — canvas renderer. (Shipped as "Flappy Rabbits"; the slug stays `hop`.)
 //
 // Pixel art at a fixed 320px internal WIDTH, upscaled by CSS with
-// `image-rendering: pixelated` — the same approach as snake and solitaire, and
-// the right one here because nothing in this scene rotates. Every draw call is
-// an axis-aligned integer rect, so the upscale lands on exact pixel blocks at
-// any size.
+// `image-rendering: pixelated` — the same approach as snake and solitaire.
+// Every draw call in the SCENERY is an axis-aligned integer rect, so the
+// upscale lands on exact pixel blocks at any size.
+//
+// The RABBIT is the one exception, and it is a knowing one: it is the mobile
+// app's hopping bunny, which is a round bezier shape that tilts through its
+// arc. See the rabbit section at the bottom of this file.
 //
 // FULL-BLEED, WITHOUT MAKING THE PLAY FIELD RESPONSIVE. The canvas fills the
 // viewport, but the PLAY FIELD is always the same 320x480 world the physics in
@@ -27,11 +30,10 @@
 // passed. See the difficulty-invariant note in js/game.js. Gates still never
 // pop into existence in open air, because the spawn point is the edge itself.
 //
-// The rabbit is built out of rects rather than authored as a sprite sheet. At
-// this size that is fewer than twenty rects, and it buys two things a PNG
-// wouldn't: no second HTTP request on the mobile WebView, and a pose that can
-// be nudged by a parameter (see _drawRabbit's `tilt`) instead of needing three
-// hand-drawn frames kept in sync.
+// The rabbit is drawn with paths rather than authored as a sprite sheet, which
+// buys two things a PNG wouldn't: no second HTTP request on the mobile WebView,
+// and a pose that is a continuous function of the physics (see the rabbit
+// section) instead of three hand-drawn frames kept in sync.
 
 (function () {
   // The world's narrowest width, and what a portrait phone plays at. `this.w`
@@ -93,12 +95,63 @@
   var HEDGE_DARK = "#2f6b28";
   var HEDGE_EDGE = "#1f4a1b";
 
-  // Rabbit.
-  var FUR = "#f7f2e8";
-  var FUR_SHADE = "#d9d0be";
-  var OUTLINE = "#3a3226";
-  var PINK = "#f2a0b4";
-  var EYE = "#2a2420";
+  // Rabbit. Straight off the app: RabbitLoader's `color` default is #FFFFFF and
+  // its eye is #3f3334. There is no second fur tone, no outline and no pink in
+  // the mobile bunny, so there is none here either — see the rabbit section.
+  var FUR = "#ffffff";
+  var EYE = "#3f3334";
+  // The app's `<Shadow dx={0} dy={2} blur={4} rgba(0,0,0,0.1) />` under the body,
+  // scaled to world px. The alpha is the one number lifted rather than copied:
+  // at 160px of Skia canvas 10% black is a visible lift, and at a 22px sprite it
+  // is nothing at all. This is the smallest value that still parts white fur
+  // from a white cloud, which is the one place an unoutlined rabbit can vanish.
+  var BODY_SHADOW = "rgba(0, 0, 0, 0.2)";
+  // The dust the mobile loader sheds at push-off, in its own colour. Kept small
+  // and short-lived precisely BECAUSE the sky already has clouds in it: at this
+  // size and this fade a light puff reads as motion rather than as weather.
+  var DUST = "#e5e5e5";
+  // The mobile loader's ground shadow is #666 on a flat panel. Retinted here —
+  // it falls on grass, and neutral grey on green reads as a washed-out patch
+  // rather than as shade.
+  var SHADOW_RGB = "40, 56, 34";
+
+  // Sprite footprint. Must match RABBIT_W / RABBIT_H in js/game.js: the hitbox
+  // is this box inset by (4, 3), and the body below is scaled to sit inside it.
+  var RABBIT_W = 22;
+  var RABBIT_H = 18;
+  // Mobile unit -> world px. The mobile bunny is authored against a 50x30 body;
+  // scaling that to RABBIT_W wide makes it 13.2 tall, within a pixel of the
+  // 12-tall hitbox. So the drawn body IS very nearly the box that kills, and the
+  // ears, tail and legs hanging outside it stay decorative — exactly the split
+  // the old rect sprite had.
+  var K = RABBIT_W / 50;
+
+  // Mirrors js/game.js. Only used to normalise vy into an angle and a shadow
+  // size, so drift here costs a few degrees of tilt rather than desyncing
+  // anything that matters.
+  var FLAP_VELOCITY = -7.2;
+  var MAX_FALL = 10.5;
+
+  // The mobile loader rotates -10deg (0.175 rad) climbing and +10deg falling.
+  // The climb keeps that angle exactly. The dive is allowed well past it,
+  // because in a loader the fall lasts three frames and here it lasts seconds
+  // and is the cue the player steers by — capped at +10deg the rabbit reads as
+  // level all the way into the ground.
+  var TILT_UP = 0.175;
+  var TILT_DOWN = 0.62;
+
+  // Ear sweep, from the mobile loader's two ear rotations. Negative is back.
+  var EAR_ROT_BACK = -0.65;
+  var EAR_ROT_FRONT = -0.2;
+
+  // How long the leg kick and the dust puff run after a flap, in ms. The mobile
+  // loader spends about a fifth of its 1.2s cycle on the kick and lets the dust
+  // live a little longer; these are those two spans, and they are what the
+  // flap-driven parts are measured against instead of `progress`.
+  var KICK_MS = 260;
+  var DUST_MS = 420;
+  // A flap can come every few frames, so the pool is capped. Oldest out first.
+  var DUST_MAX = 6;
 
   // Parallax rates, as a fraction of the world's scroll speed.
   var CLOUD_RATE = 0.18;
@@ -139,6 +192,16 @@
       { x: 520, yf: 0.13, w: 56 },
     ];
     this.cloudSpan = 560;
+
+    // Flap-driven animation state. `_flapPending` is set by flap() and consumed
+    // by the next draw, because the puff needs the rabbit's position and the
+    // world's scroll to be anchored — and the caller (js/application.js, off the
+    // game's onFlap) knows neither.
+    this._flapPending = false;
+    // -Infinity, not 0: at 0 the first frame would read as "flapped just now"
+    // and the rabbit would kick its legs out on the title screen.
+    this._flapAt = -Infinity;
+    this._dust = [];
 
     var self = this;
     this._onResize = function () { self.resize(); };
@@ -410,53 +473,259 @@
     }
   };
 
-  // The rabbit, facing right. `tilt` is -1 rising, 0 level, 1 diving; it lays
-  // the ears back and shifts the head rather than rotating anything, which
-  // keeps every edge axis-aligned and therefore crisp.
-  HopRenderer.prototype._drawRabbit = function (x, y, tilt) {
-    var earLean = tilt === -1 ? 2 : (tilt === 1 ? -1 : 0);
-    var earH = tilt === -1 ? 5 : 8;
-    var noseDrop = tilt === 1 ? 2 : (tilt === -1 ? -1 : 0);
+  // -------- the rabbit --------
+  //
+  // Ported from the mobile app's hopping bunny
+  // (oddsrabbit-app/src/components/ui/RabbitLoader.tsx), which is itself a Skia
+  // recreation of the web app's CSS loader
+  // (app/public/inc/css/elements/rabbit-loader.css). Same silhouette — the
+  // `border-radius: 70% 90% 60% 50%` body, the two swept-back ear ovals, the
+  // circle tail and legs — and the same four moving parts: a tilt through the
+  // arc, legs that kick out and tuck back, dust shed at the push-off, and a
+  // ground shadow that shrinks and fades as the rabbit climbs.
+  //
+  // WHAT THE PORT CHANGED, and why. The loader plays a fixed 1.2s clock:
+  // `progress` runs 0..1 and every moving part is an interpolate() off it. There
+  // is no cycle to read here — the rabbit is a physics body whose next move is
+  // the player's — so the clock is replaced by the two things the simulation
+  // actually knows. `vy` drives the tilt, the ear sweep and the shadow; the
+  // moment of the last flap drives the kick and the dust. Every ratio below is
+  // the mobile one. Only what parameterises them differs.
+  //
+  // WHAT THE PORT NO LONGER CHANGES. An earlier pass here drew the rabbit with a
+  // dark outline, a cream fur with a shaded belly, a pink inner ear and a pink
+  // nose — none of which the app has. They were added for contrast: white fur
+  // crosses pale sky, white clouds and light hills, and a flat silhouette can
+  // dissolve into all three at the moment the player most needs to see it. All
+  // four are gone. The rabbit is the app's flat white silhouette, and the
+  // contrast job is done the way the app already does it — by the soft drop
+  // shadow under the body — rather than by drawing a different rabbit.
+  //
+  // One departure is left, and it is structural rather than stylistic:
+  //
+  //   - THE RABBIT IS THE ONE THING IN THE SCENE OFF THE PIXEL GRID. The scenery
+  //     is integer rects that survive the upscale as exact blocks; these are
+  //     bezier fills, so the rabbit carries an anti-aliased fringe that the
+  //     upscale enlarges into soft blocks along its curves. That is the accepted
+  //     cost of using the round shape rather than a rect approximation of it.
 
-    // Outline pass: the body silhouette one pixel larger on every side. Cheaper
-    // and more even than stroking each piece.
-    this._rect(x + 1, y + 5, 20, 12, OUTLINE);
-    this._rect(x + 3, y + 3, 16, 16, OUTLINE);
+  // The body outline, traced with (0,0) at the body centre — which is also the
+  // point the tilt rotates about, the origin the mobile loader uses. Reads as
+  // the CSS `border-radius: 70% 90% 60% 50%`: a high round shoulder at the back,
+  // the roundest corner at the top front where the head is, a flatter belly.
+  function traceBody(ctx) {
+    var bw = 50 * K;
+    var bh = 30 * K;
+    var left = -bw / 2, right = bw / 2, top = -bh / 2, bottom = bh / 2;
+    var tlR = bw * 0.7, trR = bw * 0.9, brR = bw * 0.6, blR = bw * 0.5;
 
-    // Ears, drawn before the body so the body's outline overlaps their base.
-    this._rect(x + 6 - earLean, y - earH + 4, 3, earH, OUTLINE);
-    this._rect(x + 11 - earLean, y - earH + 4, 3, earH, OUTLINE);
-    this._rect(x + 7 - earLean, y - earH + 5, 1, earH - 2, PINK);
-    this._rect(x + 12 - earLean, y - earH + 5, 1, earH - 2, PINK);
+    ctx.beginPath();
+    ctx.moveTo(left, 0);
+    ctx.bezierCurveTo(left, top + bh * 0.3, left + tlR * 0.3, top, left + tlR * 0.5, top);
+    ctx.lineTo(right - trR * 0.5, top);
+    ctx.bezierCurveTo(right - trR * 0.2, top, right, top + bh * 0.1, right, -bh * 0.1);
+    ctx.bezierCurveTo(right, bh * 0.2, right - brR * 0.2, bottom, right - brR * 0.4, bottom);
+    ctx.lineTo(left + blR * 0.4, bottom);
+    ctx.bezierCurveTo(left + blR * 0.2, bottom, left, bh * 0.3, left, 0);
+    ctx.closePath();
+  }
 
-    // Body.
-    this._rect(x + 2, y + 6, 18, 10, FUR);
-    this._rect(x + 4, y + 4, 14, 14, FUR);
-    // Underside shading.
-    this._rect(x + 4, y + 14, 14, 3, FUR_SHADE);
-    this._rect(x + 2, y + 12, 3, 4, FUR_SHADE);
-
-    // Tail, at the back.
-    this._rect(x, y + 8, 3, 4, OUTLINE);
-    this._rect(x + 1, y + 9, 2, 2, FUR);
-
-    // Face, at the front.
-    this._rect(x + 15, y + 8 + noseDrop, 2, 2, EYE);
-    this._rect(x + 19, y + 11 + noseDrop, 2, 2, PINK);
-    this._rect(x + 18, y + 10 + noseDrop, 1, 1, FUR_SHADE);
-
-    // Front foot, tucked when rising and extended when diving — the clearest
-    // single cue for which way the rabbit is going.
-    if (tilt === 1) {
-      this._rect(x + 13, y + 17, 5, 3, OUTLINE);
-      this._rect(x + 14, y + 17, 3, 2, FUR);
-    } else if (tilt === -1) {
-      this._rect(x + 8, y + 16, 5, 3, OUTLINE);
-      this._rect(x + 9, y + 16, 3, 2, FUR);
-    } else {
-      this._rect(x + 10, y + 17, 5, 3, OUTLINE);
-      this._rect(x + 11, y + 17, 3, 2, FUR);
+  // `ctx.ellipse` is the whole point of the shape and has been everywhere for
+  // years, but the fallback costs three lines: build the arc under a squashed
+  // transform, which puts the same oval into the path in user space.
+  function traceOval(ctx, cx, cy, rx, ry) {
+    ctx.beginPath();
+    if (ctx.ellipse) {
+      ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+      return;
     }
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(rx / ry, 1);
+    ctx.arc(0, 0, ry, 0, Math.PI * 2);
+    ctx.restore();
+  }
+
+  function traceCircle(ctx, cx, cy, r) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  }
+
+  // Fill only. The mobile bunny is a flat silhouette — every part is the same
+  // `color` with no stroke — so there is nothing to trace twice.
+  function paint(ctx, color) {
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+
+  // Called by js/application.js off the game's onFlap. Deferred rather than
+  // acted on, see `_flapPending` in the constructor.
+  HopRenderer.prototype.flap = function () {
+    this._flapPending = true;
+  };
+
+  // One dust cloud, the mobile loader's three lobes in one record: a big one at
+  // the origin with a smaller one either side and slightly below. Anchored to
+  // the world's scroll at spawn, so it falls behind at exactly the world's speed
+  // and reads as being left in the air rather than as trailing the rabbit.
+  HopRenderer.prototype._spawnDust = function (x, worldY, scroll, elapsed) {
+    if (this._dust.length >= DUST_MAX) this._dust.shift();
+    this._dust.push({
+      x: x + RABBIT_W / 2 - 6 * K,
+      y: worldY + RABBIT_H / 2 + 6 * K,
+      scroll: scroll,
+      t0: elapsed,
+    });
+  };
+
+  HopRenderer.prototype._drawDust = function (scroll, elapsed) {
+    var ctx = this.ctx;
+    var alive = [];
+    for (var i = 0; i < this._dust.length; i++) {
+      var d = this._dust[i];
+      var u = (elapsed - d.t0) / DUST_MS;
+      if (u < 0 || u >= 1) continue;
+      alive.push(d);
+
+      // Mobile: opacity 0 -> 0.75 by 40% of the puff's life, then out by 55%.
+      // Same peak, same shape, stretched over the whole life so the tail of the
+      // fade isn't a step.
+      var alpha = u < 0.45 ? 0.75 * (u / 0.45) : 0.75 * (1 - (u - 0.45) / 0.55);
+      // Drifts back 40 mobile units over its life, on TOP of the world's scroll.
+      var dx = (d.x - (scroll - d.scroll)) - 40 * K * u;
+      var dy = d.y + this.offsetY;
+      var g = 1 + 0.5 * u;   // and spreads as it goes
+
+      ctx.globalAlpha = Math.max(0, alpha);
+      ctx.fillStyle = DUST;
+      traceCircle(ctx, dx, dy, 10 * K * g);
+      ctx.fill();
+      traceCircle(ctx, dx - 12 * K * g, dy + 2 * K, 6 * K * g);
+      ctx.fill();
+      traceCircle(ctx, dx + 10 * K * g, dy + 2 * K, 7 * K * g);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    this._dust = alive;
+  };
+
+  // The ground shadow, on the grass rather than at the ground line: the bottom
+  // hedge columns are drawn before the ground strip, so a shadow ON the line
+  // would paint over the base of whichever hedge the rabbit is passing.
+  //
+  // In the loader the shadow squashes to 40% and fades to a third of its opacity
+  // at the top of a 40px hop. Here the same two curves are driven by real height
+  // above the ground, which is the version the mobile one was approximating.
+  HopRenderer.prototype._drawShadow = function (x, worldY, horizon) {
+    var ctx = this.ctx;
+    var altitude = GROUND_Y - (worldY + RABBIT_H);
+    var t = Math.max(0, Math.min(1, altitude / (GROUND_Y - RABBIT_H)));
+    var scale = 1 - 0.6 * t;
+    var alpha = 0.3 - 0.2 * t;
+
+    traceOval(ctx, x + RABBIT_W / 2, horizon + 5, 20 * K * scale, 3 * K);
+    ctx.fillStyle = "rgba(" + SHADOW_RGB + ", " + alpha + ")";
+    ctx.fill();
+  };
+
+  // `y` is the sprite's top-left in CANVAS coordinates; `vy` and `elapsed` come
+  // straight off the simulation.
+  HopRenderer.prototype._drawRabbit = function (x, y, vy, elapsed) {
+    var ctx = this.ctx;
+    var bh = 30 * K;
+
+    // Two normalised readings of the vertical speed. `rise` is 1 at the instant
+    // of a flap, `dive` is 1 at terminal velocity, and both are 0 at the hang
+    // point between them — so every pose below is continuous through the top of
+    // the arc rather than snapping between three states the way the old
+    // three-valued `tilt` did.
+    var rise = Math.max(0, Math.min(1, vy / FLAP_VELOCITY));
+    var dive = Math.max(0, Math.min(1, vy / MAX_FALL));
+    var rot = -TILT_UP * rise + TILT_DOWN * dive;
+
+    // Ears blow back on the climb and settle forward in a dive, on top of the
+    // mobile loader's two resting angles.
+    var sweep = -0.3 * rise + 0.12 * dive;
+
+    // The kick. One arch over KICK_MS: legs swing out and tuck back, the mobile
+    // loader's legPeek / backLegKick / frontLegReach amplitudes on a sine rather
+    // than on its keyframes. Past KICK_MS the legs are tucked and hidden, which
+    // is the loader's resting state too.
+    var kick = Math.max(0, Math.min(1, (elapsed - this._flapAt) / KICK_MS));
+    var extend = Math.sin(Math.PI * kick);
+
+    ctx.save();
+    ctx.translate(x + RABBIT_W / 2, y + RABBIT_H / 2);
+    ctx.rotate(rot);
+
+    // Legs, behind everything. Both are the app's plain `color` circles — the
+    // back one 5 units, the front one 3 — and both fade in with `extend` as well
+    // as moving with it: at rest the loader hides them entirely, and a rabbit in
+    // a glide reads better tucked.
+    if (extend > 0.01) {
+      var legY = bh / 2 - 4 * K + 5 * K * extend;
+      ctx.globalAlpha = Math.min(1, extend * 2);
+      traceCircle(ctx, -14 * K - 5 * K * extend, legY, 5 * K);
+      paint(ctx, FUR);
+      traceCircle(ctx, 14 * K + 6 * K * extend, legY, 3 * K);
+      paint(ctx, FUR);
+      ctx.globalAlpha = 1;
+    }
+
+    // Tail, then body, then ears over the top — the app's own paint order. The
+    // ears used to go under the body so its outline could close over their
+    // bases; with no outline to close, they sit on top the way Skia draws them.
+    traceCircle(ctx, -25 * K + 3 * K, -15 * K + 8 * K, 5 * K);
+    paint(ctx, FUR);
+
+    // Body. The one shape that carries the app's drop shadow, and the reason a
+    // white rabbit still reads against a white cloud. Reset immediately: a
+    // shadow left on would fall from the ears and the face dot too, and at this
+    // size that reads as grime rather than as depth.
+    ctx.shadowColor = BODY_SHADOW;
+    ctx.shadowBlur = 4 * K;
+    ctx.shadowOffsetY = 2 * K;
+    traceBody(ctx);
+    paint(ctx, FUR);
+    ctx.shadowColor = "transparent";
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
+
+    var earW = 7.5 * K, earH = 18 * K;
+    var earBaseX = 6 * K;
+    // The mobile source writes this drop as `- earH + 6` with an unscaled 6,
+    // so its ears creep down the head as `size` grows. Scaled here, which is
+    // what that line meant.
+    var earY = (-bh / 2 + 2 * K) - earH + 6 * K;
+    var ears = [
+      { x: earBaseX - 4 * K, rot: EAR_ROT_BACK + sweep },
+      { x: earBaseX + 3 * K, rot: EAR_ROT_FRONT + sweep },
+    ];
+    for (var i = 0; i < ears.length; i++) {
+      ctx.save();
+      // Rotated about the top of the body, where an ear is actually hinged.
+      ctx.translate(0, -bh / 2);
+      ctx.rotate(ears[i].rot);
+      ctx.translate(0, bh / 2);
+      traceOval(ctx, ears[i].x + earW / 2, earY + earH / 2, earW / 2, earH / 2);
+      paint(ctx, FUR);
+      ctx.restore();
+    }
+
+    // Face — the app's whole face: one eye and its glint, at the app's offsets
+    // (eyeR * 0.15 across, eyeR * 0.2 up, 0.35 of the radius). The eye itself is
+    // a touch larger than the app's 2.5 units, which was authored on a rabbit
+    // three times this size — at the honest ratio it lands under two pixels
+    // across and the rabbit has no expression at all. There is no nose: the app
+    // leaves it off, and the head shape carries the front without one.
+    var eyeR = 1.6;
+    var eyeX = 50 * K * 0.3, eyeY = -bh * 0.15;
+    traceCircle(ctx, eyeX, eyeY, eyeR);
+    paint(ctx, EYE);
+    traceCircle(ctx, eyeX + eyeR * 0.15, eyeY - eyeR * 0.2, eyeR * 0.35);
+    paint(ctx, "#ffffff");
+
+    ctx.restore();
   };
 
   HopRenderer.prototype.draw = function (state) {
@@ -479,7 +748,22 @@
     this._drawHills(scroll, HILL_NEAR_RATE, horizon + 3, 33, HILL_NEAR, 68, 34);
     this._drawGates(state.gates, horizon);
     this._drawGround(scroll, horizon);
-    this._drawRabbit(state.rabbitX, state.y + off, state.tilt);
+
+    // A flap is consumed here rather than in flap() itself, because this is the
+    // first point that knows where the rabbit was and how far the world had
+    // scrolled when it happened.
+    var elapsed = state.elapsed || 0;
+    if (this._flapPending) {
+      this._flapPending = false;
+      this._flapAt = elapsed;
+      this._spawnDust(state.rabbitX, state.y, scroll, elapsed);
+    }
+
+    // Shadow first (it lies on the grass), then the dust, then the rabbit over
+    // both — the rabbit has just left the dust behind, so it belongs in front.
+    this._drawShadow(state.rabbitX, state.y, horizon);
+    this._drawDust(scroll, elapsed);
+    this._drawRabbit(state.rabbitX, state.y + off, state.vy || 0, elapsed);
   };
 
   window.HopRenderer = HopRenderer;

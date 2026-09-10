@@ -335,13 +335,17 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 
-.undo-button:disabled {
+/* The overlay's daily buttons disable when the solver can't vouch for today's
+   deal; the sub-line above them carries the reason, so the dimming only has to
+   say "not this one, try Random". */
+.undo-button:disabled,
+.game-message button:disabled {
   opacity: 0.4;
   cursor: default;
 }
 .undo-button:active:not(:disabled),
 .restart-button:active,
-.game-message button:active,
+.game-message button:active:not(:disabled),
 .finish-button:active {
   border-bottom-width: 2px;
   border-right-width: 2px;

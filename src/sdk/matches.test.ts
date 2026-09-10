@@ -225,3 +225,40 @@ test('stop() prevents any further onChange, even for a poll already in flight', 
   await tick();
   assert.equal(seen.length, 0);
 });
+
+test('invitable passes limit and offset through, so a caller can page past 200', async () => {
+  const page = (offset: number) =>
+    Array.from({ length: offset === 0 ? 2 : 1 }, (_unused, i) => ({
+      uuid: `3333333${offset}-3333-4333-8333-33333333333${i}`,
+      username: `p${offset}${i}`,
+      avatar: null,
+      relation: 'mutual',
+    }));
+  const t = fakeTransport((_type, payload) =>
+    Promise.resolve(page((payload as { offset?: number }).offset ?? 0))
+  );
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init();
+
+  const first = await sdk.matches.invitable({ limit: 2, offset: 0 });
+  const second = await sdk.matches.invitable({ limit: 2, offset: 2 });
+
+  assert.equal(first.length, 2);
+  assert.equal(second.length, 1);
+  assert.notEqual(first[0]?.uuid, second[0]?.uuid);
+  assert.deepEqual(
+    t.calls.map((c) => c.payload),
+    [
+      { limit: 2, offset: 0 },
+      { limit: 2, offset: 2 },
+    ]
+  );
+});
+
+test('invitable resolves [] without a round trip when signed out', async () => {
+  const t = fakeTransport(() => Promise.resolve([]));
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init({ user: null, sessionToken: null });
+  assert.deepEqual(await sdk.matches.invitable({ limit: 200 }), []);
+  assert.equal(t.calls.length, 0);
+});

@@ -30,11 +30,11 @@
   // proven-winnable seed is chosen). End-to-end this lands deal generation at
   // ~tens of ms typical and well under a second in the tail.
   var NODE_BUDGET = 4000;
-  // How many seeds in the deterministic sequence we try before falling back to
-  // the start seed unfiltered. Each attempt proves out with probability ~1/2,
-  // so reaching this many consecutive misses is effectively impossible; the
-  // generous cap makes the unfiltered fallback (a possibly-hard deal, i.e. the
-  // pre-solver status quo) something we never actually hit in practice.
+  // How many seeds in the deterministic sequence we try before giving up (and
+  // reporting failure — see findSolvableSeed). Each attempt proves out with
+  // probability ~1/2, so reaching this many consecutive misses is effectively
+  // impossible; the generous cap is what keeps "no daily today" a theoretical
+  // branch rather than something a player ever meets.
   var MAX_SEED_ATTEMPTS = 40;
 
   // --- Predicates (mirror deck.js, kept local so the solver is self-contained) ---
@@ -457,16 +457,26 @@
   }
 
   // Walk a deterministic seed sequence and return the first seed whose deal
-  // the solver can win. Falls back to the start seed if none of the attempts
-  // prove out, so deal generation never blocks forever or fails to produce a
-  // board.
+  // the solver can win, or `null` if none of the attempts prove out.
+  //
+  // Null rather than "fall back to the start seed": every caller of this is
+  // dealing the *daily*, where an unproven board is worse than no board. All
+  // players share the daily shuffle, so an unwinnable one breaks everyone's
+  // streak at once and leaves nobody able to tell a misplay from an impossible
+  // deal. Returning the unfiltered base seed made that failure silent — the
+  // deal looked normal and only the day's empty leaderboard would have hinted
+  // otherwise. Callers must handle null by not offering the daily.
+  //
+  // Reaching null is effectively impossible in practice (each attempt proves
+  // out with probability ~1/2, so this needs MAX_SEED_ATTEMPTS misses in a
+  // row); it exists so the impossible case is loud rather than wrong.
   function findSolvableSeed(startSeed) {
     var base = startSeed | 0;
     for (var k = 0; k < MAX_SEED_ATTEMPTS; k++) {
       var seed = (base + k) | 0;
       if (isSolvable(Deck.deal(seed))) return seed;
     }
-    return base;
+    return null;
   }
 
   window.SolitaireSolver = {
