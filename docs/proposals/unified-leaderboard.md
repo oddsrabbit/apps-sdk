@@ -49,7 +49,7 @@ score DESC, `created_at` ASC everywhere.
 | 2048 | `highscore` (keepBest), `win` | ✅ | ❌ | ✅ | ✅ |
 | rabbit-words | `puzzle-N` (epoch 2026‑05‑08) | ✅ | ✅ | ❌ | ✅ |
 | rabbit-globe | `puzzle-N` (epoch 2026‑06‑20) | ✅ | ✅ | ❌ | ✅ |
-| solitaire | `daily-<id>` | ✅ | ✅ | ❌ | ❌ |
+| solitaire | `daily2-<id>` (epoch 2026‑09‑09) | ✅ | ✅ | ✅ | ❌ |
 | snake | — | ❌ | ❌ | ❌ | ❌ |
 | match3 | `highscore` (keepBest), `month-YYYY-MM` (keepBest) | ✅ | ❌ | ✅ | ❌ |
 
@@ -177,8 +177,14 @@ duplicated in its own client bundle *and* in `DailyGameRegistry` — is a tidy-u
 worth doing on its own merits, not a prerequisite for leaderboards.
 
 Caveat: **solitaire is not in `DailyGameRegistry`** (it self-seeds client-side and
-writes `daily-<id>`). It needs registering there before it can have a season
+writes `daily2-<id>`). It needs registering there before it can have a season
 board.
+
+Note (re-release): solitaire's epoch moved from 2026‑01‑01 to 2026‑09‑09 so its
+counter restarts at #1, and its round-key prefix moved from `daily-` to `daily2-`
+in the same change. Passages below written before that still say `daily-N` off a
+2026‑01‑01 epoch; the shape of the argument is unchanged, but anything registering
+solitaire server-side wants the current pair (`daily2-`, 2026‑09‑09).
 
 ### 3.4 Shared UI module
 
@@ -907,3 +913,63 @@ What shipped, all in `match3/`, no backend and no SDK change:
   `application.js` and called by `leaderboard.js` before it opens; it is a no-op
   outside a live run, so the idle and game-over entry points are unaffected. Not
   a resume on close — the paused overlay behind the modal already offers one.
+
+## 5.7 Solitaire gets an entry point, and a way back to past deals (2026‑09‑10)
+
+Solitaire's board existed but was reachable from exactly one place: the win
+overlay, after a solve. Two consequences, and they compound.
+
+**You had to win to look.** Every other game with a board has an entry point
+that doesn't cost a game — 2048 and match3 put one in the top row (§5.6). Here
+"how am I doing" meant finishing a deal, and if you were mid-deal and curious,
+the only route was New Deal → confirm → throw the deal away.
+
+**Yesterday was unreachable.** A daily board is the one kind that is complete
+precisely when nobody is looking at it: the field fills over the day, and the
+player who solved at 9am has closed the app long before it settles. The win
+overlay only ever showed the deal just played, so a settled board was never seen
+by anyone. rabbit-words solved this in §5.4 with a past-round modal; this is the
+same move.
+
+What shipped, all in `solitaire/`, no backend and no SDK change:
+
+- **Two entry points, both capability-gated.** A trophy in the HUD — the only
+  one reachable mid-deal — and a `Leaderboard` button on the chooser and win
+  overlays, which is the only one reachable while `.game-message` is painted
+  over the HUD. Both start `hidden` and are revealed in the `whenReady()`
+  continuation, on `scores.top` **or** `scores.friends`; a host with neither
+  gets no button rather than a modal that always errors (§2.1).
+- **A day picker, one week deep.** Prev/next either side of the title, bounded
+  at `today - 7` and at today. Unlike rabbit-words' modal this one *includes*
+  today: that board doubles as a spoiler for a word puzzle still in progress,
+  and a solve time spoils nothing — everyone gets the same proven-winnable deal,
+  and knowing somebody did it in four minutes tells you nothing about the cards.
+- **One tab builder, two mount points.** `buildDailyTabs(id)` answers "which
+  rounds, and what a score reads back as" once, for an arbitrary deal id; the
+  inline panel on the win overlay and the modal both call it. Reaching a past
+  deal is then purely a different id. The season tab's period comes from the
+  **deal**, not from the clock — on the 1st through the 7th the picker reaches
+  last month, and the alternative is the §5.4 bug.
+- **Opening the board pauses the deal clock.** Second game to need this after
+  match3, and for a sharper reason: solitaire's clock is not just a timer, it is
+  the ranking metric — `dailyScore` inverts it. Reading the board would
+  otherwise cost the player the very number the board ranks them by.
+  `game.pauseClock()` on open, `resumeClock()` on close, and the lifecycle
+  `resume` handler re-pauses while the modal is up so a background round-trip
+  can't hand the clock back early.
+- **Friends is now capability-gated too.** It was the one tab added
+  unconditionally, so a host with `scores.top` and no `scores.friends` got a
+  board that could only ever render its error state.
+- **Random deals say why they have no board.** They were already excluded —
+  `finalizeWin` submits nothing and clears the panel for one, since a
+  clock-seeded shuffle nobody else has seen has no field to place a time in —
+  but from the player's side "no leaderboard" and "the leaderboard failed to
+  load" looked identical. The win line now says `Random deals aren't ranked`,
+  with `Today's deal` beside it.
+- **The season row was erasing the username.** `.lb-name` is `flex: 1` with a
+  zero basis while `.lb-badges` and `.lb-value` are both `flex: none`, so on
+  this game's 320px panel the badges took every pixel, the name rendered at zero
+  width, and the row overflowed anyway. Solitaire moves the badges onto their
+  own line under the name. Left as a game-scoped override: it is this game's
+  9px pixel type and narrow panel that run out of room, and the shared rules are
+  fine at the widths the others have.

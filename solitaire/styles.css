@@ -306,7 +306,7 @@ body {
   align-items: center;
 }
 
-.undo-button, .restart-button, .game-message button, .finish-button {
+.undo-button, .restart-button, .leaderboard-button, .game-message button, .finish-button {
   background: var(--wood-darkest);
   color: var(--wood-pale);
   border: 2px solid var(--wood-mid);
@@ -324,8 +324,13 @@ body {
 /* Icon-sized, because they sit on the board: a labelled UNDO / NEW DEAL pair
    is about 145px of a 390px phone's HUD, which the moves and time chips need
    more than the words do. Both carry an aria-label, and new-deal confirms
-   before it discards a deal, so the glyph can't cost anyone their game. */
-.undo-button, .restart-button {
+   before it discards a deal, so the glyph can't cost anyone their game.
+
+   The trophy joins them on the same terms and for the same reason: a labelled
+   LEADERBOARD is wider than the two of them together. It is a few pixels
+   narrower than they are, being the third action on a bar that was sized for
+   two — the chips beside it have no give left at 380px. */
+.undo-button, .restart-button, .leaderboard-button {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -334,6 +339,7 @@ body {
   height: 36px;
   -webkit-tap-highlight-color: transparent;
 }
+.leaderboard-button { width: 32px; }
 
 /* The overlay's daily buttons disable when the solver can't vouch for today's
    deal; the sub-line above them carries the reason, so the dimming only has to
@@ -345,6 +351,7 @@ body {
 }
 .undo-button:active:not(:disabled),
 .restart-button:active,
+.leaderboard-button:active,
 .game-message button:active:not(:disabled),
 .finish-button:active {
   border-bottom-width: 2px;
@@ -363,7 +370,7 @@ body {
 }
 /* `display: flex` above outranks the UA rule that makes [hidden] disappear,
    so any [hidden] on these needs saying again here. */
-.undo-button[hidden], .restart-button[hidden] { display: none; }
+.undo-button[hidden], .restart-button[hidden], .leaderboard-button[hidden] { display: none; }
 
 /* js/renderer.js overwrites the buffer height and BOTH CSS dimensions on load
    and on every resize (Renderer.prototype.resize). The declarations here are
@@ -458,10 +465,20 @@ h1.title {
 /* Per-state button visibility. Defaults hide all; each state opts in. */
 .game-message .lower button { display: none; }
 .game-message[data-state="idle"] .start-daily-button,
-.game-message[data-state="idle"] .start-random-button { display: inline-block; }
+.game-message[data-state="idle"] .start-random-button,
+.game-message[data-state="idle"] .leaderboard-button-overlay { display: inline-block; }
+/* Leaderboard shows on the won screen as well as at idle, even though the
+   boards for the deal just played are already inline above it — the modal is
+   the only way back to the deals BEFORE this one, and a win screen is the most
+   likely moment for a player to want them. */
 .game-message[data-state="won"] .retry-daily-button,
 .game-message[data-state="won"] .retry-random-button,
-.game-message[data-state="won"] .share-button { display: inline-block; }
+.game-message[data-state="won"] .share-button,
+.game-message[data-state="won"] .leaderboard-button-overlay { display: inline-block; }
+
+/* The capability gate beats the per-state rules above: on a host that can't
+   serve a board there is nothing to open, whatever screen we're on. */
+.game-message .lower .leaderboard-button-overlay[hidden] { display: none !important; }
 
 /* Finish button is a sibling of the canvas inside .stage, so it positions
    against the board directly and is independent of the game-message overlay's
@@ -535,11 +552,18 @@ h1.title {
    What stays here is the part that is genuinely solitaire: the component
    defaults to a rounded, system-font look, and this game is 8-bit wood and
    square borders. These are presentation overrides only — do not re-add layout
-   rules, that is what the shared module exists to hold. */
-.friends-panel .lb-tab,
-.friends-panel .lb-row,
-.friends-panel .lb-empty,
-.friends-panel .lb-cta-blurb {
+   rules, that is what the shared module exists to hold.
+
+   Scoped to `.solitaire-lb`, not to `.friends-panel`, because a panel now
+   mounts in two places: inline on the won overlay and inside the day-scrubbing
+   leaderboard modal. Both carry the class; `.friends-panel` keeps only the
+   rules that are about that slot specifically (the list cap below). */
+.solitaire-lb .lb-tab,
+.solitaire-lb .lb-row,
+.solitaire-lb .lb-empty,
+.solitaire-lb .lb-cta-blurb,
+.solitaire-lb .lb-note,
+.solitaire-lb .lb-loading {
   font-size: 9px;
   letter-spacing: 1px;
 }
@@ -553,25 +577,67 @@ h1.title {
 
    160px was set when boards were 20 rows; it shows about three and a half, and
    with a 100-row board that is a letterbox. Proportional to the viewport
-   instead, leaving room for the buttons underneath. */
+   instead, leaving room for the buttons underneath.
+
+   Deliberately NOT on `.solitaire-lb`, which would carry it into the
+   leaderboard modal — and there it would be the §5.5 bug: the modal scrolls,
+   so a capped list inside it eats the flick that should have scrolled the
+   modal. The modal caps itself instead (`.lb-day-modal`, max-height 85vh). */
 .friends-panel .lb-list {
   max-height: 38vh;
   overflow-y: auto;
 }
 
-.friends-panel .lb-row {
+.solitaire-lb .lb-row {
   padding: 7px 8px;
   border-bottom: 2px solid var(--wood-mid);
+  /* Lets the season badges take a line of their own — see below. */
+  flex-wrap: wrap;
 }
 
-.friends-panel .lb-row-you {
+.solitaire-lb .lb-row-you {
   border-radius: 0;
   border-bottom-color: var(--wood-pale);
 }
 
+/* Season rows carry up to three badges ("9 days", "avg 1,300", "🔥 5") between
+   the name and the value, and at this game's width they were erasing the name:
+   `.lb-name` is `flex: 1` with a zero basis, while the badges and the value are
+   both `flex: none`, so on a 320px board the two of them took every pixel and
+   the username rendered at zero width with the row overflowing anyway. That is
+   the wrong thing to drop — a board of anonymous rows isn't a leaderboard.
+
+   So the badges get a line of their own under the name. `order` moves them past
+   the value (they're before it in the DOM), a 100% basis breaks the line, and
+   the indent lines them up with the name rather than with the rank column.
+   Solitaire-scoped because it's this game's 9px pixel type and 320px panel that
+   run out of room; the shared rules are fine at the widths everyone else has.
+   The `flex-wrap` this needs is on `.lb-row` above. */
+.solitaire-lb .lb-name { flex: 1 1 auto; }
+.solitaire-lb .lb-badges {
+  order: 1;
+  flex: 1 0 100%;
+  flex-wrap: wrap;
+  padding-left: 42px;
+  margin-top: 4px;
+}
+.solitaire-lb .lb-badge {
+  font-size: 8px;
+  letter-spacing: 0;
+  border-radius: 0;
+}
+/* Same column as the badges, for the same reason — it is the name column the
+   pinned note is annotating, and the shared 62px is measured off a 30px avatar
+   this game shrinks to 22px. */
+.solitaire-lb .lb-pinned-note {
+  padding-left: 42px;
+  font-size: 8px;
+  letter-spacing: 1px;
+}
+
 /* Square, not circular — a round avatar in a game built out of 2px borders
    reads as a foreign element. */
-.friends-panel .lb-avatar {
+.solitaire-lb .lb-avatar {
   border-radius: 0;
   width: 22px;
   height: 22px;
@@ -582,7 +648,7 @@ h1.title {
    (`.game-message button`). `--lb-accent` is cream so the tab underline and
    focus ring read on the dark overlay, which would otherwise flip this button
    to cream-on-dark-brown and make it the one odd control on the screen. */
-.friends-panel .lb-cta-btn {
+.solitaire-lb .lb-cta-btn {
   background: var(--wood-darkest);
   color: var(--wood-pale);
   border: 2px solid var(--wood-mid);
@@ -595,10 +661,124 @@ h1.title {
   text-transform: uppercase;
 }
 
-.friends-panel .lb-cta-btn:active {
+.solitaire-lb .lb-cta-btn:active {
   border-bottom-width: 2px;
   border-right-width: 2px;
   transform: translate(2px, 2px);
+}
+
+/* Leaderboard modal. Opened from either Leaderboard button (HUD, and the
+   chooser/won overlay); holds one daily deal's boards plus the picker that
+   scrubs back through the last week of them.
+
+   Dark felt rather than the cream of the share and confirm dialogs, which is
+   not a style choice: the --lb-* variables at the top of this file map the
+   shared component onto cream-on-dark-wood, so a cream panel would render the
+   whole board in cream-on-cream. The two modals are the same shape, the same
+   2px borders and the same hard drop shadow; only the ground differs, and it
+   differs the way the board itself does. */
+.lb-day-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(27, 77, 48, 0.85);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  box-sizing: border-box;
+}
+.lb-day-modal {
+  background: var(--wood-darkest);
+  color: var(--card-cream);
+  border: 2px solid var(--wood-mid);
+  box-shadow: 6px 6px 0 var(--wood-shadow);
+  padding: 18px;
+  width: 100%;
+  max-width: 380px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  text-align: center;
+  /* The felt overlay sets its own 1.4 and the shared component assumes a normal
+     document line-height; without one here the sign-in blurb and the season
+     board's caption wrap onto lines that touch. */
+  line-height: 1.5;
+  /* The modal is the scroller, so the board inside it never needs to be —
+     see the note on .friends-panel .lb-list. */
+  max-height: 85vh;
+  overflow-y: auto;
+}
+
+/* Prev · heading · next. `justify-content: space-between` rather than a grid
+   so the arrows sit at the edges and the heading takes whatever is left: the
+   title is "Daily #7" on the first week and "Daily #148" on a good one, and a
+   fixed centre column would move the arrows as the number grew. */
+.lb-day-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.lb-day-heading {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.lb-day-title {
+  margin: 0;
+  font-size: 13px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--card-cream);
+}
+.lb-day-date {
+  margin: 4px 0 0;
+  font-size: 9px;
+  letter-spacing: 1px;
+  color: var(--wood-pale);
+}
+
+/* Flat, like the sound and vibration toggles, not embossed like the actions:
+   these move you around inside the dialog rather than doing anything to the
+   game, and two more bordered buttons either side of the title would read as
+   the modal's primary controls. Disabled at the ends of the window, where the
+   dimming is the only thing saying the archive stops. */
+.lb-day-nav {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: var(--wood-pale);
+  cursor: pointer;
+  opacity: 0.85;
+  -webkit-tap-highlight-color: transparent;
+}
+.lb-day-nav:hover:not(:disabled) { opacity: 1; }
+.lb-day-nav:active:not(:disabled) { transform: translateY(1px); }
+.lb-day-nav:disabled { opacity: 0.25; cursor: default; }
+.lb-day-nav:focus-visible {
+  outline: 2px solid var(--wood-pale);
+  outline-offset: 2px;
+}
+
+.lb-day-body {
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+}
+
+/* The dialog moves focus to Close on open, so on a keyboard this ring is the
+   first thing drawn — and the UA default is a rounded blue halo on a square
+   cream-on-wood button. Same treatment the HUD toggles already carry. */
+.lb-day-close:focus-visible {
+  outline: 2px solid var(--wood-pale);
+  outline-offset: 2px;
 }
 
 /* Share modal. Opened from the Share button on the won overlay. Same visual
@@ -778,7 +958,7 @@ h1.title {
 }
 
 /* Small viewports. The HUD is the one row here that can actually run out of
-   room — four controls and two chips inside seven card-widths — so it gives up
+   room — five controls and two chips inside seven card-widths — so it gives up
    type size first, and the overlay loses padding and the how-to-play line
    before anything else. The board itself needs no breakpoint: renderer.js
    fits it at every size. */
@@ -790,6 +970,7 @@ h1.title {
   }
   .moves-container::after, .time-container::after { font-size: 7px; top: 4px; line-height: 7px; }
   .undo-button, .restart-button { width: 32px; height: 32px; }
+  .leaderboard-button { width: 28px; height: 32px; }
   .sound-toggle, .haptic-toggle { padding: 2px; font-size: 15px; }
   .hud { gap: 6px; padding-left: calc(6px + env(safe-area-inset-left, 0px)); }
   .game-message { gap: 10px; padding: 12px; }
@@ -797,4 +978,6 @@ h1.title {
   .game-message-text { font-size: 16px; }
   .game-message-sub { font-size: 9px; }
   .finish-button { bottom: calc(16px + env(safe-area-inset-bottom, 0px)); }
+  .lb-day-modal { padding: 14px; gap: 12px; max-height: 90vh; }
+  .lb-day-title { font-size: 11px; }
 }

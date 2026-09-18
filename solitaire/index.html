@@ -69,6 +69,27 @@
                     stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
           </button>
+          <!-- Leaderboard. The only entry point that works mid-deal: the
+               overlay covers the HUD, so the copy of this button on the
+               chooser (below) is what serves the idle and won screens.
+
+               Starts `hidden` and is revealed by application.js only once the
+               host has said it can actually serve a board — the capability
+               answer arrives on the `init` postMessage, so nothing before
+               whenReady() knows. Opening it pauses the deal clock, which is
+               the leaderboard's own ranking metric. -->
+          <button type="button" class="leaderboard-button" aria-label="Leaderboard" hidden>
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
+              <path d="M4.8 2.4h6.4v3.3a3.2 3.2 0 0 1-6.4 0z" fill="none" stroke="currentColor"
+                    stroke-width="1.4" stroke-linejoin="round" />
+              <path d="M4.8 3.6H2.6v1a2.4 2.4 0 0 0 2.4 2.4" fill="none" stroke="currentColor"
+                    stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+              <path d="M11.2 3.6h2.2v1a2.4 2.4 0 0 1-2.4 2.4" fill="none" stroke="currentColor"
+                    stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+              <path d="M8 8.9v2.7M5.4 13.6h5.2" fill="none" stroke="currentColor"
+                    stroke-width="1.4" stroke-linecap="round" />
+            </svg>
+          </button>
           <!-- Sound on/off. Procedural audio (js/sound_manager.js) is on by
                default; this lets a player silence it. aria-pressed reflects
                the muted state and is kept in sync from application.js. -->
@@ -145,13 +166,20 @@
         <h1 class="title">SOLITAIRE</h1>
         <p class="game-message-text" role="status" aria-live="polite"></p>
         <p class="game-message-sub" aria-live="polite"></p>
-        <div class="friends-panel"></div>
+        <div class="friends-panel solitaire-lb"></div>
         <div class="lower">
           <button type="button" class="start-daily-button">Daily deal</button>
           <button type="button" class="start-random-button">Random</button>
           <button type="button" class="retry-daily-button">Today's deal</button>
           <button type="button" class="retry-random-button">New random</button>
           <button type="button" class="share-button">Share</button>
+          <!-- The overlay's copy of the HUD trophy. Needed as a separate
+               control, not just as CSS: `.game-message` paints over the HUD,
+               so the bar's button is unreachable on exactly the two screens a
+               player is most likely to want the board from. Shown on idle and
+               won; `hidden` until the host declares it can serve a board, the
+               same gate the HUD button is under. -->
+          <button type="button" class="leaderboard-button-overlay" hidden>Leaderboard</button>
         </div>
         <!-- How to play. Idle only: it is the answer to a question the player
              only has before their first deal, and after that it is furniture. -->

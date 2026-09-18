@@ -58,6 +58,14 @@
   var retryDailyBtn = document.querySelector(".retry-daily-button");
   var retryRandomBtn = document.querySelector(".retry-random-button");
   var shareBtn = document.querySelector(".share-button");
+  // Two entry points to the same modal, because neither covers the whole game
+  // on its own: the HUD one is the only one reachable mid-deal, and the overlay
+  // one is the only one reachable while `.game-message` is painted over the
+  // HUD. Both start `hidden` — see wireLeaderboardButtons.
+  var leaderboardBtns = [
+    document.querySelector(".leaderboard-button"),
+    document.querySelector(".leaderboard-button-overlay")
+  ].filter(Boolean);
 
   // --- Instances ---
 
@@ -390,9 +398,11 @@
     // whole findSolvableSeed loop in one synchronous burst. A single attempt
     // is bounded by the solver's node budget (~tens of ms worst case), so
     // the main thread stays responsive on low-end devices even when several
-    // consecutive seeds fail to prove out. The attempt sequence (base+k, then
-    // giving up after maxAttempts) mirrors findSolvableSeed exactly, so this
-    // lands on the identical seed every device-and-path computes.
+    // consecutive seeds fail to prove out. The attempt sequence (the shared
+    // Deck.dailySeedAt walk, then giving up after maxAttempts) mirrors
+    // findSolvableSeed exactly, so this lands on the identical seed every
+    // device-and-path computes. Both walks read the sequence from deck.js
+    // rather than each spelling out the arithmetic, so they cannot drift.
     var Solver = window.SolitaireSolver;
     var maxAttempts = Solver._internal.MAX_SEED_ATTEMPTS;
     var k = 0;
@@ -409,7 +419,7 @@
         return;
       }
       if (t !== today) { today = t; k = 0; } // crossed UTC midnight mid-search
-      var seed = (today + k) | 0;
+      var seed = Deck.dailySeedAt(today, k);
       if (Solver.isSolvable(Deck.deal(seed))) {
         dailySeed.value = seed;
         dailySeed.id = today;
@@ -520,6 +530,12 @@
     syncDailyButtons();
     var mainText = isDaily ? "DAILY #" + game.getDailyId() + " SOLVED" : "YOU WON";
     var subText = formatTime(ms) + "  ·  " + moves + " moves" + (isNewBest ? "  ·  NEW BEST" : "");
+    // Say why there's no board under a random win. The rule (only the shared
+    // daily deal is ranked) is a good one, but from the player's side it looks
+    // identical to a leaderboard that failed to load — they solved a deal, put
+    // in a good time, and the section that was there last time is gone. One
+    // clause, and the "Today's deal" button beside it is the way to fix it.
+    if (!isDaily) subText += "  ·  Random deals aren't ranked";
     setOverlayText(mainText, subText);
     haptic("success");
     if (isNewBest) sound.newBest();
@@ -589,26 +605,36 @@
     friendsPanelEl.innerHTML = "";
   }
 
-  // Friends + Global boards for today's deal, rendered by the shared
+  // Friends + Global + Season boards for ONE daily deal, as tabs for the shared
   // leaderboard component (src/ui/leaderboard.ts, loaded as window.OddsRabbitUI).
-  // Replaces this game's own row/CTA rendering; what stays here is solitaire's
-  // part — which rounds, and that a "score" reads back as a solve time.
+  // The component owns the rows, avatars, medals, ranking and both CTA states;
+  // what stays here is solitaire's part — which rounds, and that a "score" reads
+  // back as a solve time.
+  //
+  // Built for an ARBITRARY deal id, not for today, because two places render
+  // these boards: the inline panel on the won overlay and the day-scrubbing
+  // modal behind the Leaderboard button. One builder rather than two, so "which
+  // rounds" is answered exactly once and the modal reaches a past deal purely by
+  // passing a different id.
   //
   // Rows carry `metadata.timeMs`, which is what the player actually cares about;
   // the stored score is a derived speed value (see dailyScore) and would be
   // meaningless on screen.
-  function renderFriendsPanel(id, viewerResult) {
-    clearFriendsPanel();
-    // Nothing to render the boards with (an old cached bundle, a page that
-    // didn't get the script tag, or an SDK too old to expose scores.friends):
-    // leave the container empty. `.friends-panel:empty` hides it, so the win
-    // overlay loses a section rather than gaining a broken one. Checked here
-    // rather than left to load() because this runs BEFORE setOverlayState —
-    // anything that throws out of here costs the player their win screen.
-    if (!UI || !OR.capabilities) return;
-    if (!OR.scores || typeof OR.scores.friends !== "function") return;
-
+  //
+  // opts.viewerResult — the deal the player has just finished, spliced into
+  //   Friends so their own row shows without waiting on the backend to have
+  //   recorded it. Only ever correct for the deal they actually played, so the
+  //   modal passes nothing and takes the backend's own `isSelf` row instead.
+  function buildDailyTabs(id, opts) {
+    opts = opts || {};
+    var viewerResult = opts.viewerResult || null;
     var roundKey = dailyRoundKey(id);
+    var isToday = id === Deck.dailyId();
+    // Copy that has to name a deal. "Today's deal" is the right phrase on the
+    // won overlay and wrong in the modal the moment the player scrubs back a
+    // day, and a board captioned with the wrong day is worse than an uncaptioned
+    // one — the player has no way to tell it apart from an empty board.
+    var dealNoun = isToday ? "today's deal" : "deal #" + id;
 
     function formatResult(row) {
       var meta = row.metadata || null;
@@ -651,13 +677,22 @@
       return rows;
     }
 
-    var tabs = [
-      {
+    var friendsEmpty = "None of your friends have solved " + dealNoun + " yet.";
+    var tabs = [];
+
+    // Friends. Capability-gated like the other two: a host that serves
+    // `scores.top` but not `scores.friends` exists (the mobile app has lagged
+    // the web host by an App Store review before), and on one of those this tab
+    // can only ever render its error state — a dead board next to a live one,
+    // where the panel's "open on the first tab with rows" rule then has to step
+    // over it.
+    if (OR.capabilities.has("scores.friends") && typeof OR.scores.friends === "function") {
+      tabs.push({
         id: "friends",
         label: "Friends",
-        emptyText: "None of your friends have solved today's deal yet.",
+        emptyText: friendsEmpty,
         emptyPrompt: {
-          blurb: "None of your friends have solved today's deal yet. Invite one?",
+          blurb: friendsEmpty + " Invite one?",
           label: "Invite a friend",
           onClick: runInviteShare
         },
@@ -668,7 +703,7 @@
         signInPrompt: OR.user
           ? null
           : {
-              blurb: "Sign in to see how people you follow did on today's deal.",
+              blurb: "Sign in to see how people you follow did on " + dealNoun + ".",
               label: "Sign in",
               onClick: function () {
                 try {
@@ -680,8 +715,8 @@
                 } catch (_) {}
               }
             }
-      }
-    ];
+      });
+    }
 
     // Public read, so guests get this board too — but only where the host
     // implements the verb and the loaded SDK can call it.
@@ -689,7 +724,12 @@
       var globalTab = {
         id: "global",
         label: "Global",
-        emptyText: "Nobody has solved today's deal yet — be the first!",
+        // "Be the first" is an invitation, and it only makes sense while the
+        // round is still open. On a settled deal the board is simply the whole
+        // field, and there is nothing left for the reader to do about it.
+        emptyText: isToday
+          ? "Nobody has solved today's deal yet — be the first!"
+          : "Nobody solved " + dealNoun + ".",
         load: function () {
           return OR.scores.top({ roundKey: roundKey, order: "top", limit: BOARD_LIMIT });
         },
@@ -714,24 +754,68 @@
     // across the month's deals (the daily score is already speed-derived, see
     // dailyScore). Unlike the daily board this one accumulates, so a run of
     // good solves adds up to something instead of resetting at midnight.
+    //
+    // Keyed to the month THIS DEAL belongs to, not to the month it is being
+    // looked at in. The modal scrubs back a week, so on the 1st through the 7th
+    // it reaches deals from last month — and a season board keyed to "now"
+    // would sit under a December 31st deal showing January's standings. That is
+    // §5.4 of docs/proposals/unified-leaderboard.md, where rabbit-words shipped
+    // exactly this bug and fixed it the same way.
     if (OR.capabilities.has("scores.season") && typeof UI.createSeasonTab === "function") {
+      var period = periodForDay(id);
+      var monthLabel = typeof UI.formatPeriod === "function" ? UI.formatPeriod(period) : period;
       var seasonOptions = {
         load: function () {
-          return OR.scores.season({ period: UI.currentPeriod(), limit: BOARD_LIMIT });
+          return OR.scores.season({ period: period, limit: BOARD_LIMIT });
         },
-        emptyText: "No solves this month yet — win a deal to get on the board."
+        // Names the month rather than saying "this month", for the same reason
+        // the period is derived from the deal: in the modal this board can be
+        // last month's, and an empty board is the one place the player has no
+        // other way to tell which month it is talking about.
+        emptyText: "No solves in " + monthLabel + " yet — win a deal to get on the board."
       };
       if (OR.capabilities.has("scores.seasonRank")) {
         seasonOptions.loadRank = function () {
-          return OR.scores.seasonRank({ period: UI.currentPeriod() });
+          return OR.scores.seasonRank({ period: period });
         };
       }
       tabs.push(UI.createSeasonTab(seasonOptions));
     }
 
+    return tabs;
+  }
+
+  // `YYYY-MM` (UTC) for the month a daily deal falls in — the period key a
+  // season board is fetched under. UTC, not local, because a deal rolls at UTC
+  // midnight everywhere; see currentPeriod() in src/ui/season.ts, which this
+  // agrees with for today and generalises to any past day.
+  function periodForDay(id) {
+    var d = new Date(Deck.dailyStartMs(id));
+    var m = d.getUTCMonth() + 1;
+    return d.getUTCFullYear() + "-" + (m < 10 ? "0" + m : String(m));
+  }
+
+  function viewerUuid() {
+    return OR.user && OR.user.uuid ? OR.user.uuid : null;
+  }
+
+  // Today's boards, inline on the won overlay.
+  function renderFriendsPanel(id, viewerResult) {
+    clearFriendsPanel();
+    // Nothing to render the boards with — an old cached bundle or a page that
+    // didn't get the script tag — or no board this host can serve at all. Leave
+    // the container empty either way: `.friends-panel:empty` hides it, so the
+    // win overlay loses a section rather than gaining a panel whose only
+    // content is "couldn't load the leaderboard". Checked here rather than left
+    // to load() because this runs BEFORE setOverlayState — anything that throws
+    // out of here costs the player their win screen.
+    if (!canRenderBoards()) return;
+    var tabs = buildDailyTabs(id, { viewerResult: viewerResult });
+    if (!tabs.length) return;
+
     currentPanel = UI.createLeaderboardPanel({
       tabs: tabs,
-      viewerUuid: OR.user && OR.user.uuid ? OR.user.uuid : null
+      viewerUuid: viewerUuid()
     });
 
     var title = document.createElement("h3");
@@ -739,6 +823,16 @@
     title.textContent = "Leaderboard";
     friendsPanelEl.appendChild(title);
     friendsPanelEl.appendChild(currentPanel.element);
+  }
+
+  // Can this page put a board on screen at all? Not a question about the host's
+  // capabilities — buildDailyTabs asks those per board, and answers with an
+  // empty tab list when the host can serve none — but about whether the shared
+  // component and the scores API reached us in the first place. A stale cached
+  // bundle can leave `UI` undefined next to a perfectly capable host.
+  function canRenderBoards() {
+    if (!UI || typeof UI.createLeaderboardPanel !== "function") return false;
+    return Boolean(OR.capabilities && OR.scores);
   }
 
   function runInviteShare() {
@@ -752,6 +846,252 @@
       }
     } catch (_) {}
     copyToClipboard(text, "Invite copied to clipboard", "Could not share");
+  }
+
+  // --- Leaderboard modal (past deals) ---
+  //
+  // The board, on demand, for today's deal or any of the last few. Two things
+  // it answers that the inline panel on the won overlay can't:
+  //
+  //  1. You can look without finishing. The inline panel only ever exists on
+  //     the win screen, so "how am I doing" cost you a solve.
+  //  2. Yesterday still exists. A daily board is the one kind that is complete
+  //     precisely when nobody is looking at it any more — the field fills up
+  //     over the day and the player who solved it at 9am has moved on by the
+  //     time it settles. Scrubbing back is how that gets seen at all.
+  //
+  // Deliberately a solitaire-owned modal rather than UI.openLeaderboardModal:
+  // the shared one builds its panel once, and the whole point here is that the
+  // panel is rebuilt as the player moves between days. Everything inside it is
+  // still the shared component — this file owns the shell and the day picker.
+  // Same shape rabbit-words' past-round modal has (§5.4 of
+  // docs/proposals/unified-leaderboard.md).
+
+  // How far back the picker scrubs. A week: far enough to cover the deals a
+  // regular player has actually played, short enough that the arrows stay a
+  // browse rather than an archive with no end.
+  var HISTORY_DAYS = 7;
+
+  // Live modal, so a second open replaces the first instead of stacking two
+  // dialogs, and so the panel inside it can be destroyed on the way out — a
+  // board still in flight would otherwise paint into detached nodes.
+  var dayModal = null;
+
+  // ONLY the daily deals are ranked, so this is the only board there is. A
+  // random deal is dealt from the clock — nobody else has ever seen that
+  // shuffle — so there is no field to place a time in, which is also why
+  // finalizeWin submits nothing for one. The modal opens on the daily
+  // regardless of what is on the table.
+  function openLeaderboardModal(startId) {
+    if (!canRenderBoards()) return;
+    // No board on this host: the entry points would already be hidden, so this
+    // only catches a capability that narrowed after they were revealed. Cheap
+    // to ask — a tab's `load` is a closure the panel calls, so building the
+    // list fetches nothing.
+    if (!buildDailyTabs(Deck.dailyId()).length) return;
+
+    var today = Deck.dailyId();
+    var lowerBound = Math.max(0, today - HISTORY_DAYS);
+    // Today included, unlike rabbit-words' modal, which stops at yesterday
+    // because its board doubles as a spoiler for a puzzle still in progress.
+    // A solve time spoils nothing: every player gets the same proven-winnable
+    // deal, and seeing that somebody did it in four minutes tells you nothing
+    // about the cards.
+    var upperBound = today;
+    var viewId = startId == null ? today : (startId | 0);
+    if (viewId < lowerBound) viewId = lowerBound;
+    if (viewId > upperBound) viewId = upperBound;
+
+    if (dayModal) dayModal.close();
+
+    // Reading the board must not cost the player the seconds they spend on it:
+    // the deal clock IS the ranking metric here. A no-op unless a deal is
+    // actually in progress, so the idle and won entry points are unaffected.
+    game.pauseClock();
+
+    var backdrop = document.createElement("div");
+    backdrop.className = "lb-day-backdrop";
+    backdrop.setAttribute("role", "dialog");
+    backdrop.setAttribute("aria-modal", "true");
+    backdrop.setAttribute("aria-labelledby", "lb-day-title");
+
+    // `solitaire-lb` is what makes the shared component's rows come out 8-bit
+    // rather than rounded-and-system-font; see styles.css.
+    var modal = document.createElement("div");
+    modal.className = "lb-day-modal solitaire-lb";
+
+    var header = document.createElement("div");
+    header.className = "lb-day-header";
+
+    var prevBtn = document.createElement("button");
+    prevBtn.type = "button";
+    prevBtn.className = "lb-day-nav";
+    prevBtn.setAttribute("aria-label", "Previous deal");
+    prevBtn.innerHTML = chevronSvg("left");
+
+    var heading = document.createElement("div");
+    heading.className = "lb-day-heading";
+    var title = document.createElement("h2");
+    title.id = "lb-day-title";
+    title.className = "lb-day-title";
+    var dateLine = document.createElement("p");
+    dateLine.className = "lb-day-date";
+    heading.appendChild(title);
+    heading.appendChild(dateLine);
+
+    var nextBtn = document.createElement("button");
+    nextBtn.type = "button";
+    nextBtn.className = "lb-day-nav";
+    nextBtn.setAttribute("aria-label", "Next deal");
+    nextBtn.innerHTML = chevronSvg("right");
+
+    header.appendChild(prevBtn);
+    header.appendChild(heading);
+    header.appendChild(nextBtn);
+    modal.appendChild(header);
+
+    // Swapped out on every prev/next. The shell around it — picker, close —
+    // stays put, so navigating doesn't flicker the chrome.
+    var body = document.createElement("div");
+    body.className = "lb-day-body";
+    modal.appendChild(body);
+
+    var closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "share-action lb-day-close";
+    closeBtn.textContent = "Close";
+    modal.appendChild(closeBtn);
+
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+
+    var panel = null;
+
+    function paint() {
+      if (panel) {
+        panel.destroy();
+        panel = null;
+      }
+      body.innerHTML = "";
+
+      title.textContent = "Daily #" + viewId;
+      var date = formatDailyDate(viewId);
+      dateLine.textContent = viewId === today ? (date ? "Today · " + date : "Today") : date;
+      prevBtn.disabled = viewId <= lowerBound;
+      nextBtn.disabled = viewId >= upperBound;
+
+      // No viewerResult: on a past deal there is no just-finished game to
+      // splice in, and on today's the backend has had the submit since the
+      // moment it was won. Either way the self row comes from the server,
+      // which is the only source that is right for a day the player might have
+      // finished on another device.
+      var tabs = buildDailyTabs(viewId);
+      var hasGlobal = false;
+      for (var i = 0; i < tabs.length; i++) {
+        if (tabs[i].id === "global") hasGlobal = true;
+      }
+      panel = UI.createLeaderboardPanel({
+        tabs: tabs,
+        viewerUuid: viewerUuid(),
+        // Open on the community board wherever the host serves one: this is a
+        // public board first, and nobody should open it onto a prompt to go
+        // make friends. Read off the built tabs rather than off the capability,
+        // because the two can disagree — an old UI bundle drops the Global tab
+        // on a host that has the verb — and a defaultTab naming a tab that
+        // isn't there holds the whole panel on its loading line until every
+        // board has settled. Still only a preference: the shared panel moves
+        // off a board that comes back empty.
+        defaultTab: hasGlobal ? "global" : (tabs.length ? tabs[0].id : undefined)
+      });
+      body.appendChild(panel.element);
+    }
+
+    function step(delta) {
+      var next = viewId + delta;
+      if (next < lowerBound || next > upperBound) return;
+      viewId = next;
+      paint();
+    }
+
+    prevBtn.addEventListener("click", function () { step(-1); });
+    nextBtn.addEventListener("click", function () { step(1); });
+
+    var closed = false;
+    function close() {
+      if (closed) return;
+      closed = true;
+      if (dayModal === handle) dayModal = null;
+      document.removeEventListener("keydown", onKey);
+      if (panel) panel.destroy();
+      if (backdrop.parentNode) backdrop.parentNode.removeChild(backdrop);
+      // Hand the deal clock back. Idempotent, and a no-op if the host already
+      // resumed it (backgrounding the app while the modal was open).
+      game.resumeClock();
+    }
+    function onKey(e) { if (e.key === "Escape") close(); }
+    document.addEventListener("keydown", onKey);
+    closeBtn.addEventListener("click", close);
+    backdrop.addEventListener("click", function (e) {
+      if (e.target === backdrop) close();
+    });
+
+    var handle = { close: close };
+    dayModal = handle;
+    paint();
+    closeBtn.focus();
+  }
+
+  function chevronSvg(direction) {
+    var d = direction === "left" ? "M10 3.5 5.5 8l4.5 4.5" : "M6 3.5 10.5 8 6 12.5";
+    return '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">' +
+      '<path d="' + d + '" fill="none" stroke="currentColor" stroke-width="2" ' +
+      'stroke-linecap="round" stroke-linejoin="round" /></svg>';
+  }
+
+  // The calendar date a deal was dealt on, for the line under its number. UTC,
+  // because that is when the deal actually turns over — a player in UTC+13
+  // reading their own local date would see tomorrow's date on today's deal.
+  function formatDailyDate(id) {
+    var d = new Date(Deck.dailyStartMs(id));
+    if (isNaN(d.getTime())) return "";
+    try {
+      return d.toLocaleDateString(undefined, {
+        month: "short", day: "numeric", year: "numeric", timeZone: "UTC"
+      });
+    } catch (_) {
+      return "";
+    }
+  }
+
+  // Reveal the Leaderboard buttons, once the host has said it can serve a
+  // board. They start `hidden` in the markup and stay that way otherwise: an
+  // entry point that always opens an error is worse than no entry point.
+  //
+  // NOTE: do NOT feature-detect `typeof OR.scores.top === "function"` — it
+  // ships in every SDK bundle, so that test always passes while the HOST may
+  // still not implement the verb (the mobile app lagged the web host by an App
+  // Store review). Ask the host via capabilities instead; `has()` also flips to
+  // false once a call has been rejected as unsupported, which covers hosts too
+  // old to declare capabilities at all.
+  //
+  // Either board is enough to be worth opening: `scores.top` is the public one
+  // everybody gets, and a signed-in player with a follow graph gets something
+  // out of Friends on a host that has only that.
+  function wireLeaderboardButtons() {
+    if (!canRenderBoards()) return;
+    if (!OR.capabilities.has("scores.top") && !OR.capabilities.has("scores.friends")) return;
+    for (var i = 0; i < leaderboardBtns.length; i++) {
+      leaderboardBtns[i].hidden = false;
+      leaderboardBtns[i].addEventListener("click", onLeaderboardClick);
+    }
+  }
+
+  function onLeaderboardClick(e) {
+    // The overlay's copy sits inside `.game-message`; stopping propagation
+    // keeps opening the board from also reaching anything the overlay does
+    // with a tap.
+    e.stopPropagation();
+    openLeaderboardModal(null);
   }
 
   // --- Share ---
@@ -1299,6 +1639,11 @@
     });
     OR.lifecycle.on("resume", function () {
       game.resumeClock();
+      // The leaderboard modal holds the clock paused for as long as it is open
+      // (see openLeaderboardModal). A background round-trip in the middle of
+      // that would otherwise hand it straight back and charge the player for
+      // the rest of their reading; its own close() puts it back.
+      if (dayModal) game.pauseClock();
     });
   }
   window.addEventListener("pagehide", persistSnapshot);
@@ -1308,6 +1653,7 @@
       game.pauseClock();
     } else {
       game.resumeClock();
+      if (dayModal) game.pauseClock(); // see the lifecycle 'resume' note above
     }
   });
 
@@ -1433,6 +1779,11 @@
 
   function bootstrap() {
     OR.whenReady().then(function () {
+      // First thing past the handshake: the host's capability answer rides in
+      // on `init`, so nothing before this point knows whether there is a board
+      // to offer. Ahead of the storage/atlas wait deliberately — the modal
+      // needs neither, so the button shouldn't wait on them.
+      wireLeaderboardButtons();
       return Promise.all([storage.hydrate(), atlasPromise]);
     }).then(function (results) {
       renderer = new RendererClass(canvas, results[1]);

@@ -49,6 +49,15 @@
     return Math.floor((t - EPOCH_MS) / DAY_MS);
   }
 
+  // The UTC midnight that opens daily `id`, as a timestamp. The inverse of
+  // dailyId, and the only supported way to put a DATE on a deal: the epoch is
+  // private to this module precisely so the numbering can move again (it
+  // already has once — see above), and a second copy of it in the leaderboard's
+  // day picker would print the wrong dates the next time it does.
+  function dailyStartMs(id) {
+    return EPOCH_MS + (id | 0) * DAY_MS;
+  }
+
   // mulberry32 — a 32-bit non-cryptographic PRNG. Plenty for shuffling a
   // 52-card deck; the period is 2^32 which is laughably long for our needs.
   // Picked over Math.random because we need reproducible shuffles from a
@@ -62,6 +71,32 @@
       t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
+  }
+
+  // The shuffle seed for attempt `k` of daily `id`.
+  //
+  // The daily is winnability-filtered by re-rolling (solver.js walks k upward
+  // until a deal proves out), so each day needs not one seed but a SEQUENCE of
+  // them — and the sequences for different days must not overlap. The obvious
+  // `id + k` fails exactly that: on any day whose first seed doesn't prove
+  // out, `id + 1` is both that day's second attempt and the next day's first,
+  // so both days deal the identical board. With roughly half of all base seeds
+  // failing to prove out, that repeated yesterday's deal about half the time.
+  //
+  // Hashing (id, k) into the full 32-bit seed space instead gives every day a
+  // sequence that shares nothing with its neighbours: a repeat now needs a
+  // genuine hash collision (~1e-7 across a day pair) rather than the routine
+  // one-in-two. Pure and deterministic — no clock, no Math.random — so every
+  // device still lands on the same seed for a given day, which is what keeps
+  // the daily a shared board.
+  function dailySeedAt(id, k) {
+    var h = (Math.imul(id | 0, 0x9E3779B1) ^ Math.imul((k | 0) + 1, 0x85EBCA77)) >>> 0;
+    // splitmix32 finalizer — a bijection, so distinct inputs to it stay
+    // distinct and the avalanche is what decorrelates neighbouring days.
+    h ^= h >>> 16; h = Math.imul(h, 0x21F0AAAD);
+    h ^= h >>> 15; h = Math.imul(h, 0x735A2D97);
+    h ^= h >>> 15;
+    return h >>> 0;
   }
 
   // Fisher-Yates with an injected PRNG so the daily seed produces the same
@@ -160,7 +195,9 @@
     rankOf: rankOf,
     isRed: isRed,
     dailyId: dailyId,
+    dailyStartMs: dailyStartMs,
     mulberry32: mulberry32,
+    dailySeedAt: dailySeedAt,
     shuffledDeck: shuffledDeck,
     canStackOnTableau: canStackOnTableau,
     canPlaceOnFoundation: canPlaceOnFoundation,

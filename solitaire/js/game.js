@@ -203,8 +203,14 @@
       // same possibly-unwinnable board, and the daily is precisely where that
       // costs the most: one shared shuffle, everyone's streak, no way to tell
       // a misplay from an impossible deal.
+      // `>>> 0`, not `| 0`: daily seeds are hashes spanning the full 32-bit
+      // range (Deck.dailySeedAt), so the signed coercion would store half of
+      // them negative. The dealt board is the same either way — mulberry32
+      // normalises — but keeping the stored seed identical to the one the
+      // solver returned means the precomputed and the resolved-here paths
+      // agree on the number, not just on the cards.
       if (opts.seed != null) {
-        seed = opts.seed | 0;
+        seed = opts.seed >>> 0;
       } else {
         seed = Solver ? Solver.findSolvableSeed(dailyId) : null;
         if (seed == null) return false;
@@ -218,7 +224,7 @@
       // per-deal seed from the high-res clock is plenty of shuffle diversity;
       // opts.seed lets tests pin a specific deal.
       this._dailyId = -1;
-      this._seed = (opts.seed != null) ? (opts.seed | 0) : ((Date.now() & 0x7fffffff) | 0);
+      this._seed = (opts.seed != null) ? (opts.seed >>> 0) : ((Date.now() & 0x7fffffff) | 0);
     }
     // Set only past the refusal above, so a declined daily leaves the previous
     // mode (and the rest of the state) exactly as it was.
@@ -262,7 +268,7 @@
   SolitaireGame.prototype.restoreSaved = function (snap) {
     if (!snap || !snap.board) return false;
     this._mode = snap.mode;
-    this._seed = snap.seed | 0;
+    this._seed = snap.seed >>> 0;
     this._dailyId = snap.dailyId != null ? (snap.dailyId | 0) : -1;
     this._board = snap.board;
     this._undo = snap.undo || [];
