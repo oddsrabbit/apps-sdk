@@ -4,7 +4,7 @@ export const SDK_VERSIONS = ['1'] as const;
 export const AppSdkVersionSchema = z.enum(SDK_VERSIONS);
 export type AppSdkVersion = z.infer<typeof AppSdkVersionSchema>;
 
-export const BRIDGE_SCOPES = ['bridge:storage', 'bridge:share'] as const;
+export const BRIDGE_SCOPES = ['bridge:storage', 'bridge:share', 'bridge:notifications'] as const;
 export const AppScopeSchema = z.enum(BRIDGE_SCOPES);
 export type AppScope = z.infer<typeof AppScopeSchema>;
 
