@@ -96,6 +96,36 @@ const MatchMove = z
     message: `move exceeds ${MATCH_MOVE_MAX_BYTES}-byte cap`,
   });
 
+/**
+ * A reminder's key: the game's own name for it, e.g. `nap-done`. Scheduling the
+ * same key again replaces the pending reminder rather than adding one, so a game
+ * can move a reminder forward on every visit without piling them up.
+ */
+export const NOTIFICATION_KEY_PATTERN = /^[a-z0-9-]{1,64}$/;
+export const NOTIFICATION_TITLE_MAX = 64;
+export const NOTIFICATION_BODY_MAX = 160;
+
+/**
+ * Per-call outcomes of `notifications.*`. Like `MATCH_ERROR_CODES` these
+ * describe one request, never the host, so the SDK must not treat them as
+ * "unsupported": a reminder rejected for being too far out says nothing about
+ * whether the next one will land.
+ */
+export const NOTIFICATION_ERROR_CODES = {
+  /** A key, title, body or time the server rejected; `message` says which. */
+  invalid: 'notifications/invalid',
+  /** `fireAt` is less than a minute away, or more than 14 days. */
+  badTime: 'notifications/bad-time',
+  /** Five reminders are already pending for this app. Cancel one first. */
+  tooMany: 'notifications/too-many',
+  /** The app's manifest does not declare `bridge:notifications`. */
+  forbidden: 'notifications/forbidden',
+  /** Too many schedules or cancels in the last minute. */
+  rateLimited: 'notifications/rate-limited',
+} as const;
+
+const NotificationKey = z.string().regex(NOTIFICATION_KEY_PATTERN);
+
 export const BridgeRequestSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('storage.get'),
@@ -320,6 +350,43 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
       // today, never a loop.
       offset: z.number().int().min(0).max(10000).optional(),
     }),
+  }),
+  // The server's clock, for games that measure real elapsed time. Public: it
+  // reveals nothing, and a game asks before it knows who the user is. The SDK
+  // corrects for round-trip time and caches the offset, so hosts see a few
+  // calls a session, not one per frame.
+  z.object({
+    type: z.literal('time.now'),
+    correlationId: CorrelationId,
+  }),
+  // ---- Scheduled notifications. All authenticated, and always the signed-in
+  // user's own reminders for this app: there is no way to name another user.
+  // The SERVER enforces the limits (quiet hours, at most 2 pushes a day, 5
+  // pending), so these payloads say what the game would like, not what will
+  // happen. See docs/proposals/scheduled-notifications.md.
+  z.object({
+    type: z.literal('notifications.schedule'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      key: NotificationKey,
+      // When the game would like it delivered. The server may move it out of
+      // the user's quiet hours; the result says when it will really go out.
+      fireAt: z.string().datetime({ offset: true }),
+      title: z.string().min(1).max(NOTIFICATION_TITLE_MAX),
+      body: z.string().min(1).max(NOTIFICATION_BODY_MAX),
+      // IANA zone from the device, filled in by the SDK. Only used for quiet
+      // hours and the per-day cap, so a wrong one costs nothing but timing.
+      tz: z.string().min(1).max(64).optional(),
+    }),
+  }),
+  z.object({
+    type: z.literal('notifications.cancel'),
+    correlationId: CorrelationId,
+    payload: z.object({ key: NotificationKey }),
+  }),
+  z.object({
+    type: z.literal('notifications.list'),
+    correlationId: CorrelationId,
   }),
   z.object({
     type: z.literal('actions.share'),
@@ -691,6 +758,44 @@ export const MatchViewSchema = MatchSummarySchema.extend({
 });
 
 export type MatchView = z.infer<typeof MatchViewSchema>;
+
+// Result of `time.now`. The SDK turns it into an offset against Date.now().
+export const ServerTimeSchema = z.object({
+  serverTime: z.string().datetime(),
+});
+
+export type ServerTime = z.infer<typeof ServerTimeSchema>;
+
+// One pending reminder. `fireAt` is what the game asked for, `deliverAt` when
+// it will actually go out after quiet hours.
+export const ScheduledNotificationSchema = z.object({
+  key: z.string().regex(NOTIFICATION_KEY_PATTERN),
+  fireAt: z.string().datetime(),
+  deliverAt: z.string().datetime(),
+});
+
+export type ScheduledNotification = z.infer<typeof ScheduledNotificationSchema>;
+
+// Result of `notifications.schedule`.
+export const NotificationScheduleResultSchema = ScheduledNotificationSchema.extend({
+  serverTime: z.string().datetime(),
+});
+
+export type NotificationScheduleResult = z.infer<typeof NotificationScheduleResultSchema>;
+
+// Result of `notifications.cancel`. `cancelled: false` means nothing was
+// pending under that key, which is not an error.
+export const NotificationCancelResultSchema = z.object({
+  key: z.string().regex(NOTIFICATION_KEY_PATTERN),
+  cancelled: z.boolean(),
+});
+
+// Result of `notifications.list`: this app's pending reminders for the viewer,
+// soonest first. Rows are parsed one at a time by the SDK.
+export const NotificationListSchema = z.object({
+  pending: z.array(z.unknown()),
+  serverTime: z.string().datetime(),
+});
 
 export const BridgeInitSchema = z.object({
   type: z.literal('init'),
