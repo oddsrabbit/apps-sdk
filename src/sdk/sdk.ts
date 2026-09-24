@@ -10,6 +10,13 @@ import {
   MatchViewSchema,
   MatchSummarySchema,
   InvitablePlayerSchema,
+  ServerTimeSchema,
+  ScheduledNotificationSchema,
+  NotificationScheduleResultSchema,
+  NotificationCancelResultSchema,
+  NotificationListSchema,
+  type ScheduledNotification,
+  type NotificationScheduleResult,
   type MatchView,
   type MatchSummary,
   type MatchListFilter,
@@ -49,9 +56,22 @@ export type {
   MatchPlayerStatus,
   MatchListFilter,
   InvitablePlayer,
+  ScheduledNotification,
+  NotificationScheduleResult,
 } from '../schemas/messages';
 
-export { MATCH_ERROR_CODES } from '../schemas/messages';
+export { MATCH_ERROR_CODES, NOTIFICATION_ERROR_CODES } from '../schemas/messages';
+
+export interface NotificationSchedulePayload {
+  /** The game's name for this reminder, e.g. `'nap-done'`. Reusing a key replaces it. */
+  key: string;
+  /** When you'd like it delivered: a Date, epoch ms, or ISO string. */
+  fireAt: Date | number | string;
+  /** Up to 64 characters, one line. */
+  title: string;
+  /** Up to 160 characters. Keep it true if delivered hours late (quiet hours). */
+  body: string;
+}
 
 export interface MatchCreatePayload {
   /** Rules-class id, e.g. `'connect4'`. Must be one the server knows for this app. */
@@ -193,7 +213,8 @@ const LEGACY_CAPABILITIES: readonly string[] = [
  * The same goes for every `match/*` code (`MATCH_ERROR_CODES`): a rejected
  * move, a stale version, a full table are outcomes of one call in a working
  * match system, and caching any of them would end multiplayer for the session
- * on the first illegal move.
+ * on the first illegal move. `notifications/*` codes
+ * (`NOTIFICATION_ERROR_CODES`) stay out for the same reason.
  */
 const UNSUPPORTED_CODES = [
   'bridge/unknown-action',
@@ -233,6 +254,35 @@ const CONTENT_DAILY_TIMEOUT_MS = 4000;
 
 /** Default `matches.watch` poll interval. Turn-based; nobody is waiting on a frame. */
 const MATCH_WATCH_INTERVAL_MS = 5000;
+
+/**
+ * How long a server-clock offset is trusted before `time.now` asks again. The
+ * offset is also dropped whenever the page comes back from hidden or the host
+ * resumes it: a phone that slept for hours may have had its clock changed.
+ */
+const TIME_OFFSET_TTL_MS = 10 * 60 * 1000;
+/** A round trip slower than this gives an offset too loose to cache. */
+const TIME_MAX_RTT_MS = 5000;
+/** After a failed `time.now`, fall back to Date.now() for this long before asking again. */
+const TIME_RETRY_MS = 60 * 1000;
+
+/** The device's IANA zone, or undefined where Intl cannot say. */
+function deviceTimeZone(): string | undefined {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return typeof tz === 'string' && tz.length > 0 && tz.length <= 64 ? tz : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function toIso(when: Date | number | string): string {
+  const date = when instanceof Date ? when : new Date(when);
+  if (Number.isNaN(date.getTime())) {
+    throw new TypeError('notifications.schedule: fireAt is not a valid date');
+  }
+  return date.toISOString();
+}
 
 /** True only when there is a document and it is hidden. Node (tests) has neither. */
 function documentHidden(): boolean {
@@ -443,6 +493,61 @@ export interface OddsRabbitGlobal {
       onChange: (view: MatchView) => void,
       options?: MatchWatchOptions
     ): () => void;
+  };
+
+  /**
+   * The server's clock. See docs/proposals/scheduled-notifications.md §2.
+   */
+  readonly time: {
+    /**
+     * Server time as epoch milliseconds. Use it instead of `Date.now()` for
+     * anything that measures real elapsed time, because the device clock is
+     * the player's to change.
+     *
+     * The first call makes one round trip and corrects for its latency; later
+     * calls answer from a cached offset with no round trip. The offset is
+     * refreshed after 10 minutes and whenever the page returns from the
+     * background. Public, so it works signed out.
+     *
+     * Never rejects. On a host without the verb, or when the request fails,
+     * it resolves `Date.now()`, so a game must still guard against a clock
+     * that jumps (clamp negative or huge elapsed times). Check
+     * `capabilities.has('time.now')` if you need to know which you got.
+     */
+    now(): Promise<number>;
+  };
+
+  /**
+   * Reminders delivered later as a push on mobile and a notification in the
+   * bell everywhere, e.g. "Clover is awake" when a nap timer ends. See
+   * docs/proposals/scheduled-notifications.md.
+   *
+   * The platform, not the game, decides what goes out: nothing in the user's
+   * quiet hours (22:00–08:00 local; it is delivered at 08:00 instead), at most
+   * 2 pushes per app per day, only when the user has game pushes on, at most
+   * 5 pending per app. Write copy that stays true if it arrives late.
+   *
+   * Requires the `bridge:notifications` scope and a signed-in user. Gate the
+   * UI on `capabilities.has('notifications.schedule')`: the mobile host ships
+   * these behind App Store review.
+   *
+   * `schedule` and `cancel` REJECT with a `notifications/*` code
+   * (`NOTIFICATION_ERROR_CODES`) on failure. `list` degrades to `[]`.
+   */
+  readonly notifications: {
+    /**
+     * Create or replace the reminder under `key`. Resolves with when it will
+     * really be delivered (`deliverAt`), which is later than `fireAt` when
+     * that falls in quiet hours.
+     */
+    schedule(payload: NotificationSchedulePayload): Promise<NotificationScheduleResult>;
+    /** Cancel the pending reminder under `key`. Resolves false when none was pending. */
+    cancel(key: string): Promise<boolean>;
+    /**
+     * This app's pending reminders for the viewer, soonest first. `[]` when
+     * signed out (no round trip) or on a host without the verb.
+     */
+    list(): Promise<ScheduledNotification[]>;
   };
 
   readonly actions: {
@@ -834,6 +939,110 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
       if (documentHidden()) paused = true;
       else tick();
       return stop;
+    },
+  };
+
+  /** Server time minus Date.now(), when known. */
+  private timeOffset: { offsetMs: number; at: number } | null = null;
+  private timeInFlight: Promise<number> | null = null;
+  private timeRetryAfter = 0;
+  private timeListening = false;
+
+  /**
+   * Drop the cached offset when the page comes back. Registered on the first
+   * `time.now` call so a game that never asks pays nothing.
+   */
+  private watchTimeInvalidation(): void {
+    if (this.timeListening) return;
+    this.timeListening = true;
+    const drop = (): void => {
+      this.timeOffset = null;
+    };
+    this.transport.onLifecycle('resume', drop);
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', () => {
+        if (!documentHidden()) drop();
+      });
+    }
+  }
+
+  readonly time = {
+    now: (): Promise<number> => {
+      this.watchTimeInvalidation();
+      const cached = this.timeOffset;
+      if (cached && Date.now() - cached.at < TIME_OFFSET_TTL_MS) {
+        return Promise.resolve(Date.now() + cached.offsetMs);
+      }
+      if (Date.now() < this.timeRetryAfter || !this.capabilities.has('time.now')) {
+        return Promise.resolve(Date.now());
+      }
+      // Callers that ask at the same moment (boot) share one round trip.
+      if (this.timeInFlight) return this.timeInFlight;
+
+      const t0 = Date.now();
+      this.timeInFlight = this.request<unknown>('time.now')
+        .then((result) => {
+          const t1 = Date.now();
+          const parsed = ServerTimeSchema.safeParse(result);
+          if (!parsed.success) throw new Error('time.now: malformed server time');
+          // The server read its clock somewhere in the round trip; assume the
+          // middle. The error is at most half the round trip.
+          const offsetMs = Date.parse(parsed.data.serverTime) + (t1 - t0) / 2 - t1;
+          if (t1 - t0 <= TIME_MAX_RTT_MS) {
+            this.timeOffset = { offsetMs, at: t1 };
+          }
+          return Date.now() + offsetMs;
+        })
+        .catch(() => {
+          this.timeRetryAfter = Date.now() + TIME_RETRY_MS;
+          return Date.now();
+        })
+        .finally(() => {
+          this.timeInFlight = null;
+        });
+      return this.timeInFlight;
+    },
+  };
+
+  readonly notifications = {
+    schedule: (payload: NotificationSchedulePayload): Promise<NotificationScheduleResult> => {
+      let fireAt: string;
+      try {
+        fireAt = toIso(payload.fireAt);
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      const tz = deviceTimeZone();
+      return this.request<unknown>('notifications.schedule', {
+        key: payload.key,
+        fireAt,
+        title: payload.title,
+        body: payload.body,
+        ...(tz ? { tz } : {}),
+      }).then((result): NotificationScheduleResult => {
+        const parsed = NotificationScheduleResultSchema.safeParse(result);
+        if (!parsed.success) throw new Error('notifications.schedule: malformed result');
+        return parsed.data;
+      });
+    },
+    cancel: (key: string): Promise<boolean> =>
+      this.request<unknown>('notifications.cancel', { key }).then((result) => {
+        const parsed = NotificationCancelResultSchema.safeParse(result);
+        if (!parsed.success) throw new Error('notifications.cancel: malformed result');
+        return parsed.data.cancelled;
+      }),
+    list: (): Promise<ScheduledNotification[]> => {
+      if (!this.user) return Promise.resolve([]);
+      return this.request<unknown>('notifications.list')
+        .then((result) => {
+          const parsed = NotificationListSchema.safeParse(result);
+          if (!parsed.success) throw new Error('notifications.list: malformed result');
+          return parseRows<ScheduledNotification>(ScheduledNotificationSchema, parsed.data.pending);
+        })
+        .catch((error: unknown) => {
+          if (isUnsupportedError(error)) return [];
+          throw error;
+        });
     },
   };
 
