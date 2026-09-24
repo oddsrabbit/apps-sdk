@@ -29,6 +29,47 @@
   // out in full in the how-to line below it either way.
   var IDLE_TEXT = IS_TOUCH ? "TAP TO HOP" : "SPACE TO HOP";
 
+  // -------- first paint --------
+  // The renderer is built NOW, before the bridge handshake and the storage
+  // hydrate, because it is what sizes the canvas and publishes --stage-w /
+  // --stage-h. Built after them — as it used to be — the page spent the whole
+  // hydrate (five storage round trips for a signed-in player) laid out by the
+  // CSS fallback: a 2:3 box that is shorter than a phone screen and taller
+  // than a desktop frame, with the HUD pinned to ITS top rather than the
+  // screen's. Neither host covers that window (web drops its loading cover
+  // when init is sent; mobile has none), so every load showed it. The renderer
+  // needs nothing from the bridge, so there is no reason for it to wait.
+  var canvas = document.querySelector(".game-canvas");
+  var renderer = new HopRenderer(canvas);
+
+  // A still of the idle screen until the game loop takes over: the rabbit
+  // where boot() will put it and no hedges (the first one spawns off-screen),
+  // so the hand-over is seamless rather than a blank sky filling in. Repainted
+  // on resize because resizing the buffer clears it, and nothing else is
+  // drawing yet. The renderer registered its own resize listener first, so by
+  // the time this runs the buffer already has its new size.
+  var previewing = true;
+  function paintPreview() {
+    if (!previewing) return;
+    var world = HopGame.WORLD;
+    renderer.draw({
+      y: world.START_Y,
+      rabbitX: renderer.w - world.SPAWN_LEAD,
+      vy: 0,
+      elapsed: 0,
+      gates: [],
+      scroll: 0,
+    });
+  }
+  function stopPreview() {
+    previewing = false;
+    window.removeEventListener("resize", paintPreview);
+    window.removeEventListener("orientationchange", paintPreview);
+  }
+  window.addEventListener("resize", paintPreview);
+  window.addEventListener("orientationchange", paintPreview);
+  paintPreview();
+
   var OR = window.OddsRabbit;
   if (!OR) {
     console.error("hop: OddsRabbit bridge not available — game requires the SDK host.");
@@ -173,6 +214,7 @@
   // announces "Score 320" rather than reading the CSS-generated label
   // inconsistently.
   var scoresContainerEl = document.querySelector(".scores-container");
+  var hudControlsEl = document.querySelector(".hud-controls");
   var scoreEl = document.querySelector(".score-container");
   var bestEl = document.querySelector(".best-container");
   function setChip(el, label, n) {
@@ -396,8 +438,6 @@
 
       sound.setMuted(storage.isMuted());
 
-      var canvas = document.querySelector(".game-canvas");
-      var renderer = new HopRenderer(canvas);
       var input = new HopInputManager();
 
       var game = new HopGame({
@@ -498,6 +538,10 @@
         });
         paintSoundToggle();
       }
+      // Revealed only now, for the same reason as the chips below: the mute
+      // icon is painted from the hydrated setting, and showing it earlier
+      // flips it under a muted player's eyes.
+      hudControlsEl.classList.add("ready");
 
       setBest(storage.getBest());
       // Reveal the chips only after the hydrated best is written, so a
@@ -508,6 +552,7 @@
       submitBests();
 
       window.requestAnimationFrame(function () {
+        stopPreview();
         game.boot();
         try { OR.ready(); } catch (_) {}
       });
