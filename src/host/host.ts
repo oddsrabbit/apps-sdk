@@ -99,6 +99,9 @@ async function bootstrap(): Promise<void> {
     announceHostReady();
   }, { once: true });
 
+  // Not `once`: a game that reloads its own document gets re-sampled.
+  iframe.addEventListener('load', () => watchGameBackground(iframe));
+
   root.appendChild(iframe);
   setupBridge(iframe, slug);
   log('inner iframe mounted', { src: iframe.src });
@@ -115,6 +118,99 @@ function announceHostReady(): void {
   } else {
     log('host-ready: no parent (standalone load)');
   }
+}
+
+/**
+ * Repaint this page in the game's own background colour, and keep doing so
+ * while the game changes it.
+ *
+ * Whatever of this page shows around the game iframe — the safe-area / back
+ * button padding on #root (see host.css), and the rubber-band area on iOS —
+ * should read as part of the game, not as a band of host white. The mobile app
+ * also gets the colour (`host-background`) so it can pick a status bar style
+ * that stays legible over it.
+ *
+ * Only possible for a game served from this origin, which the first-party
+ * games are (the iframe is sandboxed with allow-same-origin). A cross-origin
+ * game throws on `contentDocument` and keeps the host's own colours — the
+ * same result as before this existed.
+ */
+let gameBackgroundObserver: MutationObserver | null = null;
+let reportedGameBackground: string | null = null;
+
+function watchGameBackground(iframe: HTMLIFrameElement): void {
+  gameBackgroundObserver?.disconnect();
+  gameBackgroundObserver = null;
+
+  let doc: Document | null = null;
+  try {
+    doc = iframe.contentDocument;
+  } catch {
+    // Cross-origin game — nothing to read.
+  }
+  if (!doc) return;
+  const gameDoc = doc;
+
+  const sync = (): void => {
+    const color = readGameBackground(gameDoc);
+    if (!color) return;
+    document.documentElement.style.setProperty('--bg', color);
+    if (color === reportedGameBackground) return;
+    reportedGameBackground = color;
+    log('game background', color);
+    // Only the mobile app acts on this. It is not a bridge message (no
+    // correlationId), so app builds that predate it ignore it.
+    if (isMobile) {
+      window.ReactNativeWebView!.postMessage(
+        JSON.stringify({ type: 'host-background', color })
+      );
+    }
+  };
+
+  sync();
+
+  // Games switch palette by toggling a class / data attribute or inline style
+  // on <html> or <body> (e.g. [data-color-scheme]); watch just those two.
+  gameBackgroundObserver = new MutationObserver(sync);
+  const options: MutationObserverInit = { attributes: true };
+  gameBackgroundObserver.observe(gameDoc.documentElement, options);
+  if (gameDoc.body) gameBackgroundObserver.observe(gameDoc.body, options);
+}
+
+/** The game's page colour as `#rrggbb`: <body> first, then <html>. */
+function readGameBackground(doc: Document): string | null {
+  const view = doc.defaultView;
+  if (!view) return null;
+  for (const el of [doc.body, doc.documentElement]) {
+    if (!el) continue;
+    const hex = opaqueCssColorToHex(view.getComputedStyle(el).backgroundColor);
+    if (hex) return hex;
+  }
+  return null;
+}
+
+/**
+ * `rgb(r, g, b)` / `rgba(r, g, b, a)` — what getComputedStyle returns for a
+ * background colour — as `#rrggbb`. Null for anything not fully opaque
+ * (a transparent body means "look at <html>", and a translucent colour would
+ * paint differently on this page than inside the game) or not in that form.
+ */
+function opaqueCssColorToHex(value: string): string | null {
+  const match = /^rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)(?:\s*[,/]\s*([\d.]+%?))?\s*\)$/.exec(
+    value.trim()
+  );
+  if (!match) return null;
+  const alpha = match[4];
+  if (alpha !== undefined) {
+    const a = alpha.endsWith('%') ? parseFloat(alpha) / 100 : parseFloat(alpha);
+    if (a < 1) return null;
+  }
+  return (
+    '#' +
+    [match[1], match[2], match[3]]
+      .map((c) => Math.min(255, Number(c)).toString(16).padStart(2, '0'))
+      .join('')
+  );
 }
 
 async function resolveGameUrl(

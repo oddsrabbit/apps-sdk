@@ -80,15 +80,17 @@ body {
 }
 
 /* The width/height attributes in index.html set the buffer; js/renderer.js
-   overwrites both the buffer height and the CSS size on load and on every
-   resize. The declarations here are only the pre-boot fallback (a fatal bridge
-   error, say, where the renderer is never constructed), which is why they are
-   expressed against the viewport too. Nearest neighbour on the upscale so the
-   art stays blocky. */
+   overwrites both the buffer size and the CSS size as soon as its script runs
+   (js/application.js builds it before the bridge handshake) and on every
+   resize. The declarations here only cover the moment before that script
+   runs. They fill the viewport rather than keeping the buffer's 2:3, which on
+   a phone came out shorter than the screen and on a desktop frame taller, with
+   the HUD pinned to the top of that box instead of the screen's. Nearest
+   neighbour on the upscale so the art stays blocky. */
 .game-canvas {
   display: block;
   width: 100vw;
-  height: auto;
+  height: 100vh;
   background: var(--hop-board);
   image-rendering: pixelated;
   image-rendering: crisp-edges;
@@ -124,7 +126,11 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
+  /* Hidden until application.js has painted the mute icon from the hydrated
+     setting, same as the chips below. */
+  visibility: hidden;
 }
+.hud-controls.ready { visibility: visible; }
 
 .scores-container {
   display: flex;
