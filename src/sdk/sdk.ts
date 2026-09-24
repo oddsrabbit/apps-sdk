@@ -15,6 +15,8 @@ import {
   NotificationScheduleResultSchema,
   NotificationCancelResultSchema,
   NotificationListSchema,
+  NotificationStatusSchema,
+  type NotificationStatus,
   type ScheduledNotification,
   type NotificationScheduleResult,
   type MatchView,
@@ -58,6 +60,7 @@ export type {
   InvitablePlayer,
   ScheduledNotification,
   NotificationScheduleResult,
+  NotificationStatus,
 } from '../schemas/messages';
 
 export { MATCH_ERROR_CODES, NOTIFICATION_ERROR_CODES } from '../schemas/messages';
@@ -496,7 +499,7 @@ export interface OddsRabbitGlobal {
   };
 
   /**
-   * The server's clock. See docs/proposals/scheduled-notifications.md §2.
+   * The server's clock.
    */
   readonly time: {
     /**
@@ -519,13 +522,13 @@ export interface OddsRabbitGlobal {
 
   /**
    * Reminders delivered later as a push on mobile and a notification in the
-   * bell everywhere, e.g. "Clover is awake" when a nap timer ends. See
-   * docs/proposals/scheduled-notifications.md.
+   * bell everywhere, e.g. "Clover is awake" when a nap timer ends.
    *
    * The platform, not the game, decides what goes out: nothing in the user's
-   * quiet hours (22:00–08:00 local; it is delivered at 08:00 instead), at most
-   * 2 pushes per app per day, only when the user has game pushes on, at most
-   * 5 pending per app. Write copy that stays true if it arrives late.
+   * quiet hours (22:00–08:00 local; it is delivered at 08:00 instead), pushes
+   * only when the user has game pushes on, at most 5 pending per app. There is
+   * no daily cap while every game is first-party, so each game has to keep
+   * its own reminders rare. Write copy that stays true if it arrives late.
    *
    * Requires the `bridge:notifications` scope and a signed-in user. Gate the
    * UI on `capabilities.has('notifications.schedule')`: the mobile host ships
@@ -548,6 +551,16 @@ export interface OddsRabbitGlobal {
      * signed out (no round trip) or on a host without the verb.
      */
     list(): Promise<ScheduledNotification[]>;
+    /**
+     * Whether a reminder push would reach the viewer right now: their Games
+     * and Game reminders settings are on and they have a phone to send to.
+     * When `push` is false the reminder still lands in the bell, so offer
+     * "we'll leave a note in your bell" rather than a nudge on their phone.
+     *
+     * Resolves `null` when it can't say: signed out, a host without the verb,
+     * or a failed request. Treat null as unknown, not as off.
+     */
+    status(): Promise<NotificationStatus | null>;
   };
 
   readonly actions: {
@@ -1043,6 +1056,17 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
           if (isUnsupportedError(error)) return [];
           throw error;
         });
+    },
+    // A read that only gates UI copy, so every failure degrades to null
+    // ("unknown") rather than rejecting.
+    status: (): Promise<NotificationStatus | null> => {
+      if (!this.user) return Promise.resolve(null);
+      return this.request<unknown>('notifications.status')
+        .then((result) => {
+          const parsed = NotificationStatusSchema.safeParse(result);
+          return parsed.success ? parsed.data : null;
+        })
+        .catch(() => null);
     },
   };
 

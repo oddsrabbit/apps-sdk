@@ -25,12 +25,19 @@ const base = {
   body: 'Clover is awake and wants to play.',
 };
 
-test('time.now and the three notification verbs are bridge request types', () => {
-  for (const verb of ['time.now', 'notifications.schedule', 'notifications.cancel', 'notifications.list']) {
+test('time.now and the four notification verbs are bridge request types', () => {
+  for (const verb of [
+    'time.now',
+    'notifications.schedule',
+    'notifications.cancel',
+    'notifications.list',
+    'notifications.status',
+  ]) {
     assert.ok(BRIDGE_REQUEST_TYPES.includes(verb as never), verb);
   }
   assert.ok(request('time.now').success);
   assert.ok(request('notifications.list').success);
+  assert.ok(request('notifications.status').success);
 });
 
 test('schedule keys are lowercase slugs', () => {

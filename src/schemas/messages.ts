@@ -361,9 +361,10 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
   }),
   // ---- Scheduled notifications. All authenticated, and always the signed-in
   // user's own reminders for this app: there is no way to name another user.
-  // The SERVER enforces the limits (quiet hours, at most 2 pushes a day, 5
-  // pending), so these payloads say what the game would like, not what will
-  // happen. See docs/proposals/scheduled-notifications.md.
+  // The SERVER enforces the limits (quiet hours, the user's opt-in, 5
+  // pending; daily caps exist but are off for first-party games), so these
+  // payloads say what the game would like, not what will happen. The limits
+  // live in AppNotificationPolicy on the server.
   z.object({
     type: z.literal('notifications.schedule'),
     correlationId: CorrelationId,
@@ -386,6 +387,14 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     type: z.literal('notifications.list'),
+    correlationId: CorrelationId,
+  }),
+  // Whether a reminder push would reach the viewer right now: their Games and
+  // Game reminders settings are on and they have a device to send to. Lets a
+  // game offer "we'll leave a note in your bell" instead of a push that will
+  // never arrive. The bell entry is written either way.
+  z.object({
+    type: z.literal('notifications.status'),
     correlationId: CorrelationId,
   }),
   z.object({
@@ -789,6 +798,13 @@ export const NotificationCancelResultSchema = z.object({
   key: z.string().regex(NOTIFICATION_KEY_PATTERN),
   cancelled: z.boolean(),
 });
+
+// Result of `notifications.status`.
+export const NotificationStatusSchema = z.object({
+  push: z.boolean(),
+});
+
+export type NotificationStatus = z.infer<typeof NotificationStatusSchema>;
 
 // Result of `notifications.list`: this app's pending reminders for the viewer,
 // soonest first. Rows are parsed one at a time by the SDK.

@@ -43,6 +43,7 @@ function fakeTransport(answer: (type: string, payload: unknown) => Promise<unkno
           'notifications.schedule',
           'notifications.cancel',
           'notifications.list',
+          'notifications.status',
         ],
         ...over,
       }),
@@ -229,4 +230,33 @@ test('list degrades to [] on a host without the verb', async () => {
   t.init();
   assert.deepEqual(await sdk.notifications.list(), []);
   assert.equal(sdk.capabilities.has('notifications.list'), false);
+});
+
+test('status reports whether a push would reach the viewer', async () => {
+  const t = fakeTransport(() => Promise.resolve({ push: false }));
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init();
+  assert.deepEqual(await sdk.notifications.status(), { push: false });
+  assert.deepEqual(t.calls[0], { type: 'notifications.status', payload: undefined });
+});
+
+test('status is null when signed out, without a round trip', async () => {
+  const t = fakeTransport(() => Promise.resolve({ push: true }));
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init({ user: null, sessionToken: null });
+  assert.equal(await sdk.notifications.status(), null);
+  assert.equal(t.calls.length, 0);
+});
+
+test('status is null, never a rejection, when the host lacks it or the answer is malformed', async () => {
+  const unsupported = fakeTransport(() => reject('bridge/unknown-action'));
+  const a = new OddsRabbitSDK(unsupported.transport);
+  unsupported.init();
+  assert.equal(await a.notifications.status(), null);
+  assert.equal(a.capabilities.has('notifications.status'), false);
+
+  const malformed = fakeTransport(() => Promise.resolve({ push: 'yes' }));
+  const b = new OddsRabbitSDK(malformed.transport);
+  malformed.init();
+  assert.equal(await b.notifications.status(), null);
 });
