@@ -306,6 +306,9 @@
     els.dialogCancel.hidden = opts.cancelLabel === null;
     els.dialogCancel.textContent = opts.cancelLabel || "Cancel";
     els.dialogWrap.hidden = false;
+    // For the host, which reads the colour the status bar sits on from <html>
+    // (styles.css, html[data-overlay]).
+    document.documentElement.setAttribute("data-overlay", "dialog");
     dialogState = { api: api, done: opts.onClose || function () {}, restore: restore };
     els.dialogCard.scrollTop = 0;
     // Focusing a footer button inside a scrolling card scrolls the card to it,
@@ -323,6 +326,7 @@
     var current = dialogState;
     dialogState = null;
     els.dialogWrap.hidden = true;
+    document.documentElement.removeAttribute("data-overlay");
     clear(els.dialogBody);
     if (current.restore && current.restore.focus) {
       try { current.restore.focus(); } catch (_) {}

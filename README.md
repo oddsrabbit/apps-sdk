@@ -93,6 +93,8 @@ el.addEventListener('touchmove',  handler, { passive: false });
 
 iOS has neither issue, so a swipe game that works on iOS Safari and desktop Chrome can be completely broken on Android. Always test on a real Android device before shipping. See [`2048/`](./2048/), [`snake/`](./snake/), and [`match3/`](./match3/) for working reference implementations.
 
+**Header and safe areas.** The mobile app runs games full-screen with a floating back button in the top-left. Games never use `env(safe-area-inset-*)`. Declare `<meta name="oddsrabbit-chrome" content="edge">` (before the SDK script) to draw edge to edge — under the status bar and home indicator, so screens and overlays reach every edge — padding your content by the `--oddsrabbit-safe-*` variables the host hands you, with your header row laid out beside the back button. Without it the host insets the game itself. See [`docs/game-header-guidelines.md`](./docs/game-header-guidelines.md) for the modes, the variables, the row size and the lane to keep clear.
+
 ## Verifying users on your backend
 
 If your app has its own server, verify `OR.sessionToken` rather than trusting client-supplied UUIDs:

@@ -251,11 +251,15 @@
     // while the overlay is showing gives two controls for the same thing.
     if (pauseButtonEl) pauseButtonEl.hidden = state !== "playing";
 
+    // Mirrored on <html> for the host, which reads the colour the status bar
+    // sits on from there (styles.css, :root[data-overlay]).
     if (state === "playing") {
       overlayEl.classList.remove("visible");
+      document.documentElement.removeAttribute("data-overlay");
       return;
     }
     overlayEl.classList.add("visible");
+    document.documentElement.setAttribute("data-overlay", state);
     if (state === "idle") overlayTextEl.textContent = IDLE_TEXT;
     else if (state === "paused") overlayTextEl.textContent = "PAUSED";
     else if (state === "over") overlayTextEl.textContent = "GAME OVER";

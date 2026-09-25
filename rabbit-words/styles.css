@@ -24,6 +24,16 @@
   --gray: #787c7e;
 }
 
+/* What the status bar sits on while a modal's scrim is up: the scrim
+   (rgba(0,0,0,0.55)) over --bg. Only a hint, for the app's status-bar and
+   back-button tone — the scrim itself runs under the status bar. main.ts sets
+   data-overlay while any modal is open. */
+:root[data-overlay] { --oddsrabbit-edge-top: #737373; }
+:root[data-color-scheme='dark'][data-overlay] { --oddsrabbit-edge-top: #080808; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-color-scheme])[data-overlay] { --oddsrabbit-edge-top: #080808; }
+}
+
 /* Dark theme — host sets data-color-scheme via the URL param (see index.html
    inline script) so the host site's chosen theme drives our colors. The values
    below are the long-standing Wordle-style dark palette; preserved verbatim
@@ -72,26 +82,47 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 16px;
+  /* No top padding: the header row is flush to the top so it lands in the
+     back button's row (docs/game-header-guidelines.md). The page runs edge to
+     edge, so the sides and bottom (under the keyboard) clear the safe areas. */
+  padding: 0
+           calc(16px + var(--oddsrabbit-safe-right, 0px))
+           calc(16px + var(--oddsrabbit-safe-bottom, 0px))
+           calc(16px + var(--oddsrabbit-safe-left, 0px));
   gap: 12px;
 }
 
+/* Header row: below the status bar, sized by the host's chrome row, and padded
+   by the back button's lane on BOTH sides so the title stays centred. The
+   negative margins undo body's side padding so the lane is measured from the
+   screen edge. The "how to play" line that used to sit under the title lives
+   in the ? modal. */
 header {
-  text-align: center;
+  align-self: stretch;
+  margin: 0
+          calc(-16px - var(--oddsrabbit-safe-right, 0px))
+          0
+          calc(-16px - var(--oddsrabbit-safe-left, 0px));
+  min-height: calc(var(--oddsrabbit-safe-top, 0px) + var(--oddsrabbit-chrome-height, 48px));
+  padding: var(--oddsrabbit-safe-top, 0px)
+           calc(var(--oddsrabbit-chrome-start, 12px) + var(--oddsrabbit-safe-right, 0px))
+           0
+           calc(var(--oddsrabbit-chrome-start, 12px) + var(--oddsrabbit-safe-left, 0px));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
 }
 
 header h1 {
   margin: 0;
-  font-size: 22px;
+  font-size: 20px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   font-weight: 800;
-}
-
-.tagline {
-  margin: 4px 0 0;
-  font-size: 13px;
-  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 #root {
@@ -477,7 +508,7 @@ header h1 {
 /* Toast */
 .toast {
   position: fixed;
-  top: 24px;
+  top: calc(24px + var(--oddsrabbit-safe-top, 0px));
   left: 50%;
   transform: translateX(-50%);
   padding: 10px 18px;
@@ -503,7 +534,13 @@ header h1 {
   align-items: center;
   justify-content: center;
   z-index: 50;
-  padding: 16px;
+  /* The scrim covers the whole screen; the modal keeps clear of the status bar
+     and the app's back-button row, and of the home indicator. Same insets as
+     the shared leaderboard modal (src/ui/leaderboard.css). */
+  padding: max(16px, calc(var(--oddsrabbit-safe-top, 0px) + var(--oddsrabbit-chrome-height, 0px)))
+           calc(16px + var(--oddsrabbit-safe-right, 0px))
+           calc(16px + var(--oddsrabbit-safe-bottom, 0px))
+           calc(16px + var(--oddsrabbit-safe-left, 0px));
   animation: fade-in 0.15s ease;
 }
 

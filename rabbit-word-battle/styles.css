@@ -79,6 +79,13 @@ html[data-theme="dark"] {
   --sq-star: #e2c04a;
 }
 
+/* What the status bar sits on while the dialog's scrim is up: the scrim
+   (rgb(0 0 0 / 0.5)) over --bg. Only a hint, for the app's status-bar and
+   back-button tone — the scrim itself runs under the status bar.
+   application.js sets data-overlay while the dialog is open. */
+html[data-overlay] { --oddsrabbit-edge-top: #7a7872; }
+html[data-theme="dark"][data-overlay] { --oddsrabbit-edge-top: #0a0b0e; }
+
 html, body {
   margin: 0;
   height: 100%;
@@ -117,7 +124,13 @@ button { font: inherit; color: inherit; }
   flex: 1;
   display: flex;
   flex-direction: column;
-  padding: 8px 12px calc(12px + env(safe-area-inset-bottom));
+  /* No top padding: the .bar is the first row and sits flush with the top,
+     in the host's back-button row. The page runs edge to edge, so the sides
+     and the bottom (under the Play button) clear the safe areas. */
+  padding: 0
+           calc(12px + var(--oddsrabbit-safe-right, 0px))
+           calc(12px + var(--oddsrabbit-safe-bottom, 0px))
+           calc(12px + var(--oddsrabbit-safe-left, 0px));
   gap: 8px;
   max-width: 640px;
   width: 100%;
@@ -128,15 +141,38 @@ button { font: inherit; color: inherit; }
 .screen[hidden] { display: none; }
 .screen-scroll { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 
-.bar { display: flex; align-items: center; gap: 10px; min-height: 44px; }
-.bar .title { flex: 1; margin: 0; font-size: 20px; font-weight: 700; }
+/* The header row (docs/game-header-guidelines.md): below the status bar, as
+   tall as the host's back-button row, with the button's lane kept empty at the
+   start. The negative margins undo .screen's side padding, taking it out to the
+   screen's edges so the lane is measured from the edge, as the host measures
+   it. */
+.bar {
+  display: flex; align-items: center; gap: 8px;
+  box-sizing: border-box;
+  min-height: calc(var(--oddsrabbit-safe-top, 0px) + var(--oddsrabbit-chrome-height, 48px));
+  margin: 0
+          calc(-12px - var(--oddsrabbit-safe-right, 0px))
+          0
+          calc(-12px - var(--oddsrabbit-safe-left, 0px));
+  padding: var(--oddsrabbit-safe-top, 0px)
+           calc(12px + var(--oddsrabbit-safe-right, 0px))
+           0
+           calc(var(--oddsrabbit-chrome-start, 12px) + var(--oddsrabbit-safe-left, 0px));
+}
+.bar .title {
+  flex: 1; min-width: 0; margin: 0; font-size: 20px; font-weight: 700;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .back-button, .icon-button {
-  width: 40px; height: 40px; flex: 0 0 auto; border-radius: 12px;
+  position: relative;
+  width: 32px; height: 32px; flex: 0 0 auto; border-radius: 10px; padding: 0;
   border: 1px solid var(--line); background: var(--card);
   line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center;
 }
-.back-button { font-size: 24px; }
-.icon-button { font-size: 18px; font-weight: 700; }
+/* 32px to match the host's back button; the tap area stays 44px. */
+.back-button::after, .icon-button::after { content: ""; position: absolute; inset: -6px; }
+.back-button { font-size: 15px; font-weight: 700; }
+.icon-button { font-size: 16px; font-weight: 700; }
 
 .primary, .subtle, .seats button, .join-open-button, .dialog-cancel {
   border-radius: 12px; padding: 10px 16px; cursor: pointer; border: 1px solid var(--line);
@@ -440,12 +476,20 @@ button { font: inherit; color: inherit; }
 /* ---- dialog */
 .dialog-backdrop {
   position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
-  background: rgb(0 0 0 / 0.5); z-index: 20; padding: 16px;
+  background: rgb(0 0 0 / 0.5); z-index: 20;
+  /* The scrim covers the whole screen; the card keeps clear of the status bar
+     and the app's back-button row, and of the home indicator. Same insets as
+     the shared leaderboard modal (src/ui/leaderboard.css). */
+  box-sizing: border-box;
+  padding: max(16px, calc(var(--oddsrabbit-safe-top, 0px) + var(--oddsrabbit-chrome-height, 0px)))
+           calc(16px + var(--oddsrabbit-safe-right, 0px))
+           calc(16px + var(--oddsrabbit-safe-bottom, 0px))
+           calc(16px + var(--oddsrabbit-safe-left, 0px));
 }
 .dialog-backdrop[hidden] { display: none; }
 .dialog {
   background: var(--card); border-radius: 16px; padding: 16px; max-width: 420px; width: 100%;
-  max-height: calc(100dvh - 48px); overflow-y: auto; -webkit-overflow-scrolling: touch;
+  max-height: min(calc(100dvh - 48px), 100%); overflow-y: auto; -webkit-overflow-scrolling: touch;
 }
 /* The card takes focus only to seat the reading context for long prose; it is
    a container, not a control, so it does not wear a focus ring. The first Tab
@@ -496,7 +540,7 @@ button { font: inherit; color: inherit; }
 @media (hover: hover) and (pointer: fine) { .keys { display: block; } }
 
 .toast {
-  position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); transform: translateX(-50%);
+  position: fixed; left: 50%; bottom: calc(24px + var(--oddsrabbit-safe-bottom, 0px)); transform: translateX(-50%);
   margin: 0; padding: 10px 16px; border-radius: 999px; background: var(--ink); color: var(--bg);
   font-size: 14px; max-width: 90vw; text-align: center; z-index: 30;
 }

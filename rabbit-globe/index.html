@@ -3,6 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <!-- Edge to edge: the page runs under the status bar and home indicator,
+         and the header row sits beside the app's floating back button. Must
+         come before the SDK script. See docs/game-header-guidelines.md. -->
+    <meta name="oddsrabbit-chrome" content="edge" />
     <title>RabbitGlobe</title>
     <script>
       // Apply the host-passed colorScheme before the stylesheet loads so the
@@ -28,7 +32,6 @@
   <body>
     <header>
       <h1>RabbitGlobe</h1>
-      <p class="tagline">Guess where the photo was taken. Three rounds, one pin each.</p>
     </header>
     <main id="root" aria-live="polite"></main>
     <script type="module" src="./main.js?v=__BUILD_ID__"></script>

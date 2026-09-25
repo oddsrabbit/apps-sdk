@@ -1941,6 +1941,21 @@ async function bootstrap(): Promise<void> {
   window.OddsRabbit.ready();
 }
 
+// Mirrors "a modal is open" onto <html> for the host, which reads the colour
+// the status bar sits on from there (styles.css, :root[data-overlay]). Watches
+// <body> rather than hooking each modal because the shared leaderboard's
+// .lb-backdrop is opened by code outside this file.
+function watchOverlays(): void {
+  const sync = (): void => {
+    const open = document.querySelector('.modal-backdrop, .lb-backdrop') !== null;
+    document.documentElement.toggleAttribute('data-overlay', open);
+  };
+  new MutationObserver(sync).observe(document.body, { childList: true });
+  sync();
+}
+
+watchOverlays();
+
 bootstrap().catch((error) => {
   root.textContent = `Failed to start: ${error instanceof Error ? error.message : String(error)}`;
 });

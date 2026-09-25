@@ -35,17 +35,24 @@
   --hop-bg: #dceecf;        /* pale wash of the grass green — modal surfaces */
 }
 
+/* What the status bar sits on while an overlay is up: the overlay scrim below
+   over SKY_TOP. Only a hint, for the app's status-bar and back-button tone —
+   the game draws the colour itself (it runs edge to edge). application.js sets
+   data-overlay while the overlay shows. */
+:root[data-overlay] { --oddsrabbit-edge-top: #3d6a66; }
+
 html, body {
   margin: 0;
   padding: 0;
   height: 100%;
-  /* Barely ever seen. A wide window widens the WORLD rather than letterboxing
-     the sides (js/renderer.js `resize`), so the only viewport that still shows
-     this is one past about 2.5:1, where the sky and earth caps stop the scene
-     growing and it letterboxes top and bottom instead. Deliberately the
-     darkest green in the palette: it is the one colour that can't be mistaken
-     for part of the garden. */
-  background: var(--hop-deep);
+  /* The sky, because the host reads <body> for the colour the status bar sits
+     on (the canvas runs under it), to pick a legible status-bar tone.
+
+     Otherwise barely ever seen. A wide window widens the WORLD rather than
+     letterboxing the sides (js/renderer.js `resize`), so the only viewport
+     that still shows this is one past about 2.5:1, where the sky and earth
+     caps stop the scene growing and it letterboxes top and bottom instead. */
+  background: var(--hop-board);
   color: var(--hop-light);
   font-family: "Press Start 2P", ui-monospace, "Menlo", "Consolas", monospace;
   font-size: 14px;
@@ -101,22 +108,28 @@ body {
 /* Over the sky, which is the emptiest part of the scene and the one part no
    obstacle ever occupies. `pointer-events: none` on the bar so the gap between
    the controls and the chips still passes a tap through to the board as a hop;
-   the controls themselves opt back in. The safe-area insets are additive and
-   resolve to 0 where the host already excludes them. */
+   the controls themselves opt back in.
+
+   This is the game's header row (docs/game-header-guidelines.md): below the
+   status bar, exactly the height of the app's back-button row, clear of the
+   button's lane on the left, everything centred on the button's centre line and
+   pushed to the right. The canvas runs under it and under the status bar. */
 .hud {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   z-index: 50;
+  box-sizing: border-box;
+  height: calc(var(--oddsrabbit-safe-top, 0px) + var(--oddsrabbit-chrome-height, 48px));
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  align-items: center;
+  justify-content: flex-end;
   gap: 8px;
-  padding: calc(10px + env(safe-area-inset-top, 0px))
-           calc(10px + env(safe-area-inset-right, 0px))
+  padding: var(--oddsrabbit-safe-top, 0px)
+           calc(12px + var(--oddsrabbit-safe-right, 0px))
            0
-           calc(10px + env(safe-area-inset-left, 0px));
+           calc(var(--oddsrabbit-chrome-start, 12px) + var(--oddsrabbit-safe-left, 0px));
   line-height: 1;
   pointer-events: none;
 }
@@ -125,7 +138,7 @@ body {
 .hud-controls {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   /* Hidden until application.js has painted the mute icon from the hydrated
      setting, same as the chips below. */
   visibility: hidden;
@@ -134,7 +147,7 @@ body {
 
 .scores-container {
   display: flex;
-  gap: 6px;
+  gap: 8px;
   text-align: right;
   /* Inline "0" placeholders hold the layout but stay invisible until
      application.js writes the hydrated values and toggles `.ready`. Otherwise
@@ -149,10 +162,14 @@ body {
 .score-container, .best-container {
   position: relative;
   background: var(--hop-panel);
-  padding: 16px 12px 6px;
-  font-size: 18px;
+  /* 32px tall, the height of every control in the header row: 2px border,
+     13px for the label, the 14px figure, 1px under it. */
+  box-sizing: border-box;
+  height: 32px;
+  padding: 13px 8px 1px;
+  font-size: 14px;
   line-height: 1;
-  min-width: 34px;
+  min-width: 48px;
   font-weight: bold;
   color: var(--hop-light);
   text-align: center;
@@ -162,10 +179,10 @@ body {
 .score-container::after, .best-container::after {
   position: absolute;
   width: 100%;
-  top: 6px;
+  top: 3px;
   left: 0;
-  font-size: 9px;
-  line-height: 9px;
+  font-size: 8px;
+  line-height: 8px;
   text-align: center;
   color: var(--hop-leaf);
   letter-spacing: 1px;
@@ -204,8 +221,9 @@ body {
 .pause-button,
 .sound-toggle {
   padding: 0;
-  width: 36px;
-  height: 36px;
+  box-sizing: border-box;
+  width: 32px;
+  height: 32px;
   line-height: 1;
   display: flex;
   align-items: center;
@@ -251,7 +269,12 @@ body {
   z-index: 100;
   text-align: center;
   line-height: 1.4;
-  padding: 24px 18px calc(24px + env(safe-area-inset-bottom, 0px));
+  /* The scrim covers the whole screen, status bar included (the game runs
+     edge to edge); only its contents keep clear of the insets. */
+  padding: calc(24px + var(--oddsrabbit-safe-top, 0px))
+           calc(18px + var(--oddsrabbit-safe-right, 0px))
+           calc(24px + var(--oddsrabbit-safe-bottom, 0px))
+           calc(18px + var(--oddsrabbit-safe-left, 0px));
   box-sizing: border-box;
 }
 .game-message.visible { display: flex; }
@@ -268,7 +291,10 @@ body {
      block axis, which on a tall phone put the title under the score chips.
      Clamped so it can't collide with the HUD on a short board or strand the
      title mid-screen on a very tall one. */
-  padding-top: clamp(24px, calc(var(--stage-h, 100vh) * 0.12), 150px);
+  padding-top: calc(
+    var(--oddsrabbit-safe-top, 0px) +
+      clamp(24px, calc(var(--stage-h, 100vh) * 0.12), 150px)
+  );
 }
 .game-message[data-state="idle"] .lower { margin-top: auto; }
 
@@ -375,7 +401,11 @@ h1.title {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 16px;
+  /* Same insets as the shared leaderboard modal (src/ui/leaderboard.css). */
+  padding: max(16px, calc(var(--oddsrabbit-safe-top, 0px) + var(--oddsrabbit-chrome-height, 0px)))
+           calc(16px + var(--oddsrabbit-safe-right, 0px))
+           calc(16px + var(--oddsrabbit-safe-bottom, 0px))
+           calc(16px + var(--oddsrabbit-safe-left, 0px));
   box-sizing: border-box;
 }
 .share-modal {
@@ -466,7 +496,7 @@ h1.title {
 /* Toast. Bottom-centred slide-up; auto-dismissed by application.js. */
 .toast {
   position: fixed;
-  bottom: calc(32px + env(safe-area-inset-bottom, 0px));
+  bottom: calc(32px + var(--oddsrabbit-safe-bottom, 0px));
   left: 50%;
   transform: translate(-50%, 20px);
   background: var(--hop-deep);
@@ -488,13 +518,12 @@ h1.title {
 /* Short viewports: the overlay is the only thing here that can run out of
    room, so it loses padding and the how-to-play line before anything else. */
 @media screen and (max-height: 560px) {
-  .game-message { gap: 10px; padding: 12px; }
-  .game-message[data-state="idle"] .game-explanation { display: none; }
-  .score-container, .best-container {
-    padding: 14px 10px 5px;
-    font-size: 15px;
-    min-width: 28px;
+  .game-message {
+    gap: 10px;
+    padding: calc(12px + var(--oddsrabbit-safe-top, 0px))
+             calc(12px + var(--oddsrabbit-safe-right, 0px))
+             calc(12px + var(--oddsrabbit-safe-bottom, 0px))
+             calc(12px + var(--oddsrabbit-safe-left, 0px));
   }
-  .pause-button, .sound-toggle { width: 32px; height: 32px; }
-  .hud { padding-top: calc(6px + env(safe-area-inset-top, 0px)); }
+  .game-message[data-state="idle"] .game-explanation { display: none; }
 }

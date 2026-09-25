@@ -90,6 +90,13 @@ async function bootstrap(): Promise<void> {
   root.removeAttribute('aria-busy');
   if (status) status.remove();
 
+  // Assume an inline-header game until its document says otherwise: most
+  // first-party games are one, so none of them paints its first frame a band
+  // too low and then jumps up. An edge game corrects this from its <head> (via
+  // the SDK) before it paints; a game that doesn't opt in, or can't be read,
+  // is moved down to the reserved band on load.
+  document.documentElement.dataset.gameChrome = 'inline';
+
   // The bridge listener can be attached before load — but `host-ready` must
   // not fire until the inner iframe has finished loading, otherwise the
   // parent's `init` message races the SDK setup and gets dropped (no
@@ -101,6 +108,21 @@ async function bootstrap(): Promise<void> {
 
   // Not `once`: a game that reloads its own document gets re-sampled.
   iframe.addEventListener('load', () => watchGameBackground(iframe));
+  iframe.addEventListener('load', () => {
+    let doc: Document | null = null;
+    try {
+      doc = iframe.contentDocument;
+    } catch {
+      // Cross-origin game — can't see its meta.
+    }
+    if (doc) attachGame(doc);
+    else {
+      attachedGameDoc = null;
+      chromeObserver?.disconnect();
+      delete document.documentElement.dataset.gameChrome;
+      log('game chrome', 'reserved (unreadable)');
+    }
+  });
 
   root.appendChild(iframe);
   setupBridge(iframe, slug);
@@ -119,6 +141,182 @@ function announceHostReady(): void {
     log('host-ready: no parent (standalone load)');
   }
 }
+
+/**
+ * How the game shares the screen with the host's chrome, from its
+ * `<meta name="oddsrabbit-chrome" content="…">`. See
+ * docs/game-header-guidelines.md.
+ *
+ * - `edge`: the game draws edge to edge, under the status bar, the back
+ *   button's row and the home indicator. This page pads nothing; the game is
+ *   told the insets (--oddsrabbit-safe-*) and pads its own content by them, so
+ *   its backgrounds and overlays reach the screen edges by themselves.
+ * - `inline`: this page pads the safe areas and paints them in the game's
+ *   colour; the game lays its header out in the back button's row.
+ * - `reserved` (no meta, or a cross-origin game): this page pads the safe
+ *   areas and the back button's row.
+ */
+type GameChrome = 'edge' | 'inline' | 'reserved';
+
+const CHROME_HEIGHT = '--oddsrabbit-chrome-height';
+const CHROME_START = '--oddsrabbit-chrome-start';
+const SAFE_PROPERTIES = {
+  top: '--oddsrabbit-safe-top',
+  right: '--oddsrabbit-safe-right',
+  bottom: '--oddsrabbit-safe-bottom',
+  left: '--oddsrabbit-safe-left',
+} as const;
+const GAME_PROPERTIES = [CHROME_HEIGHT, CHROME_START, ...Object.values(SAFE_PROPERTIES)];
+
+/**
+ * Header-row height on web, where nothing floats over the game. Taller than a
+ * bare toolbar so a header row doesn't sit hard against the top of the page's
+ * game card. The one place web header spacing is tuned for every game.
+ */
+const WEB_CHROME_HEIGHT = '64px';
+
+function readGameChrome(doc: Document): GameChrome {
+  const content = doc
+    .querySelector('meta[name="oddsrabbit-chrome"]')
+    ?.getAttribute('content');
+  return content === 'edge' || content === 'inline' ? content : 'reserved';
+}
+
+let attachedGameDoc: Document | null = null;
+let chromeObserver: MutationObserver | null = null;
+
+/**
+ * Apply the game's chrome mode to this page and hand the game the variables it
+ * lays its header out by, and keep them current while the mobile app changes
+ * its insets (rotation).
+ *
+ * Called twice per document: by the SDK from the game's <head>, before the
+ * game's first paint (so an edge game never paints a frame inset and then
+ * jumps), and again on the iframe's load for a game that doesn't load the SDK.
+ * The second call for the same document does nothing.
+ */
+function attachGame(doc: Document): void {
+  if (doc === attachedGameDoc) return;
+  attachedGameDoc = doc;
+  chromeObserver?.disconnect();
+  window.removeEventListener('resize', syncGameProperties);
+
+  // Which host the game is in, for styling that has nothing to do with the
+  // insets: web has room the app's back-button row doesn't (a larger header on
+  // a desktop card, say). Set whatever the mode.
+  doc.documentElement.dataset.oddsrabbitSurface = isMobile ? 'app' : 'web';
+
+  const mode = readGameChrome(doc);
+  if (mode === 'reserved') {
+    delete document.documentElement.dataset.gameChrome;
+    chromeObserver = null;
+    log('game chrome', mode);
+    return;
+  }
+  document.documentElement.dataset.gameChrome = mode;
+  syncGameProperties();
+  log('game chrome', mode, doc.documentElement.style.cssText);
+
+  // The app re-injects its properties as inline style on <html>. Only this
+  // page's own <html> is watched, and syncGameProperties writes to the game's,
+  // so it can't retrigger itself.
+  chromeObserver = new MutationObserver(syncGameProperties);
+  chromeObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ['style'],
+  });
+  // env(safe-area-inset-*) changes on rotation without any style mutation.
+  window.addEventListener('resize', syncGameProperties);
+}
+
+function syncGameProperties(): void {
+  const doc = attachedGameDoc;
+  if (!doc) return;
+  const mode = readGameChrome(doc);
+  const values = gameProperties(mode);
+  const gameStyle = doc.documentElement.style;
+  for (const name of GAME_PROPERTIES) {
+    const value = values[name];
+    if (value) gameStyle.setProperty(name, value);
+    else gameStyle.removeProperty(name);
+  }
+}
+
+/**
+ * The variables the game gets. Anything left out is removed from the game, so
+ * its own var() fallback applies: an unset property beats a set `0px` there.
+ */
+function gameProperties(mode: GameChrome): Record<string, string> {
+  const hostStyle = document.documentElement.style;
+  const appChromeHeight = hostStyle.getPropertyValue(CHROME_HEIGHT).trim();
+  const appChromeStart = hostStyle.getPropertyValue(CHROME_START).trim();
+  const values: Record<string, string> = {};
+
+  if (appChromeHeight) {
+    values[CHROME_HEIGHT] = appChromeHeight;
+    if (appChromeStart) values[CHROME_START] = appChromeStart;
+  } else if (!isMobile) {
+    values[CHROME_HEIGHT] = WEB_CHROME_HEIGHT;
+  }
+  // An app build that predates the chrome row sends neither: the game's
+  // fallbacks apply, and for an edge game the button's row stays inside
+  // --oddsrabbit-safe-top below, so its header lands under the button.
+
+  if (mode === 'edge') {
+    // The app's top inset is the status bar PLUS the back button's row; the
+    // game lays its header out in that row itself, so only the status bar is
+    // "safe area" to it.
+    const insets = measureHostInsets();
+    const chromePx = parseFloat(appChromeHeight) || 0;
+    values[SAFE_PROPERTIES.top] = `${Math.max(0, insets.top - chromePx)}px`;
+    values[SAFE_PROPERTIES.right] = `${insets.right}px`;
+    values[SAFE_PROPERTIES.bottom] = `${insets.bottom}px`;
+    values[SAFE_PROPERTIES.left] = `${insets.left}px`;
+  }
+  return values;
+}
+
+/**
+ * The insets this page would pad by in reserved mode, in px: the app's
+ * --oddsrabbit-inset-*, else env(safe-area-inset-*), else 0. Resolved by
+ * letting the browser compute them on a probe (see .inset-probe in host.css),
+ * which is the only way to evaluate env() from script.
+ */
+let insetProbe: HTMLElement | null = null;
+
+function measureHostInsets(): { top: number; right: number; bottom: number; left: number } {
+  if (!insetProbe) {
+    insetProbe = document.createElement('div');
+    insetProbe.className = 'inset-probe';
+    insetProbe.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(insetProbe);
+  }
+  const style = getComputedStyle(insetProbe);
+  const px = (value: string): number => Math.round(parseFloat(value) || 0);
+  return {
+    top: px(style.paddingTop),
+    right: px(style.paddingRight),
+    bottom: px(style.paddingBottom),
+    left: px(style.paddingLeft),
+  };
+}
+
+/**
+ * What the SDK calls from the game's <head>. Only reachable from a game on
+ * this origin; a cross-origin game can't see it and gets the load-time path
+ * (which, unable to read its document either, gives it the reserved band).
+ */
+interface OddsRabbitHostGlobal {
+  attachGame(doc: Document): void;
+}
+
+declare global {
+  interface Window {
+    OddsRabbitHost?: OddsRabbitHostGlobal;
+  }
+}
+
+window.OddsRabbitHost = { attachGame };
 
 /**
  * Repaint this page in the game's own background colour, and keep doing so
@@ -155,6 +353,11 @@ function watchGameBackground(iframe: HTMLIFrameElement): void {
     const color = readGameBackground(gameDoc);
     if (!color) return;
     document.documentElement.style.setProperty('--bg', color);
+    // A game whose bottom edge differs from its top (sky above, ground below)
+    // names it, so the home-indicator inset matches too. See host.css.
+    const bottom = readGameEdge(gameDoc, '--oddsrabbit-edge-bottom');
+    if (bottom) document.documentElement.style.setProperty('--bg-bottom', bottom);
+    else document.documentElement.style.removeProperty('--bg-bottom');
     if (color === reportedGameBackground) return;
     reportedGameBackground = color;
     log('game background', color);
@@ -177,16 +380,50 @@ function watchGameBackground(iframe: HTMLIFrameElement): void {
   if (gameDoc.body) gameBackgroundObserver.observe(gameDoc.body, options);
 }
 
-/** The game's page colour as `#rrggbb`: <body> first, then <html>. */
+/**
+ * The game's top-edge colour as `#rrggbb`: `--oddsrabbit-edge-top` if the game
+ * sets it, else <body>'s background, then <html>'s.
+ */
 function readGameBackground(doc: Document): string | null {
   const view = doc.defaultView;
   if (!view) return null;
+  const top = readGameEdge(doc, '--oddsrabbit-edge-top');
+  if (top) return top;
   for (const el of [doc.body, doc.documentElement]) {
     if (!el) continue;
     const hex = opaqueCssColorToHex(view.getComputedStyle(el).backgroundColor);
     if (hex) return hex;
   }
   return null;
+}
+
+/**
+ * An edge colour a game declares as a custom property on <html> or <body>
+ * (e.g. `--oddsrabbit-edge-bottom: #5a3d2b`), as `#rrggbb`. Custom properties
+ * compute to their token text, so it is resolved to rgb() by painting it on a
+ * probe element here first.
+ */
+let edgeProbe: HTMLElement | null = null;
+
+function readGameEdge(doc: Document, name: string): string | null {
+  const view = doc.defaultView;
+  if (!view) return null;
+  let value = '';
+  for (const el of [doc.body, doc.documentElement]) {
+    if (!el) continue;
+    value = view.getComputedStyle(el).getPropertyValue(name).trim();
+    if (value) break;
+  }
+  if (!value) return null;
+  if (!edgeProbe) {
+    edgeProbe = document.createElement('span');
+    edgeProbe.hidden = true;
+    document.body.appendChild(edgeProbe);
+  }
+  edgeProbe.style.backgroundColor = '';
+  edgeProbe.style.backgroundColor = value;
+  if (!edgeProbe.style.backgroundColor) return null; // not a colour
+  return opaqueCssColorToHex(getComputedStyle(edgeProbe).backgroundColor);
 }
 
 /**

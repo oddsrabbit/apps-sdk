@@ -3,6 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <!-- Edge to edge, with the header row laid out in the app's back-button
+         row. Must come before the SDK script. See
+         docs/game-header-guidelines.md. -->
+    <meta name="oddsrabbit-chrome" content="edge" />
     <title>2048</title>
     <!-- Shared leaderboard component. Stylesheet first so our own styles.css
          keeps the last word; the script installs window.OddsRabbitUI, which
@@ -14,17 +18,18 @@
     <script src="../leaderboard-v1.js?v=__UI_VERSION__"></script>
   </head>
   <body>
-    <div class="container">
-      <div class="heading">
-        <h1 class="title">2048</h1>
-        <div class="scores-container">
-          <div class="score-container">0</div>
-          <div class="best-container">0</div>
-        </div>
+    <!-- Header row: first in the document and full width, so the app's
+         back-button lane is measured from the screen edge. -->
+    <div class="heading">
+      <h1 class="title">2048</h1>
+      <div class="scores-container">
+        <div class="score-container">0</div>
+        <div class="best-container">0</div>
       </div>
+    </div>
 
+    <div class="container">
       <div class="above-game">
-        <p class="game-intro">Join the numbers and get to the <strong>2048 tile!</strong></p>
         <button type="button" class="leaderboard-button">Leaderboard</button>
         <button type="button" class="restart-button">New Game</button>
       </div>

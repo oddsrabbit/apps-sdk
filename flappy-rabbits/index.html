@@ -3,6 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <!-- Edge to edge: the scene runs under the status bar and home indicator,
+         and the HUD is the header row, beside the app's back button. Must come
+         before the SDK script. See docs/game-header-guidelines.md. -->
+    <meta name="oddsrabbit-chrome" content="edge" />
     <title>Flappy Rabbits</title>
     <!-- Shared leaderboard component. Stylesheet first so our own styles.css
          keeps the last word; the script installs window.OddsRabbitUI, which

@@ -44,32 +44,60 @@ html, body {
   overscroll-behavior: none;
 }
 
-body { margin: 16px 0; }
+/* No top margin: the header row is the first thing on the page. The bottom
+   clears the home indicator: the page runs edge to edge. */
+body { margin: 0 0 calc(16px + var(--oddsrabbit-safe-bottom, 0px)); }
+
+/* --content-w is .container's content width, mirrored so the header row can
+   line up with it; every rule that resizes the container below sets both. */
+:root { --content-w: min(520px, calc(100vw - 32px)); }
 
 .container {
-  width: min(520px, calc(100vw - 32px));
+  width: var(--content-w);
   margin: 0 auto;
 }
 
-.heading::after {
-  content: "";
-  display: block;
-  clear: both;
+/* Header row, laid out in the app's back-button row (docs/game-header-
+   guidelines.md): the first thing on the page, full width, starting under the
+   status bar (the page itself runs under it), the first
+   --oddsrabbit-chrome-start px left clear for the button. On a screen wider
+   than the game, the padding instead lines the title and chips up with the
+   board's edges. The host sets the row height on web too; 48px is only for a
+   standalone load. */
+.heading {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: calc(var(--oddsrabbit-safe-top, 0px) + var(--oddsrabbit-chrome-height, 48px));
+  padding-top: var(--oddsrabbit-safe-top, 0px);
+  padding-left: max(
+    calc(var(--oddsrabbit-chrome-start, 12px) + var(--oddsrabbit-safe-left, 0px)),
+    calc((100% - var(--content-w)) / 2));
+  padding-right: max(
+    calc(12px + var(--oddsrabbit-safe-right, 0px)),
+    calc((100% - var(--content-w)) / 2));
+  margin-bottom: 4px;
 }
 
 h1.title {
-  font-size: 32px;
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 18px;
+  line-height: 1;
   font-weight: 800;
   margin: 0;
-  display: block;
-  float: left;
-  letter-spacing: 1px;
+  letter-spacing: 0.5px;
   color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .scores-container {
-  float: right;
-  text-align: right;
+  flex: 0 0 auto;
+  display: flex;
+  gap: 8px;
   /* Inline "0" placeholders preserve the layout but stay invisible until
      application.js hydrates the values, then toggles `.ready`. Avoids the
      "0 → 1240" flash on returning visits. */
@@ -77,34 +105,30 @@ h1.title {
 }
 .scores-container.ready { visibility: visible; }
 
-/* Score / best chips. Sized to match 2048's reference proportions so the
-   three games (2048, snake, match3) share one chip shape. Colors stay
-   per-game so the chip still reads as part of match3 rather than 2048. */
+/* Score / best chips. Same 32px shape as 2048 and snake — label then number
+   on one line, the label being the ::after pulled in front with `order`.
+   Colors stay per-game so the chip still reads as part of match3. */
 .score-container, .best-container {
   position: relative;
-  display: inline-block;
-  background: var(--frame);
-  padding: 15px 25px;
-  font-size: 25px;
-  height: 25px;
-  line-height: 47px;
-  min-width: 40px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 16px;
+  line-height: 1;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  background: var(--frame);
   color: var(--accent);
-  margin-top: 8px;
-  margin-left: 8px;
-  text-align: center;
   border-radius: 8px;
 }
 .score-container::after, .best-container::after {
-  position: absolute;
-  width: 100%;
-  top: 10px;
-  left: 0;
+  order: -1;
   text-transform: uppercase;
-  font-size: 13px;
-  line-height: 13px;
-  text-align: center;
+  font-size: 10px;
+  line-height: 1;
   /* Mirror 2048's "slightly dimmer than the number" treatment: same hue as
      --accent, dropped opacity so the label sits behind the number visually.
      Previously --frame-soft (#3D2E5A) sat on --frame (#2B1F3E) and was
@@ -118,21 +142,12 @@ h1.title {
 .best-container::after { content: "BEST"; }
 
 .above-game {
-  margin-top: 20px;
+  margin-top: 4px;
 }
 .above-game::after {
   content: "";
   display: block;
   clear: both;
-}
-
-.game-intro {
-  float: left;
-  font-size: 13px;
-  line-height: 1.5;
-  margin: 8px 0 0;
-  max-width: 60%;
-  color: var(--muted);
 }
 
 .restart-button, .leaderboard-button, .game-message button {
@@ -511,7 +526,13 @@ strong.important {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 16px;
+  /* Same insets as the shared leaderboard modal (src/ui/leaderboard.css):
+     clear of the status bar, the app's back-button row and the home
+     indicator. */
+  padding: max(16px, calc(var(--oddsrabbit-safe-top, 0px) + var(--oddsrabbit-chrome-height, 0px)))
+           calc(16px + var(--oddsrabbit-safe-right, 0px))
+           calc(16px + var(--oddsrabbit-safe-bottom, 0px))
+           calc(16px + var(--oddsrabbit-safe-left, 0px));
   box-sizing: border-box;
 }
 .share-modal {
@@ -598,7 +619,7 @@ strong.important {
 /* Toast. Bottom-centered slide-up; auto-dismissed by application.js. */
 .toast {
   position: fixed;
-  bottom: 32px;
+  bottom: calc(32px + var(--oddsrabbit-safe-bottom, 0px));
   left: 50%;
   transform: translate(-50%, 20px);
   background: var(--frame);
@@ -617,33 +638,19 @@ strong.important {
   transform: translate(-50%, 0);
 }
 
-/* Mobile tuning. Below ~540px the floated header crowds, and the board
-   needs to use most of the viewport. */
+/* Mobile tuning. Below ~540px the board needs to use most of the viewport. */
 @media screen and (max-width: 540px), screen and (max-height: 720px) {
-  body { margin: 10px 0; }
+  :root { --content-w: calc(100vw - 24px); }
+  body { margin: 0 0 calc(10px + var(--oddsrabbit-safe-bottom, 0px)); }
   .container { width: auto; padding: 0 12px; }
-  h1.title { font-size: 22px; margin-top: 4px; }
-  .score-container, .best-container {
-    font-size: 18px;
-    padding: 15px 12px;
-    height: 18px;
-    line-height: 32px;
-    min-width: 32px;
-    margin-top: 0;
-  }
-  .score-container::after, .best-container::after { font-size: 11px; top: 8px; line-height: 11px; }
-  /* Three floats can't share this row: the intro takes its percentage, New Game
-     claims the corner, and Leaderboard wraps to a second line that pushes the
-     board down. Flex instead — the same shape 2048's mobile rules use — with the
-     intro as the only flexible item, so it absorbs exactly what the two buttons
-     don't need and neither can wrap. `order` keeps the buttons in their desktop
-     sequence (Leaderboard, then New Game) once floats are off. */
+  /* Flex rather than the desktop floats, so the pair can never wrap onto a
+     second line and push the board down. `order` keeps the buttons in their
+     desktop sequence (Leaderboard, then New Game) once floats are off. */
   .above-game { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
   /* The clearfix above exists for the floats this block just turned off, and a
      ::after IS a flex item — leave it in and the row ends with an empty item and
      the gap in front of it. */
   .above-game::after { display: none; }
-  .game-intro { font-size: 11px; flex: 1 1 auto; min-width: 0; max-width: none; margin: 0; }
   .restart-button, .leaderboard-button {
     font-size: 10px;
     padding: 9px 12px;
@@ -664,26 +671,19 @@ strong.important {
   .stage-banner { font-size: 20px; padding: 14px 24px; letter-spacing: 1.5px; }
 }
 
-/* Narrow phones. The flex row above stops the buttons wrapping, but under ~360px
-   the intro is squeezed to a ~78px column that stacks four lines and makes the
-   row taller than the board's own header. It's what gives way: the how-to-play
-   line under the board is the same sentence at greater length. */
-@media screen and (max-width: 360px) {
-  .game-intro { display: none; }
-}
-
 /* Short-viewport cap. The canvas is 1:1 aspect filling the container, so
    on a typical Mac laptop browser (~700px tall once browser chrome is
    subtracted) a 520-wide container puts the bottom rows below the fold
-   even when scrolled. The 220 reserves room for header + intro + timer
+   even when scrolled. The 220 reserves room for header + buttons + timer
    + board padding + the how-to-play line beneath the board. Placed AFTER
    the mobile rule so a wide-but-short window (and a narrow-and-short
    window) both still get a height-constrained container — otherwise the
    mobile rule's `width: auto` would let the board grow taller than the
    viewport. */
 @media screen and (max-height: 820px) {
+  :root { --content-w: min(520px, calc(100vw - 32px), calc(100vh - 220px)); }
   .container {
-    width: min(520px, calc(100vw - 32px), calc(100vh - 220px));
+    width: var(--content-w);
     padding: 0;
   }
 }

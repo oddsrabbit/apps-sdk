@@ -25,7 +25,7 @@ On a 390×750 phone that lands the buffer at 998×1919, the peek at its 78 ceili
 
 Three things to know before changing any of it:
 
-- **The fit is closed-form, and the HUD is part of it.** The bar is specified in CSS pixels (`HUD_BAND_CSS`, plus the safe-area inset read back out of a probe element) and consumed in internal ones, which looks circular. It isn't: the constraint is `hudCss + scale * BOARD_MIN_H <= vh`, which rearranges to a plain upper bound on `scale`. Reserving the band matters — unlike a side-scroller there is no empty sky here, and an unreserved bar sits on the foundations.
+- **The fit is closed-form, and the HUD is part of it.** The bar is measured in CSS pixels (the rendered height of `.hud`, which is the game's header row — see `docs/game-header-guidelines.md` — re-measured whenever it changes) and consumed in internal ones, which looks circular. It isn't: the constraint is `hudCss + scale * BOARD_MIN_H <= vh`, which rearranges to a plain upper bound on `scale`. Reserving the band matters — unlike a side-scroller there is no empty sky here, and an unreserved bar sits on the foundations.
 - **`BOARD_MIN_H` is the deepest *legal* column, not the current one.** Six face-down plus a 13-card K→A run. Sizing to the board actually on screen would make the whole layout jump every time a column grew.
 - **Everything under `--- Elastic vertical layout ---` in `renderer.js` is a live value.** `TOP_ROW_Y`, `TABLEAU_Y`, both offsets and `INTERNAL_H` are rewritten by `applyLayout()` on each resize, and `Renderer.prototype.layout` is the same object rather than a snapshot. Read them; never cache them.
 

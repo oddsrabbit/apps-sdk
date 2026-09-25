@@ -39,7 +39,13 @@ html, body {
   overscroll-behavior: none;
 }
 
-body { margin: 16px 0; }
+/* No top margin: the header row is the first thing on the page. The bottom
+   clears the home indicator: the page runs edge to edge. */
+body { margin: 0 0 calc(16px + var(--oddsrabbit-safe-bottom, 0px)); }
+
+/* --content-w is .container's content width, mirrored so the header row can
+   line up with it; the mobile rule below sets both. */
+:root { --content-w: min(520px, calc(100vw - 32px)); }
 
 .container {
   width: 520px;
@@ -47,25 +53,49 @@ body { margin: 16px 0; }
   margin: 0 auto;
 }
 
-.heading::after {
-  content: "";
-  display: block;
-  clear: both;
+/* Header row, laid out in the app's back-button row (docs/game-header-
+   guidelines.md): the first thing on the page, full width, starting under the
+   status bar (the page itself runs under it), the first
+   --oddsrabbit-chrome-start px left clear for the button. On a screen wider
+   than the game, the padding instead lines the title and chips up with the
+   board's edges. The host sets the row height on web too; 48px is only for a
+   standalone load. */
+.heading {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: calc(var(--oddsrabbit-safe-top, 0px) + var(--oddsrabbit-chrome-height, 48px));
+  padding-top: var(--oddsrabbit-safe-top, 0px);
+  padding-left: max(
+    calc(var(--oddsrabbit-chrome-start, 12px) + var(--oddsrabbit-safe-left, 0px)),
+    calc((100% - var(--content-w)) / 2));
+  padding-right: max(
+    calc(12px + var(--oddsrabbit-safe-right, 0px)),
+    calc((100% - var(--content-w)) / 2));
+  margin-bottom: 4px;
 }
 
+/* 16px, not the guideline's 20: Press Start 2P is a wide pixel face and runs
+   about a third wider than a system font at the same size. */
 h1.title {
-  font-size: 40px;
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 16px;
+  line-height: 1;
   font-weight: bold;
   margin: 0;
-  display: block;
-  float: left;
-  letter-spacing: 2px;
+  letter-spacing: 1px;
   color: var(--gb-darkest);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .scores-container {
-  float: right;
-  text-align: right;
+  flex: 0 0 auto;
+  display: flex;
+  gap: 8px;
   /* Inline "0" placeholders preserve the layout but stay invisible until
      application.js calls setBest/setScore with the hydrated values, then
      toggles `.ready`. Otherwise a hydrated best of e.g. 540 would flash
@@ -76,36 +106,30 @@ h1.title {
   visibility: visible;
 }
 
-/* Score / best chips. Sized to match 2048's reference proportions so the
-   three games (2048, snake, match3) share one chip shape. Number font is
-   20px instead of 2048's 25px because Press Start 2P is visually chunky
-   at the same nominal size — keeps the chip from blowing the header
-   layout. Embossed border + gameboy palette remain. */
+/* Score / best chips. Same 32px shape as 2048 and match3 — label then number
+   on one line, the label being the ::after pulled in front with `order`.
+   Number at 12px rather than 2048's 16px because Press Start 2P is visually
+   chunky at the same nominal size. Embossed border + gameboy palette remain. */
 .score-container, .best-container {
   position: relative;
-  display: inline-block;
-  background: var(--gb-darkest);
-  padding: 15px 22px;
-  font-size: 20px;
-  height: 22px;
-  line-height: 40px;
-  min-width: 40px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 1;
   font-weight: bold;
+  background: var(--gb-darkest);
   color: var(--gb-pale);
-  margin-top: 8px;
-  margin-left: 8px;
-  text-align: center;
   border: 2px solid var(--gb-dark);
   box-shadow: inset 0 0 0 2px var(--gb-shadow);
 }
 .score-container::after, .best-container::after {
-  position: absolute;
-  width: 100%;
-  top: 8px;
-  left: 0;
-  font-size: 11px;
-  line-height: 11px;
-  text-align: center;
+  order: -1;
+  font-size: 8px;
+  line-height: 1;
   /* --gb-mid (#4a7c4a) on --gb-darkest (#0f380f) was too close in value
      to read clearly. Use --gb-pale (the number's colour) at lowered
      opacity so the label is visible without competing with the number —
@@ -118,7 +142,7 @@ h1.title {
 .best-container::after { content: "BEST"; }
 
 .above-game {
-  margin-top: 24px;
+  margin-top: 4px;
 }
 .above-game::after {
   content: "";
@@ -126,15 +150,6 @@ h1.title {
   clear: both;
 }
 
-.game-intro {
-  float: left;
-  font-size: 11px;
-  line-height: 1.6;
-  margin: 8px 0 0;
-  max-width: 60%;
-  color: var(--gb-darkest);
-}
-.game-intro strong { color: var(--gb-darkest); }
 
 .restart-button, .game-message button {
   background: var(--gb-darkest);
@@ -280,7 +295,13 @@ strong.important {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 16px;
+  /* Same insets as the shared leaderboard modal (src/ui/leaderboard.css):
+     clear of the status bar, the app's back-button row and the home
+     indicator. */
+  padding: max(16px, calc(var(--oddsrabbit-safe-top, 0px) + var(--oddsrabbit-chrome-height, 0px)))
+           calc(16px + var(--oddsrabbit-safe-right, 0px))
+           calc(16px + var(--oddsrabbit-safe-bottom, 0px))
+           calc(16px + var(--oddsrabbit-safe-left, 0px));
   box-sizing: border-box;
 }
 .share-modal {
@@ -368,7 +389,7 @@ strong.important {
 /* Toast. Bottom-centered slide-up; auto-dismissed by application.js. */
 .toast {
   position: fixed;
-  bottom: 32px;
+  bottom: calc(32px + var(--oddsrabbit-safe-bottom, 0px));
   left: 50%;
   transform: translate(-50%, 20px);
   background: var(--gb-darkest);
@@ -388,19 +409,9 @@ strong.important {
 }
 
 @media screen and (max-width: 540px), screen and (max-height: 720px) {
-  body { margin: 12px 0; }
+  :root { --content-w: calc(100vw - 32px); }
+  body { margin: 0 0 calc(12px + var(--oddsrabbit-safe-bottom, 0px)); }
   .container { width: auto; padding: 0 16px; }
-  h1.title { font-size: 24px; margin-top: 6px; }
-  .score-container, .best-container {
-    font-size: 14px;
-    padding: 13px 12px;
-    height: 14px;
-    line-height: 27px;
-    min-width: 32px;
-    margin-top: 0;
-  }
-  .score-container::after, .best-container::after { font-size: 9px; top: 6px; line-height: 9px; }
-  .game-intro { font-size: 9px; max-width: 55%; }
   .restart-button { font-size: 9px; padding: 8px 10px; }
   .board-frame { padding: 16px; }
   .game-message { top: 16px; right: 16px; bottom: 16px; left: 16px; gap: 14px; }

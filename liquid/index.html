@@ -4,6 +4,12 @@
     <meta charset="utf-8" />
     <meta http-equiv="Cache-Control" content="no-cache" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <!-- Edge to edge: the fluid runs under the status bar, around the host's
+         floating back button and under the home indicator. Nothing of ours
+         sits in the button's row (the dat.gui panel is top-right, below the
+         status bar). Must come before the SDK script. See
+         docs/game-header-guidelines.md. -->
+    <meta name="oddsrabbit-chrome" content="edge" />
     <title>Liquid</title>
     <script>
       // Apply the host-passed colorScheme before the stylesheet loads so the
@@ -23,6 +29,9 @@
       body { margin: 0; position: fixed; width: 100%; height: 100%; }
       canvas { width: 100%; height: 100%; display: block; }
       .dg { opacity: 0.9; }
+      /* dat.gui's auto-placed container is fixed to the top-right corner; keep
+         it out from under the status bar and a landscape notch. */
+      .dg.ac { top: var(--oddsrabbit-safe-top, 0px); right: var(--oddsrabbit-safe-right, 0px); }
       .dg .property-name { overflow: visible; }
       .bigFont { font-size: 150%; color: #8C8C8C; }
       .bootstrap-error {

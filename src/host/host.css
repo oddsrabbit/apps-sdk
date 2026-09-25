@@ -30,7 +30,17 @@ body {
   padding: 0;
   width: 100%;
   height: 100%;
-  background: var(--bg);
+  /* Top half in the game's top-edge colour, bottom half in its bottom-edge
+     colour (the same unless the game sets --oddsrabbit-edge-bottom; host.ts
+     copies it here as --bg-bottom). The game iframe covers the middle, so all
+     that shows is the status-bar inset in the first and the home-indicator
+     inset in the second. */
+  background: linear-gradient(
+    to bottom,
+    var(--bg) 50%,
+    var(--bg-bottom, var(--bg)) 50%
+  );
+  background-color: var(--bg);
   overflow: hidden;
   overscroll-behavior: none;
 }
@@ -57,6 +67,41 @@ body {
      The padding shows <html>'s background, which host.ts repaints with the
      game's own background colour once it loads, so the inset reads as part
      of the game rather than as a band of host colour. */
+  padding-top: var(--oddsrabbit-inset-top, env(safe-area-inset-top, 0px));
+  padding-right: var(--oddsrabbit-inset-right, env(safe-area-inset-right, 0px));
+  padding-bottom: var(--oddsrabbit-inset-bottom, env(safe-area-inset-bottom, 0px));
+  padding-left: var(--oddsrabbit-inset-left, env(safe-area-inset-left, 0px));
+}
+
+/* Inline chrome: the game draws its own header row in the band the back button
+   floats in, so that band comes off the top inset. host.ts sets this while the
+   game is one that declares <meta name="oddsrabbit-chrome" content="inline">,
+   and copies --oddsrabbit-chrome-* into the game so it can keep its header
+   clear of the button. Without --oddsrabbit-chrome-height (web, or an app build
+   that predates it) the subtraction is 0 and nothing changes. See
+   docs/game-header-guidelines.md. */
+:root[data-game-chrome='inline'] #root {
+  padding-top: calc(
+    var(--oddsrabbit-inset-top, env(safe-area-inset-top, 0px)) -
+      var(--oddsrabbit-chrome-height, 0px)
+  );
+}
+
+/* Edge-to-edge: the game draws under every inset itself and pads its own
+   content by --oddsrabbit-safe-*, which host.ts measures from the padding
+   above and hands it. Nothing of this page shows. */
+:root[data-game-chrome='edge'] #root {
+  padding: 0;
+}
+
+/* Resolves the insets #root would pad by, for host.ts to read in px (script
+   can't evaluate env() directly). Same expressions as #root above. */
+.inset-probe {
+  position: absolute;
+  visibility: hidden;
+  pointer-events: none;
+  width: 0;
+  height: 0;
   padding-top: var(--oddsrabbit-inset-top, env(safe-area-inset-top, 0px));
   padding-right: var(--oddsrabbit-inset-right, env(safe-area-inset-right, 0px));
   padding-bottom: var(--oddsrabbit-inset-bottom, env(safe-area-inset-bottom, 0px));

@@ -3,6 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <!-- Edge to edge: the felt runs under the status bar and home indicator,
+         and the HUD is the header row, beside the app's back button. Must come
+         before the SDK script. See docs/game-header-guidelines.md. -->
+    <meta name="oddsrabbit-chrome" content="edge" />
     <title>Solitaire</title>
     <!-- Shared leaderboard component. Stylesheet first so styles.css keeps the
          last word on the 8-bit overrides; the script installs
@@ -42,8 +46,8 @@
               aria-label="Solitaire game board"></canvas>
 
       <!-- HUD. Floats over the band renderer.js reserves at the top of the
-           board (HUD_BAND_CSS), which is why the fit has to know the bar's
-           height: unlike a side-scroller there is no empty sky here, and an
+           board, which is why the fit measures the bar's height (hudBandCss):
+           unlike a side-scroller there is no empty sky here, and an
            unreserved bar would sit on the foundations.
 
            Undo and New deal are icons rather than labelled buttons because

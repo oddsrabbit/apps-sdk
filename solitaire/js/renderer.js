@@ -108,9 +108,33 @@
   // undo / new-deal / sound controls and the moves + time chips). The band is
   // inside the canvas rather than a bar above it, so the felt runs edge to
   // edge and the controls sit on it — but it has to be reserved in the fit,
-  // or on a short window the chips land on the foundations. 8px of padding,
-  // a 36px control, 10px of clearance.
-  var HUD_BAND_CSS = 54;
+  // or on a short window the chips land on the foundations.
+  //
+  // The band is the HUD's own height: it is the game's header row, sized in
+  // styles.css from the host's --oddsrabbit-safe-top (the status bar the felt
+  // runs under) plus --oddsrabbit-chrome-height (the app's back-button row),
+  // with its 32px controls centred in it, so it already carries its own
+  // clearance above the foundations. Measured rather than hard-coded, because
+  // the host can set those variables after the page has loaded and they differ
+  // by host. HUD_BAND_FALLBACK_CSS is styles.css's own fallback, for a fit that
+  // runs before the bar is in the document.
+  var HUD_BAND_FALLBACK_CSS = 48;
+  function hudBandCss() {
+    var hud = document.querySelector(".hud");
+    var h = hud ? hud.offsetHeight : 0;
+    return h > 0 ? h : HUD_BAND_FALLBACK_CSS;
+  }
+
+  // CSS pixels at the bottom of the screen under the home indicator, which the
+  // felt runs under but the tableau must not: the host's --oddsrabbit-safe-bottom,
+  // 0 where it is unset (web, a standalone load).
+  function safeBottomCss() {
+    var v = parseFloat(
+      window.getComputedStyle(document.documentElement)
+        .getPropertyValue("--oddsrabbit-safe-bottom")
+    );
+    return v > 0 ? v : 0;
+  }
 
   // Every vertical offset must stay a multiple of SCALE. The peek strips
   // slice the card sprite, and a slice that lands mid-authored-pixel shears
@@ -118,7 +142,7 @@
   function quantizeUp(v) { return Math.ceil(v / SCALE) * SCALE; }
   function quantizeDown(v) { return Math.floor(v / SCALE) * SCALE; }
 
-  // Spend `h - topRowY - BOARD_MIN_H` of spare internal height on the
+  // Spend `h - bottom - topRowY - BOARD_MIN_H` of spare internal height on the
   // vertical offsets, in priority order, and publish the result.
   //
   // The face-up peek goes first and takes as much as it can: it is the only
@@ -129,10 +153,13 @@
   // row doesn't sit flush against the tableau, and everything still spare
   // stays as felt under the bottom of the board, which is where the Finish
   // button and the dead-end banner float.
-  function applyLayout(h, topRowY) {
+  //
+  // `bottom` is the internal height under the home indicator: part of the
+  // canvas (the felt runs under it) but never spent on the board.
+  function applyLayout(h, topRowY, bottom) {
     TOP_ROW_Y = topRowY;
     INTERNAL_H = h;
-    var spare = Math.max(0, h - topRowY - BOARD_MIN_H);
+    var spare = Math.max(0, h - (bottom || 0) - topRowY - BOARD_MIN_H);
 
     var upRoom = (MAX_FACE_UP_OFFSET - MIN_FACE_UP_OFFSET) / SCALE;
     var upSteps = Math.max(0, Math.min(Math.floor(spare / (12 * SCALE)), upRoom));
@@ -156,26 +183,6 @@
     LAYOUT.TABLEAU_Y = TABLEAU_Y;
     LAYOUT.FACE_UP_OFFSET = FACE_UP_OFFSET;
     LAYOUT.FACE_DOWN_OFFSET = FACE_DOWN_OFFSET;
-  }
-
-  // env(safe-area-inset-top) is only readable from CSS, and resize() needs it
-  // as a number: on a notched phone the HUD band has to clear the inset as
-  // well as its own height, or the time chip lands under the status bar.
-  // A zero-sized probe carrying the inset as padding is the cheapest way to
-  // get the resolved value; it is created once and read per resize.
-  var safeProbe = null;
-  function safeAreaTop() {
-    if (!safeProbe) {
-      if (!document.body) return 0;
-      safeProbe = document.createElement("div");
-      safeProbe.setAttribute("aria-hidden", "true");
-      safeProbe.style.cssText =
-        "position:fixed;top:0;left:0;width:0;height:0;visibility:hidden;" +
-        "pointer-events:none;padding-top:env(safe-area-inset-top,0px);";
-      document.body.appendChild(safeProbe);
-    }
-    var v = parseFloat(window.getComputedStyle(safeProbe).paddingTop);
-    return v > 0 ? v : 0;
   }
 
   // 7 column x-positions reused by top row (stock/waste/foundations) and
@@ -392,6 +399,20 @@
     // iOS fires this before `resize` has the new dimensions on some versions,
     // and Android WebViews sometimes fire only this one.
     window.addEventListener("orientationchange", this._onResize);
+    // The HUD band is measured off the bar (see hudBandCss), and the bar
+    // changes height without the window resizing: the host can copy the status
+    // bar and back-button row heights in after the page has loaded, and again
+    // when the app's insets change. Re-fit when it does (which re-reads the
+    // bottom inset too — the host sets them together).
+    var hud = document.querySelector(".hud");
+    if (hud && typeof ResizeObserver === "function") {
+      var hudHeight = hud.offsetHeight;
+      new ResizeObserver(function () {
+        if (hud.offsetHeight === hudHeight) return;
+        hudHeight = hud.offsetHeight;
+        self._onResize();
+      }).observe(hud);
+    }
 
     // Sprite cache.
     this._cardSprites = new Array(Deck.DECK_SIZE);
@@ -436,11 +457,12 @@
   Renderer.prototype.resize = function () {
     var vw = Math.max(1, window.innerWidth || INTERNAL_W);
     var vh = Math.max(1, window.innerHeight || MIN_INTERNAL_H);
-    var hudCss = HUD_BAND_CSS + safeAreaTop();
+    var hudCss = hudBandCss();
+    var bottomCss = safeBottomCss();
 
     var scale = Math.min(
       vw / INTERNAL_W,
-      (vh - hudCss) / (BOARD_MIN_H + SCALE),
+      (vh - hudCss - bottomCss) / (BOARD_MIN_H + SCALE),
       vh / MIN_INTERNAL_H
     );
     // A viewport shorter than the HUD band itself is not a real device, but
@@ -465,17 +487,19 @@
       scale = cssW / INTERNAL_W;
     }
 
-    // The canvas covers the viewport's full height; the fit above guarantees
-    // the board fits inside it, and any surplus is felt below the tableau.
+    // The canvas covers the viewport's full height, home indicator included;
+    // the fit above guarantees the board fits above that inset, and any
+    // surplus is felt below the tableau.
     var h = Math.max(MIN_INTERNAL_H, Math.round(vh / scale));
+    var bottomInternal = Math.ceil(bottomCss / scale);
     var topRowY = Math.max(MIN_TOP_ROW_Y, quantizeUp(hudCss / scale));
     // Only reachable if the quantise slack above was not enough (a fractional
     // devicePixelRatio, say). Losing a pixel or two of HUD clearance beats
     // pushing the last tableau card off the bottom of the board.
-    if (topRowY + BOARD_MIN_H > h) {
-      topRowY = Math.max(MIN_TOP_ROW_Y, quantizeDown(h - BOARD_MIN_H));
+    if (topRowY + BOARD_MIN_H > h - bottomInternal) {
+      topRowY = Math.max(MIN_TOP_ROW_Y, quantizeDown(h - bottomInternal - BOARD_MIN_H));
     }
-    applyLayout(h, topRowY);
+    applyLayout(h, topRowY, bottomInternal);
 
     if (this.canvas.height !== h) {
       // Assigning the buffer size clears the canvas and resets the 2D context

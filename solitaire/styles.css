@@ -43,9 +43,10 @@ html, body {
   margin: 0;
   padding: 0;
   height: 100%;
-  /* The felt, not the host shell. The board is the page now, so the only
-     thing this colour is ever seen as is the letterbox js/renderer.js leaves
-     at the sides of a wide desktop window — and painting that in the felt the
+  /* The felt, not the host shell. The board is the page now, and it runs
+     edge to edge under the status bar and home indicator, so the only thing
+     this colour is ever seen as is the letterbox js/renderer.js leaves at the
+     sides of a wide desktop window — and painting that in the felt the
      canvas paints means the board reads as edge to edge at every size, which
      also makes the crisp-scale snap (which can give up to 8% of the width
      back) invisible rather than a pair of margins. */
@@ -91,7 +92,7 @@ body {
    stuck), so the two can share the same bottom slot without collision. */
 .stuck-banner {
   position: absolute;
-  bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  bottom: calc(24px + var(--oddsrabbit-safe-bottom, 0px));
   left: 50%;
   transform: translateX(-50%);
   z-index: 60;
@@ -149,7 +150,7 @@ body {
 
 @media (max-width: 420px) {
   .stuck-banner {
-    bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+    bottom: calc(14px + var(--oddsrabbit-safe-bottom, 0px));
     gap: 8px;
     padding: 8px 10px;
     font-size: 9px;
@@ -159,29 +160,36 @@ body {
 
 /* -------- HUD -------- */
 
-/* Floats over the band renderer.js reserves at the top of the board
-   (HUD_BAND_CSS = 54px + the safe-area inset, which the renderer reads back
-   out of a probe element so its fit can account for it). Nothing else on the
-   board is allowed to paint there, so the bar does not need a scrim.
+/* Floats over the band renderer.js reserves at the top of the board, which
+   is exactly this bar's height (the renderer measures it, and re-fits when it
+   changes). Nothing else on the board is allowed to paint there, so the bar
+   does not need a scrim.
+
+   This is the game's header row (docs/game-header-guidelines.md): below the
+   status bar (the felt runs under it), the height of the app's back-button
+   row, clear of the button's lane on the left, and everything centred on the
+   button's centre line. Its full height, status bar included, is the band
+   renderer.js reserves.
 
    `pointer-events: none` on the bar so the dead space between the controls
    and the chips still passes a tap through to the felt; the two groups opt
-   back in. The safe-area insets are additive on the sides and resolve to 0
-   where the host already excludes them. */
+   back in. */
 .hud {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   z-index: 50;
+  box-sizing: border-box;
+  height: calc(var(--oddsrabbit-safe-top, 0px) + var(--oddsrabbit-chrome-height, 48px));
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: calc(8px + env(safe-area-inset-top, 0px))
-           calc(8px + env(safe-area-inset-right, 0px))
+  padding: var(--oddsrabbit-safe-top, 0px)
+           calc(12px + var(--oddsrabbit-safe-right, 0px))
            0
-           calc(8px + env(safe-area-inset-left, 0px));
+           calc(var(--oddsrabbit-chrome-start, 12px) + var(--oddsrabbit-safe-left, 0px));
   line-height: 1;
   pointer-events: none;
 }
@@ -191,6 +199,7 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
 }
 
 .stats-container {
@@ -212,11 +221,15 @@ body {
    leave room for the time. */
 .moves-container, .time-container {
   position: relative;
+  /* 32px tall, the height of every control in the header row: 2px border,
+     13px for the label, the 12px figure, 3px under it. */
+  box-sizing: border-box;
+  height: 32px;
   background: var(--wood-darkest);
-  padding: 15px 10px 5px;
-  font-size: 14px;
+  padding: 13px 8px 3px;
+  font-size: 12px;
   line-height: 1;
-  min-width: 30px;
+  min-width: 42px;
   font-weight: bold;
   color: var(--wood-pale);
   text-align: center;
@@ -226,10 +239,10 @@ body {
 .moves-container::after, .time-container::after {
   position: absolute;
   width: 100%;
-  top: 5px;
+  top: 4px;
   left: 0;
-  font-size: 8px;
-  line-height: 8px;
+  font-size: 7px;
+  line-height: 7px;
   text-align: center;
   color: var(--wood-pale);
   opacity: 0.65;
@@ -255,7 +268,9 @@ body {
   flex: 0 0 auto;
   background: none;
   border: none;
-  padding: 4px;
+  /* 32px tall like the rest of the row, so the whole height is a tap target;
+     narrow, because the width is what this bar is short of. */
+  padding: 8px 4px;
   margin: 0;
   font-size: 16px;
   line-height: 1;
@@ -335,11 +350,11 @@ body {
   align-items: center;
   justify-content: center;
   padding: 0;
-  width: 36px;
-  height: 36px;
+  box-sizing: border-box;
+  width: 32px;
+  height: 32px;
   -webkit-tap-highlight-color: transparent;
 }
-.leaderboard-button { width: 32px; }
 
 /* The overlay's daily buttons disable when the solver can't vouch for today's
    deal; the sub-line above them carries the reason, so the dimming only has to
@@ -418,7 +433,12 @@ body {
   z-index: 100;
   text-align: center;
   line-height: 1.4;
-  padding: 24px 18px calc(24px + env(safe-area-inset-bottom, 0px));
+  /* The scrim covers the whole screen, status bar included (the game runs
+     edge to edge); only its contents keep clear of the insets. */
+  padding: calc(24px + var(--oddsrabbit-safe-top, 0px))
+           calc(18px + var(--oddsrabbit-safe-right, 0px))
+           calc(24px + var(--oddsrabbit-safe-bottom, 0px))
+           calc(18px + var(--oddsrabbit-safe-left, 0px));
   box-sizing: border-box;
 }
 .game-message.visible { display: flex; }
@@ -485,12 +505,12 @@ h1.title {
    display state — that's what lets it actually render during the playing
    state (when the overlay is display:none and canAutoComplete is true).
    Application.js toggles display:inline-block. It sits in the felt the
-   renderer leaves under the deepest legal column; the safe-area inset keeps
-   it clear of a home indicator now that the board runs to the screen edge. */
+   renderer leaves under the deepest legal column, clear of the home
+   indicator the felt runs under. */
 .finish-button {
   display: none;
   position: absolute;
-  bottom: calc(32px + env(safe-area-inset-bottom, 0px));
+  bottom: calc(32px + var(--oddsrabbit-safe-bottom, 0px));
   left: 50%;
   transform: translateX(-50%);
   z-index: 50;
@@ -685,7 +705,11 @@ h1.title {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 16px;
+  /* Same insets as the shared leaderboard modal (src/ui/leaderboard.css). */
+  padding: max(16px, calc(var(--oddsrabbit-safe-top, 0px) + var(--oddsrabbit-chrome-height, 0px)))
+           calc(16px + var(--oddsrabbit-safe-right, 0px))
+           calc(16px + var(--oddsrabbit-safe-bottom, 0px))
+           calc(16px + var(--oddsrabbit-safe-left, 0px));
   box-sizing: border-box;
 }
 .lb-day-modal {
@@ -792,7 +816,11 @@ h1.title {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 16px;
+  /* Same insets as the shared leaderboard modal (src/ui/leaderboard.css). */
+  padding: max(16px, calc(var(--oddsrabbit-safe-top, 0px) + var(--oddsrabbit-chrome-height, 0px)))
+           calc(16px + var(--oddsrabbit-safe-right, 0px))
+           calc(16px + var(--oddsrabbit-safe-bottom, 0px))
+           calc(16px + var(--oddsrabbit-safe-left, 0px));
   box-sizing: border-box;
 }
 .share-modal {
@@ -887,7 +915,11 @@ h1.title {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 16px;
+  /* Same insets as the shared leaderboard modal (src/ui/leaderboard.css). */
+  padding: max(16px, calc(var(--oddsrabbit-safe-top, 0px) + var(--oddsrabbit-chrome-height, 0px)))
+           calc(16px + var(--oddsrabbit-safe-right, 0px))
+           calc(16px + var(--oddsrabbit-safe-bottom, 0px))
+           calc(16px + var(--oddsrabbit-safe-left, 0px));
   box-sizing: border-box;
 }
 .confirm-modal {
@@ -938,7 +970,7 @@ h1.title {
 /* Toast. Bottom-centered slide-up; auto-dismissed by application.js. */
 .toast {
   position: fixed;
-  bottom: 32px;
+  bottom: calc(32px + var(--oddsrabbit-safe-bottom, 0px));
   left: 50%;
   transform: translate(-50%, 20px);
   background: var(--wood-darkest);
@@ -963,21 +995,21 @@ h1.title {
    before anything else. The board itself needs no breakpoint: renderer.js
    fits it at every size. */
 @media screen and (max-width: 380px), screen and (max-height: 560px) {
-  .moves-container, .time-container {
-    padding: 13px 8px 4px;
-    font-size: 12px;
-    min-width: 26px;
+  .moves-container, .time-container { padding: 13px 6px 3px; min-width: 36px; }
+  .hud-controls, .stats-container { gap: 4px; }
+  .sound-toggle, .haptic-toggle { padding: 8px 2px; }
+  .hud { gap: 6px; }
+  .game-message {
+    gap: 10px;
+    padding: calc(12px + var(--oddsrabbit-safe-top, 0px))
+             calc(12px + var(--oddsrabbit-safe-right, 0px))
+             calc(12px + var(--oddsrabbit-safe-bottom, 0px))
+             calc(12px + var(--oddsrabbit-safe-left, 0px));
   }
-  .moves-container::after, .time-container::after { font-size: 7px; top: 4px; line-height: 7px; }
-  .undo-button, .restart-button { width: 32px; height: 32px; }
-  .leaderboard-button { width: 28px; height: 32px; }
-  .sound-toggle, .haptic-toggle { padding: 2px; font-size: 15px; }
-  .hud { gap: 6px; padding-left: calc(6px + env(safe-area-inset-left, 0px)); }
-  .game-message { gap: 10px; padding: 12px; }
   .game-message[data-state="idle"] .game-explanation { display: none; }
   .game-message-text { font-size: 16px; }
   .game-message-sub { font-size: 9px; }
-  .finish-button { bottom: calc(16px + env(safe-area-inset-bottom, 0px)); }
+  .finish-button { bottom: calc(16px + var(--oddsrabbit-safe-bottom, 0px)); }
   .lb-day-modal { padding: 14px; gap: 12px; max-height: 90vh; }
   .lb-day-title { font-size: 11px; }
 }

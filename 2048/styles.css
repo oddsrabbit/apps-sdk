@@ -30,8 +30,20 @@ html, body {
 body {
   /* Canonical 2048 used 80px to center the game on a full-browser page; we
      run inside the apps.oddsrabbit.com sandbox iframe where vertical real
-     estate is tighter, so we keep the gutter slim. */
-  margin: 16px 0; }
+     estate is tighter, so we keep the gutter slim. No top margin: the header
+     row is the first thing on the page (see .heading). The bottom clears the
+     home indicator: the page runs edge to edge.
+
+     A column at least the screen tall, so .container can take the space left
+     under the header and centre itself in it (margin: auto). When the content
+     is taller than the screen the auto margins resolve to 0 and the page
+     scrolls as before. */
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  margin: 0;
+  padding-bottom: calc(16px + var(--oddsrabbit-safe-bottom, 0px)); }
 
 /* Grid pitch (distance from one tile slot to the next). Used by the .tile
    transform below — driving position via a single custom property replaces
@@ -43,19 +55,57 @@ body {
    host theme the way rabbit-words does. */
 :root {
   color-scheme: light;
-  --tile-pitch: 121px; }
+  /* The board is sized from the screen rather than fixed at upstream's two
+     sizes (500px, and 280px under 520px wide, which left a phone a small board
+     with wide empty margins). It is as wide as the screen allows, less a 16px
+     gutter each side, up to 500px, and short enough that the header, the
+     action row and the board fit on screen together (the 150px is the action
+     row plus the margins around it); never under 240px. Everything inside it
+     keeps upstream's proportions: the gaps are 3% of the board. */
+  --board: max(240px, min(
+    500px,
+    calc(100vw - 32px - var(--oddsrabbit-safe-left, 0px) - var(--oddsrabbit-safe-right, 0px)),
+    calc(100vh - 150px - var(--oddsrabbit-chrome-height, 48px)
+      - var(--oddsrabbit-safe-top, 0px) - var(--oddsrabbit-safe-bottom, 0px))));
+  --gap: calc(var(--board) * 0.03);
+  --cell: calc((var(--board) - 5 * var(--gap)) / 4);
+  --tile-pitch: calc(var(--cell) + var(--gap));
+  /* Width of .container, mirrored so the header row can line up with it. */
+  --content-w: var(--board); }
 
-.heading:after {
-  content: "";
-  display: block;
-  clear: both; }
+/* Header row, laid out in the app's back-button row (docs/game-header-
+   guidelines.md): the first thing on the page, full width, starting under the
+   status bar (the page itself runs under it), the first
+   --oddsrabbit-chrome-start px left clear for the button. On a screen wider
+   than the game, the padding instead lines the title and chips up with the
+   board's edges. The host sets the row height on web too; 48px is only for a
+   standalone load. */
+.heading {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: calc(var(--oddsrabbit-safe-top, 0px) + var(--oddsrabbit-chrome-height, 48px));
+  padding-top: var(--oddsrabbit-safe-top, 0px);
+  padding-left: max(
+    calc(var(--oddsrabbit-chrome-start, 12px) + var(--oddsrabbit-safe-left, 0px)),
+    calc((100% - var(--content-w)) / 2));
+  padding-right: max(
+    calc(12px + var(--oddsrabbit-safe-right, 0px)),
+    calc((100% - var(--content-w)) / 2));
+  flex: none;
+  margin-bottom: 8px; }
 
 h1.title {
-  font-size: 80px;
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 20px;
+  line-height: 1;
   font-weight: bold;
   margin: 0;
-  display: block;
-  float: left; }
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis; }
 
 @keyframes move-up {
   0% {
@@ -66,39 +116,40 @@ h1.title {
     opacity: 0; } }
 
 .scores-container {
-  float: right;
-  text-align: right; }
+  flex: 0 0 auto;
+  display: flex;
+  gap: 8px; }
 
+/* 32px chips, label then number on one line. The label is the ::after, pulled
+   in front of the number (the element's text) with `order`. */
 .score-container, .best-container {
   position: relative;
-  display: inline-block;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
   background: #bbada0;
-  padding: 15px 25px;
-  font-size: 25px;
-  height: 25px;
-  line-height: 47px;
+  font-size: 16px;
+  line-height: 1;
   font-weight: bold;
+  font-variant-numeric: tabular-nums;
   border-radius: 3px;
-  color: white;
-  margin-top: 8px;
-  text-align: center; }
+  color: white; }
   .score-container:after, .best-container:after {
-    position: absolute;
-    width: 100%;
-    top: 10px;
-    left: 0;
+    order: -1;
     text-transform: uppercase;
-    font-size: 13px;
-    line-height: 13px;
-    text-align: center;
+    font-size: 10px;
+    line-height: 1;
     color: #eee4da; }
   .score-container .score-addition, .best-container .score-addition {
     position: absolute;
-    top: 25px;
-    right: 30px;
+    top: 8px;
+    right: 10px;
     color: rgba(119, 110, 101, 0.9);
-    font-size: 25px;
-    line-height: 25px;
+    font-size: 16px;
+    line-height: 16px;
     font-weight: bold;
     z-index: 100;
     animation: move-up 600ms ease-in;
@@ -131,17 +182,20 @@ hr {
   margin-bottom: 30px; }
 
 .container {
-  width: 500px;
-  margin: 0 auto; }
+  width: var(--board);
+  /* Centred in the space under the header, both ways (see body). */
+  margin: auto; }
 
 @keyframes fade-in {
   0% { opacity: 0; }
   100% { opacity: 1; } }
 
 .game-container {
-  margin-top: 40px;
+  /* Upstream's 40px was a gap under a one-line intro; under a button row it
+     read as an empty band. Same 17px as the compact layout. */
+  margin-top: 17px;
   position: relative;
-  padding: 15px;
+  padding: var(--gap);
   cursor: default;
   -webkit-touch-callout: none;
   -webkit-user-select: none;
@@ -151,8 +205,8 @@ hr {
   touch-action: none;
   background: #bbada0;
   border-radius: 6px;
-  width: 500px;
-  height: 500px;
+  width: var(--board);
+  height: var(--board);
   box-sizing: border-box; }
   .game-container .game-message {
     /* `display` flips to `flex` when game-won/game-over is added. Flex
@@ -175,9 +229,9 @@ hr {
     animation: fade-in 800ms ease 1200ms;
     animation-fill-mode: both; }
     .game-container .game-message p {
-      font-size: 60px;
+      font-size: calc(var(--board) * 0.12);
       font-weight: bold;
-      line-height: 60px;
+      line-height: 1;
       margin: 0; }
     .game-container .game-message .lower {
       display: flex;
@@ -209,7 +263,7 @@ hr {
   z-index: 1; }
 
 .grid-row {
-  margin-bottom: 15px; }
+  margin-bottom: var(--gap); }
   .grid-row:last-child {
     margin-bottom: 0; }
   .grid-row:after {
@@ -218,9 +272,9 @@ hr {
     clear: both; }
 
 .grid-cell {
-  width: 106.25px;
-  height: 106.25px;
-  margin-right: 15px;
+  width: var(--cell);
+  height: var(--cell);
+  margin-right: var(--gap);
   float: left;
   border-radius: 3px;
   background: rgba(238, 228, 218, 0.35); }
@@ -232,9 +286,9 @@ hr {
   z-index: 2; }
 
 .tile, .tile .tile-inner {
-  width: 107px;
-  height: 107px;
-  line-height: 107px; }
+  width: var(--cell);
+  height: var(--cell);
+  line-height: var(--cell); }
 
 .tile {
   position: absolute;
@@ -253,7 +307,9 @@ hr {
     text-align: center;
     font-weight: bold;
     z-index: 10;
-    font-size: 55px; }
+    /* Proportional to the tile, at upstream's desktop ratios (55px on a 107px
+       tile; 45px for three digits, 35px for four, 30px beyond). */
+    font-size: calc(var(--cell) * 0.51); }
   .tile.tile-2 .tile-inner {
     background: #eee4da;
     box-shadow: 0 0 30px 10px rgba(243, 215, 116, 0), inset 0 0 0 1px rgba(255, 255, 255, 0); }
@@ -276,49 +332,31 @@ hr {
     color: #f9f6f2;
     background: #edcf72;
     box-shadow: 0 0 30px 10px rgba(243, 215, 116, 0.2381), inset 0 0 0 1px rgba(255, 255, 255, 0.14286);
-    font-size: 45px; }
-    @media screen and (max-width: 520px), screen and (max-height: 720px) {
-      .tile.tile-128 .tile-inner {
-        font-size: 25px; } }
+    font-size: calc(var(--cell) * 0.42); }
   .tile.tile-256 .tile-inner {
     color: #f9f6f2;
     background: #edcc61;
     box-shadow: 0 0 30px 10px rgba(243, 215, 116, 0.31746), inset 0 0 0 1px rgba(255, 255, 255, 0.19048);
-    font-size: 45px; }
-    @media screen and (max-width: 520px), screen and (max-height: 720px) {
-      .tile.tile-256 .tile-inner {
-        font-size: 25px; } }
+    font-size: calc(var(--cell) * 0.42); }
   .tile.tile-512 .tile-inner {
     color: #f9f6f2;
     background: #edc850;
     box-shadow: 0 0 30px 10px rgba(243, 215, 116, 0.39683), inset 0 0 0 1px rgba(255, 255, 255, 0.2381);
-    font-size: 45px; }
-    @media screen and (max-width: 520px), screen and (max-height: 720px) {
-      .tile.tile-512 .tile-inner {
-        font-size: 25px; } }
+    font-size: calc(var(--cell) * 0.42); }
   .tile.tile-1024 .tile-inner {
     color: #f9f6f2;
     background: #edc53f;
     box-shadow: 0 0 30px 10px rgba(243, 215, 116, 0.47619), inset 0 0 0 1px rgba(255, 255, 255, 0.28571);
-    font-size: 35px; }
-    @media screen and (max-width: 520px), screen and (max-height: 720px) {
-      .tile.tile-1024 .tile-inner {
-        font-size: 15px; } }
+    font-size: calc(var(--cell) * 0.33); }
   .tile.tile-2048 .tile-inner {
     color: #f9f6f2;
     background: #edc22e;
     box-shadow: 0 0 30px 10px rgba(243, 215, 116, 0.55556), inset 0 0 0 1px rgba(255, 255, 255, 0.33333);
-    font-size: 35px; }
-    @media screen and (max-width: 520px), screen and (max-height: 720px) {
-      .tile.tile-2048 .tile-inner {
-        font-size: 15px; } }
+    font-size: calc(var(--cell) * 0.33); }
   .tile.tile-super .tile-inner {
     color: #f9f6f2;
     background: #3c3a32;
-    font-size: 30px; }
-    @media screen and (max-width: 520px), screen and (max-height: 720px) {
-      .tile.tile-super .tile-inner {
-        font-size: 10px; } }
+    font-size: calc(var(--cell) * 0.28); }
 
 @keyframes appear {
   0% {
@@ -342,27 +380,15 @@ hr {
   animation: pop 200ms ease 100ms;
   animation-fill-mode: backwards; }
 
-/* Intro on its own line, actions right-aligned on the row beneath.
-
-   The original upstream layout floated the intro left and "New Game" right on a
-   single line, which fit because there was one button. A second one doesn't:
-   at the 500px container the intro alone runs ~340px, so "Leaderboard" and
-   "New Game" together overflow, and floats resolve that by dropping one button
-   to the next line — where it lands under the other and beside the intro text.
-   Giving the intro the full row makes the wrap deliberate instead of emergent,
-   and the buttons then sit in a predictable pair at every width. */
+/* Action row under the header: Leaderboard and New Game, right-aligned. The
+   upstream intro line that used to share it is gone — the header row holds no
+   prose, and the how-to under the board says the same thing at more length. */
 .above-game {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: 8px; }
-
-.game-intro {
-  /* Own line at any width — the basis is the whole row, not the text's length. */
-  flex: 1 1 100%;
-  line-height: 1.4;
-  margin: 0 0 4px; }
 
 .restart-button {
   background: #8f7a66;
@@ -378,64 +404,44 @@ hr {
   cursor: pointer; }
 
 .game-explanation {
-  margin-top: 50px; }
+  margin-top: 24px; }
 
+/* Desktop web: a full-size header. The compact row above is sized to sit
+   beside the app's back button (docs/game-header-guidelines.md); on web there
+   is no button and the board is up to 500px wide, where a 20px title and 32px
+   chips looked like a phone toolbar over a desktop board. The host marks the
+   surface; the app, and phones on web, keep the compact row. */
+@media screen and (min-width: 521px) {
+  /* Replaces the safe-top padding, which is always 0 on web. */
+  :root[data-oddsrabbit-surface="web"] .heading {
+    padding-top: 20px; }
+  :root[data-oddsrabbit-surface="web"] h1.title {
+    font-size: 44px; }
+  :root[data-oddsrabbit-surface="web"] .score-container,
+  :root[data-oddsrabbit-surface="web"] .best-container {
+    flex-direction: column;
+    justify-content: center;
+    gap: 3px;
+    height: 52px;
+    min-width: 72px;
+    padding: 0 16px;
+    font-size: 22px; }
+  :root[data-oddsrabbit-surface="web"] .score-container:after,
+  :root[data-oddsrabbit-surface="web"] .best-container:after {
+    font-size: 11px; }
+  :root[data-oddsrabbit-surface="web"] .score-container .score-addition,
+  :root[data-oddsrabbit-surface="web"] .best-container .score-addition {
+    top: 22px;
+    font-size: 22px;
+    line-height: 22px; } }
+
+/* Small screens: smaller body type. The board sizes itself (see --board). */
 @media screen and (max-width: 520px), screen and (max-height: 720px) {
-  :root {
-    --tile-pitch: 67px; }
-
   html, body {
     font-size: 15px; }
 
-  body {
-    margin: 20px 0;
-    padding: 0 20px; }
-
-  h1.title {
-    font-size: 27px;
-    margin-top: 15px; }
-
-  .container {
-    width: 280px;
-    margin: 0 auto; }
-
-  .score-container, .best-container {
-    margin-top: 0;
-    padding: 15px 10px;
-    min-width: 40px; }
-
-  .heading {
-    margin-bottom: 10px; }
-
-  .game-intro {
-    line-height: 1.5; }
-
-  .game-container {
-    margin-top: 17px;
-    padding: 10px;
-    width: 280px;
-    height: 280px; }
-    .game-container .game-message {
-      gap: 12px; }
-      .game-container .game-message p {
-        font-size: 30px;
-        line-height: 30px; }
-
-  .grid-row {
-    margin-bottom: 10px; }
-
-  .grid-cell {
-    width: 57.5px;
-    height: 57.5px;
-    margin-right: 10px; }
-
-  .tile, .tile .tile-inner {
-    width: 58px;
-    height: 58px;
-    line-height: 58px; }
-
-  .tile .tile-inner {
-    font-size: 35px; } }
+  .game-container .game-message {
+    gap: 12px; } }
 
 /* Bootstrap error fallback — surfaced to the user when the SDK bridge can't
    be reached or hydrate fails irrecoverably. Mirrors rabbit-words' behavior
@@ -475,8 +481,8 @@ hr {
    rabbit-globe’s copy; do not re-add them locally. */
 
 @media screen and (max-width: 520px), screen and (max-height: 720px) {
-  /* 280px of container can't hold both labels at their natural width, so the
-     two share the row evenly instead of one wrapping under the other. */
+  /* A phone-width container can't hold both labels at their natural width,
+     so the two share the row evenly instead of one wrapping under the other. */
   .leaderboard-button, .restart-button {
     flex: 1 1 0;
     min-width: 0;

@@ -3,6 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <!-- Edge to edge: the page runs under the status bar and home indicator,
+         and each screen's .bar is laid out in the host's back-button row. Must
+         come before the SDK script. See docs/game-header-guidelines.md. -->
+    <meta name="oddsrabbit-chrome" content="edge" />
     <title>Rabbit Word Battle</title>
     <!-- Shared leaderboard component, for its avatar renderer: player strips,
          match rows and the invite picker all hash usernames to the same colour
@@ -58,9 +62,11 @@
 
     <!-- Screen 2: set the table. -->
     <section class="screen screen-new" hidden>
+      <!-- Back to the list sits at the right: the top-left corner is the app's
+           own exit button. -->
       <header class="bar">
-        <button type="button" class="back-button" aria-label="Back to games">‹</button>
         <h1 class="title">New game</h1>
+        <button type="button" class="back-button" aria-label="Back to games">✕</button>
       </header>
       <div class="screen-scroll">
         <h2 class="group-title">Invite friends</h2>
@@ -98,9 +104,9 @@
     <!-- Screen 3: one match. -->
     <section class="screen screen-match" hidden>
       <header class="bar">
-        <button type="button" class="back-button" aria-label="Back to games">‹</button>
         <div class="players"></div>
         <button type="button" class="menu-button icon-button" aria-label="Match options">⋯</button>
+        <button type="button" class="back-button" aria-label="Back to games">✕</button>
       </header>
 
       <div class="turn-strip">

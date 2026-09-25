@@ -3,22 +3,27 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <!-- Edge to edge, with the header row laid out in the app's back-button
+         row. Must come before the SDK script. See
+         docs/game-header-guidelines.md. -->
+    <meta name="oddsrabbit-chrome" content="edge" />
     <title>Snake</title>
     <link rel="stylesheet" href="./styles.css?v=__BUILD_ID__" />
     <script src="../sdk-v1.js?v=__SDK_VERSION__"></script>
   </head>
   <body>
-    <div class="container">
-      <div class="heading">
-        <h1 class="title">SNAKE?</h1>
-        <div class="scores-container">
-          <div class="score-container" aria-label="Score 0">0</div>
-          <div class="best-container" aria-label="Best 0">0</div>
-        </div>
+    <!-- Header row: first in the document and full width, so the app's
+         back-button lane is measured from the screen edge. -->
+    <div class="heading">
+      <h1 class="title">SNAKE?</h1>
+      <div class="scores-container">
+        <div class="score-container" aria-label="Score 0">0</div>
+        <div class="best-container" aria-label="Best 0">0</div>
       </div>
+    </div>
 
+    <div class="container">
       <div class="above-game">
-        <p class="game-intro">Eat the carrots. Don't eat <strong>yourself</strong>.</p>
         <button type="button" class="restart-button">New Game</button>
       </div>
 
