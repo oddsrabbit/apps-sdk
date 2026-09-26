@@ -42,7 +42,7 @@ function fakeTransport(
     init: (over: Partial<BridgeInit> = {}) =>
       initHandler!({
         type: 'init',
-        user: { uuid: UUID, username: 'me', avatar: null, createdAt: null },
+        user: { uuid: UUID, username: 'me', avatar: null, createdAt: null, supporter: false },
         sessionToken: 'jwt',
         expiresAt: null,
         capabilities: ['matches.get', 'matches.list', 'matches.move'],
@@ -261,4 +261,70 @@ test('invitable resolves [] without a round trip when signed out', async () => {
   t.init({ user: null, sessionToken: null });
   assert.deepEqual(await sdk.matches.invitable({ limit: 200 }), []);
   assert.equal(t.calls.length, 0);
+});
+
+test('nudge sends the uuid and resolves the parsed timestamp', async () => {
+  const t = fakeTransport(() => Promise.resolve({ nudgedAt: '2026-09-26T10:00:00Z' }));
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init({ capabilities: ['matches.get', 'matches.nudge'] });
+  assert.deepEqual(await sdk.matches.nudge({ matchUuid: UUID }), { nudgedAt: '2026-09-26T10:00:00Z' });
+  assert.deepEqual(t.calls[0], { type: 'matches.nudge', payload: { matchUuid: UUID } });
+});
+
+test('nudge rejects on a malformed result', async () => {
+  const t = fakeTransport(() => Promise.resolve({ ok: true }));
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init();
+  await assert.rejects(sdk.matches.nudge({ matchUuid: UUID }), /malformed result/);
+});
+
+test('match/too-soon is a per-call outcome and retires neither verb', async () => {
+  const t = fakeTransport(() =>
+    Promise.reject({ code: MATCH_ERROR_CODES.tooSoon, message: 'You can nudge again in 5 hours.' })
+  );
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init({ capabilities: ['matches.get', 'matches.nudge', 'matches.claim'] });
+  await assert.rejects(
+    sdk.matches.nudge({ matchUuid: UUID }),
+    (error: BridgeError) => error.code === 'match/too-soon' && /5 hours/.test(error.message)
+  );
+  await assert.rejects(
+    sdk.matches.claim({ matchUuid: UUID }),
+    (error: BridgeError) => error.code === 'match/too-soon'
+  );
+  assert.equal(sdk.capabilities.has('matches.nudge'), true);
+  assert.equal(sdk.capabilities.has('matches.claim'), true);
+});
+
+test('claim resolves the resulting view, finished with turnStartedAt cleared', async () => {
+  const t = fakeTransport(() =>
+    Promise.resolve(
+      wireView({
+        version: 12,
+        status: 'finished',
+        turnSeat: null,
+        turnStartedAt: null,
+        winnerSeat: 0,
+        isMyTurn: false,
+      })
+    )
+  );
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init({ capabilities: ['matches.get', 'matches.claim'] });
+  const view = await sdk.matches.claim({ matchUuid: UUID });
+  assert.equal(view.status, 'finished');
+  assert.equal(view.winnerSeat, 0);
+  assert.equal(view.turnStartedAt, null);
+  assert.deepEqual(t.calls[0], { type: 'matches.claim', payload: { matchUuid: UUID } });
+});
+
+test('claim and nudge on a host without them retire only themselves', async () => {
+  const t = fakeTransport(() => reject('bridge/unknown-type'));
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init({ capabilities: ['matches.get', 'matches.nudge', 'matches.claim'] });
+  await assert.rejects(sdk.matches.claim({ matchUuid: UUID }));
+  await assert.rejects(sdk.matches.nudge({ matchUuid: UUID }));
+  assert.equal(sdk.capabilities.has('matches.claim'), false);
+  assert.equal(sdk.capabilities.has('matches.nudge'), false);
+  assert.equal(sdk.capabilities.has('matches.get'), true);
 });

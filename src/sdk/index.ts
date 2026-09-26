@@ -14,9 +14,20 @@ export type {
   MatchStatus,
   MatchPlayerStatus,
   MatchListFilter,
+  MatchNudgeResult,
   InvitablePlayer,
+  GiftSendPayload,
+  Showcase,
+  Gift,
+  GiftSendResult,
+  GiftClaimResult,
+  ShowcasePublishResult,
+  VisitRecordPayload,
+  Visit,
+  VisitRecordResult,
+  VisitSeenResult,
 } from './sdk';
-export { MATCH_ERROR_CODES } from './sdk';
+export { MATCH_ERROR_CODES, SOCIAL_ERROR_CODES, GIFT_ERROR_CODES, VISIT_ERROR_CODES } from './sdk';
 export type {
   BridgeUser,
   AppColorScheme,

@@ -4,7 +4,9 @@ import test from 'node:test';
 import {
   BRIDGE_REQUEST_TYPES,
   BridgeRequestSchema,
+  MATCH_ERROR_CODES,
   MATCH_MOVE_MAX_BYTES,
+  MatchNudgeResultSchema,
   MatchSummarySchema,
   MatchViewSchema,
 } from './messages';
@@ -16,7 +18,7 @@ function request(type: string, payload: unknown) {
   return BridgeRequestSchema.safeParse({ type, correlationId: 'c1', payload });
 }
 
-test('all six match verbs are bridge request types', () => {
+test('every match verb is a bridge request type', () => {
   for (const verb of [
     'matches.create',
     'matches.join',
@@ -24,6 +26,8 @@ test('all six match verbs are bridge request types', () => {
     'matches.get',
     'matches.move',
     'matches.resign',
+    'matches.nudge',
+    'matches.claim',
   ]) {
     assert.ok(BRIDGE_REQUEST_TYPES.includes(verb as never), verb);
   }
@@ -87,6 +91,45 @@ test('a match view parses with wire defaults filled in', () => {
   assert.equal(view.players[1]!.avatar, null);
   assert.equal(view.players[1]!.score, 0);
   assert.equal(view.players[1]!.isSelf, false);
+  assert.equal(view.turnStartedAt, null, 'an older host without turnStartedAt still parses');
+});
+
+test('turnStartedAt passes through when the host sends it', () => {
+  const parsed = MatchSummarySchema.safeParse({
+    matchUuid: UUID,
+    game: 'tiles',
+    status: 'active',
+    version: 9,
+    maxPlayers: 2,
+    players: [
+      { seat: 0, uuid: UUID, username: 'me', status: 'joined', isSelf: true },
+      { seat: 1, uuid: OTHER, username: 'them', status: 'joined' },
+    ],
+    turnSeat: 1,
+    turnStartedAt: '2026-09-10T08:00:00Z',
+    mySeat: 0,
+    updatedAt: '2026-09-10T08:00:00Z',
+  });
+  assert.ok(parsed.success);
+  assert.equal(parsed.data.turnStartedAt, '2026-09-10T08:00:00Z');
+});
+
+test('matches.nudge and matches.claim take exactly a match uuid', () => {
+  for (const verb of ['matches.nudge', 'matches.claim']) {
+    assert.ok(request(verb, { matchUuid: UUID }).success, verb);
+    assert.ok(!request(verb, {}).success, `${verb} needs a uuid`);
+    assert.ok(!request(verb, { matchUuid: 'not-a-uuid' }).success, `${verb} rejects a bad uuid`);
+  }
+});
+
+test('a nudge result is an ISO timestamp', () => {
+  assert.ok(MatchNudgeResultSchema.safeParse({ nudgedAt: '2026-09-26T10:00:00Z' }).success);
+  assert.ok(!MatchNudgeResultSchema.safeParse({ nudgedAt: 'yesterday' }).success);
+  assert.ok(!MatchNudgeResultSchema.safeParse({}).success);
+});
+
+test('match/too-soon is a match error code', () => {
+  assert.equal(MATCH_ERROR_CODES.tooSoon, 'match/too-soon');
 });
 
 test('a match with a malformed seat fails as a whole, not by dropping the seat', () => {

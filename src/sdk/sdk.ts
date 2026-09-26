@@ -9,6 +9,7 @@ import {
   SeasonRankSchema,
   MatchViewSchema,
   MatchSummarySchema,
+  MatchNudgeResultSchema,
   InvitablePlayerSchema,
   ServerTimeSchema,
   ScheduledNotificationSchema,
@@ -16,11 +17,28 @@ import {
   NotificationCancelResultSchema,
   NotificationListSchema,
   NotificationStatusSchema,
+  ShowcaseSchema,
+  ShowcasePublishResultSchema,
+  GiftSchema,
+  GiftSendResultSchema,
+  GiftClaimResultSchema,
+  VisitSchema,
+  VisitRecordResultSchema,
+  VisitSeenResultSchema,
+  type Visit,
+  type VisitRecordResult,
+  type VisitSeenResult,
+  type Showcase,
+  type ShowcasePublishResult,
+  type Gift,
+  type GiftSendResult,
+  type GiftClaimResult,
   type NotificationStatus,
   type ScheduledNotification,
   type NotificationScheduleResult,
   type MatchView,
   type MatchSummary,
+  type MatchNudgeResult,
   type MatchListFilter,
   type InvitablePlayer,
   type SeasonBoard,
@@ -57,13 +75,47 @@ export type {
   MatchStatus,
   MatchPlayerStatus,
   MatchListFilter,
+  MatchNudgeResult,
   InvitablePlayer,
   ScheduledNotification,
   NotificationScheduleResult,
   NotificationStatus,
+  Showcase,
+  ShowcasePublishResult,
+  Gift,
+  GiftSendResult,
+  GiftClaimResult,
+  Visit,
+  VisitRecordResult,
+  VisitSeenResult,
 } from '../schemas/messages';
 
-export { MATCH_ERROR_CODES, NOTIFICATION_ERROR_CODES } from '../schemas/messages';
+export {
+  MATCH_ERROR_CODES,
+  NOTIFICATION_ERROR_CODES,
+  SOCIAL_ERROR_CODES,
+  GIFT_ERROR_CODES,
+  VISIT_ERROR_CODES,
+} from '../schemas/messages';
+
+export interface GiftSendPayload {
+  /** Who gets it. Must follow the viewer or be followed by them. */
+  toUserUuid: string;
+  /** The game's word for the gift, `[a-z0-9-]{1,32}`, e.g. `'clover'`. */
+  kind: string;
+  /** Optional note, one line, up to 80 characters. */
+  message?: string;
+}
+
+export interface VisitRecordPayload {
+  /** Whose home was visited. Must follow the viewer or be followed by them. */
+  toUserUuid: string;
+  /**
+   * The game's word for what the visitor did, `[a-z0-9-]{1,32}`, e.g.
+   * `'snack'`. Picks the push line from the manifest's `social.visitLines`.
+   */
+  kind: string;
+}
 
 export interface NotificationSchedulePayload {
   /** The game's name for this reminder, e.g. `'nap-done'`. Reusing a key replaces it. */
@@ -72,7 +124,7 @@ export interface NotificationSchedulePayload {
   fireAt: Date | number | string;
   /** Up to 64 characters, one line. */
   title: string;
-  /** Up to 160 characters. Keep it true if delivered hours late (quiet hours). */
+  /** Up to 160 characters. */
   body: string;
 }
 
@@ -216,8 +268,9 @@ const LEGACY_CAPABILITIES: readonly string[] = [
  * The same goes for every `match/*` code (`MATCH_ERROR_CODES`): a rejected
  * move, a stale version, a full table are outcomes of one call in a working
  * match system, and caching any of them would end multiplayer for the session
- * on the first illegal move. `notifications/*` codes
- * (`NOTIFICATION_ERROR_CODES`) stay out for the same reason.
+ * on the first illegal move. `notifications/*`, `social/*`, `gifts/*` and
+ * `visits/*` codes (`NOTIFICATION_ERROR_CODES`, `SOCIAL_ERROR_CODES`,
+ * `GIFT_ERROR_CODES`, `VISIT_ERROR_CODES`) stay out for the same reason.
  */
 const UNSUPPORTED_CODES = [
   'bridge/unknown-action',
@@ -293,6 +346,10 @@ function documentHidden(): boolean {
 }
 
 export interface OddsRabbitGlobal {
+  /**
+   * The signed-in user, or null for a guest. `supporter` is true when they
+   * hold the platform Supporter tier (false on hosts that predate it).
+   */
   readonly user: BridgeUser | null;
   readonly sessionToken: string | null;
   readonly expiresAt: string | null;
@@ -469,6 +526,28 @@ export interface OddsRabbitGlobal {
     /** Leave the match. Ends a 2-player match; a larger table plays on without you. */
     resign(payload: { matchUuid: string }): Promise<MatchView>;
     /**
+     * Push the seat on turn a reminder that it is their move. Only from a
+     * waiting player (not the seat on turn), once the turn is a day old
+     * (`turnStartedAt`), and at most once a day per sender per match.
+     * Otherwise rejects `match/too-soon` with a message saying when
+     * ("You can nudge again in 5 hours."). Changes nothing about the match,
+     * so `version` does not move.
+     *
+     * Gate the button on `capabilities.has('matches.nudge')`.
+     */
+    nudge(payload: { matchUuid: string }): Promise<MatchNudgeResult>;
+    /**
+     * End a stalled turn. Once the seat on turn has not moved for 14 days
+     * (`turnStartedAt`), a waiting player may claim it: with two players
+     * left the match finishes scored as it stands (higher score wins, equal
+     * scores draw, nobody is marked forfeited); with three or four the idle
+     * seat is forfeited and the rest play on. Rejects `match/too-soon`
+     * earlier, with a message saying when. Resolves the resulting view.
+     *
+     * Gate the button on `capabilities.has('matches.claim')`.
+     */
+    claim(payload: { matchUuid: string }): Promise<MatchView>;
+    /**
      * People the viewer may invite — connected on the follow graph in either
      * direction, which is exactly the set `create` accepts. `[]` when signed
      * out or on a host without the verb; one malformed row drops itself.
@@ -524,9 +603,9 @@ export interface OddsRabbitGlobal {
    * Reminders delivered later as a push on mobile and a notification in the
    * bell everywhere, e.g. "Clover is awake" when a nap timer ends.
    *
-   * The platform, not the game, decides what goes out: nothing in the user's
-   * quiet hours (22:00–08:00 local; it is delivered at 08:00 instead), pushes
-   * only when the user has game pushes on, at most 5 pending per app. There is
+   * The platform, not the game, decides what goes out: pushes only when the
+   * user has game pushes on, at most 5 pending per app. There are no quiet
+   * hours, so a reminder goes out at `fireAt` whatever the local time. There is
    * no daily cap while every game is first-party, so each game has to keep
    * its own reminders rare. Write copy that stays true if it arrives late.
    *
@@ -539,9 +618,8 @@ export interface OddsRabbitGlobal {
    */
   readonly notifications: {
     /**
-     * Create or replace the reminder under `key`. Resolves with when it will
-     * really be delivered (`deliverAt`), which is later than `fireAt` when
-     * that falls in quiet hours.
+     * Create or replace the reminder under `key`. Resolves with `deliverAt`,
+     * which equals `fireAt` (there are no quiet hours).
      */
     schedule(payload: NotificationSchedulePayload): Promise<NotificationScheduleResult>;
     /** Cancel the pending reminder under `key`. Resolves false when none was pending. */
@@ -561,6 +639,92 @@ export interface OddsRabbitGlobal {
      * or a failed request. Treat null as unknown, not as off.
      */
     status(): Promise<NotificationStatus | null>;
+  };
+
+  /**
+   * A small snapshot of the game that the viewer's friends can look at, e.g.
+   * a pet's name, coat and burrow. "Friends" are people the viewer follows or
+   * who follow them, with no block between them.
+   *
+   * Requires the `bridge:social` scope and a signed-in user. Gate the UI on
+   * `capabilities.has('showcase.friends')`.
+   *
+   * `publish` REJECTS with a `social/*` code (`SOCIAL_ERROR_CODES`). `friends`
+   * degrades to `[]`; `get` resolves null on a host without the verb.
+   */
+  readonly showcase: {
+    /**
+     * Create or replace the viewer's snapshot for this game: a JSON object of
+     * at most 8 KB. Rate-limited to 30 a minute, so publish on meaningful
+     * changes, not every frame.
+     */
+    publish(data: Record<string, unknown>): Promise<ShowcasePublishResult>;
+    /**
+     * Friends' snapshots, most recently updated first (default 50, max 100).
+     * Only people who have published appear. `[]` when signed out (no round
+     * trip) or on a host without the verb. Malformed rows are dropped.
+     */
+    friends(options?: { limit?: number }): Promise<Showcase[]>;
+    /**
+     * One person's snapshot, or null when they haven't published (or signed
+     * out, or the host lacks the verb). Rejects with `social/not-connected`
+     * unless the viewer is connected to them or is them.
+     */
+    get(userUuid: string): Promise<Showcase | null>;
+  };
+
+  /**
+   * Small gifts between friends. The platform only carries them: `kind` is
+   * the game's word and the game pays out when the recipient claims one.
+   * One gift per friend per UTC day, 10 a day in all; unclaimed gifts vanish
+   * after 7 days. The recipient gets a bell notification (and a push when
+   * their game reminders are on) that opens the game.
+   *
+   * Requires the `bridge:social` scope and a signed-in user. Gate the UI on
+   * `capabilities.has('gifts.send')`.
+   *
+   * `send` and `claim` REJECT with a `gifts/*` code (`GIFT_ERROR_CODES`).
+   * `inbox` and `sentToday` degrade to `[]`.
+   */
+  readonly gifts: {
+    send(payload: GiftSendPayload): Promise<GiftSendResult>;
+    /** Unclaimed gifts to the viewer from the last 7 days, newest first (at most 50). */
+    inbox(): Promise<Gift[]>;
+    /** Mark a gift claimed. Rejects `gifts/claimed` the second time; pay out once. */
+    claim(giftUuid: string): Promise<GiftClaimResult>;
+    /** Uuids of the friends the viewer has sent a gift to today (UTC). */
+    sentToday(): Promise<string[]>;
+  };
+
+  /**
+   * Visits to friends' homes. A sibling of gifts with its own slot: one visit
+   * per friend per UTC day, 10 a day in all, whatever gifts were sent. The
+   * platform only carries them: `kind` is the game's word, and the game
+   * decides what a visit is worth. The friend gets a bell notification (and a
+   * push when their game reminders are on) whose line comes from the app
+   * manifest's `social.visitLines`, never from the game at runtime.
+   *
+   * Requires the `bridge:social` scope and a signed-in user. Gate the UI on
+   * `capabilities.has('visits.record')`.
+   *
+   * `record` and `seen` REJECT with a `visits/*` code (`VISIT_ERROR_CODES`).
+   * `inbox` and `sentToday` degrade to `[]`.
+   */
+  readonly visits: {
+    record(payload: VisitRecordPayload): Promise<VisitRecordResult>;
+    /**
+     * Visits to the viewer from the last 7 days, seen and unseen, newest first
+     * (at most 50). Each carries the visitor's current showcase, or null.
+     */
+    inbox(): Promise<Visit[]>;
+    /**
+     * Mark visits seen (at most 50 uuids). Resolves the uuids THIS call moved
+     * from unseen to seen: pay out for exactly those, and two devices opening
+     * at once can't both pay.
+     */
+    seen(visitUuids: string[]): Promise<VisitSeenResult>;
+    /** Uuids of the friends the viewer has visited today (UTC). */
+    sentToday(): Promise<string[]>;
   };
 
   readonly actions: {
@@ -852,6 +1016,16 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
       this.requestMatchView('matches.move', payload),
     resign: (payload: { matchUuid: string }): Promise<MatchView> =>
       this.requestMatchView('matches.resign', payload),
+    // Rejects rather than degrading, like every other write: a game has to
+    // know the reminder did not go, and a malformed answer is a host bug.
+    nudge: (payload: { matchUuid: string }): Promise<MatchNudgeResult> =>
+      this.request<unknown>('matches.nudge', payload).then((result): MatchNudgeResult => {
+        const parsed = MatchNudgeResultSchema.safeParse(result);
+        if (!parsed.success) throw new Error('matches.nudge: malformed result');
+        return parsed.data;
+      }),
+    claim: (payload: { matchUuid: string }): Promise<MatchView> =>
+      this.requestMatchView('matches.claim', payload),
     invitable: (payload: { limit?: number; offset?: number } = {}): Promise<InvitablePlayer[]> => {
       if (!this.user) return Promise.resolve([]);
       return this.requestRows<InvitablePlayer>('matches.invitable', payload, InvitablePlayerSchema);
@@ -1067,6 +1241,106 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
           return parsed.success ? parsed.data : null;
         })
         .catch(() => null);
+    },
+  };
+
+  readonly showcase = {
+    publish: (data: Record<string, unknown>): Promise<ShowcasePublishResult> =>
+      this.request<unknown>('showcase.publish', { data }).then((result) => {
+        const parsed = ShowcasePublishResultSchema.safeParse(result);
+        if (!parsed.success) throw new Error('showcase.publish: malformed result');
+        return parsed.data;
+      }),
+    friends: (options?: { limit?: number }): Promise<Showcase[]> => {
+      if (!this.user) return Promise.resolve([]);
+      const payload = options?.limit !== undefined ? { limit: options.limit } : {};
+      return this.requestRows<Showcase>('showcase.friends', payload, ShowcaseSchema);
+    },
+    get: (userUuid: string): Promise<Showcase | null> => {
+      if (!this.user) return Promise.resolve(null);
+      return this.request<unknown>('showcase.get', { userUuid })
+        .then((result) => {
+          if (result === null || result === undefined) return null;
+          const parsed = ShowcaseSchema.safeParse(result);
+          if (!parsed.success) throw new Error('showcase.get: malformed result');
+          return parsed.data;
+        })
+        .catch((error: unknown) => {
+          if (isUnsupportedError(error)) return null;
+          throw error;
+        });
+    },
+  };
+
+  readonly gifts = {
+    send: (payload: GiftSendPayload): Promise<GiftSendResult> =>
+      this.request<unknown>('gifts.send', {
+        toUserUuid: payload.toUserUuid,
+        kind: payload.kind,
+        ...(payload.message !== undefined ? { message: payload.message } : {}),
+      }).then((result) => {
+        const parsed = GiftSendResultSchema.safeParse(result);
+        if (!parsed.success) throw new Error('gifts.send: malformed result');
+        return parsed.data;
+      }),
+    inbox: (): Promise<Gift[]> => {
+      if (!this.user) return Promise.resolve([]);
+      return this.requestRows<Gift>('gifts.inbox', undefined, GiftSchema);
+    },
+    claim: (giftUuid: string): Promise<GiftClaimResult> =>
+      this.request<unknown>('gifts.claim', { giftUuid }).then((result) => {
+        const parsed = GiftClaimResultSchema.safeParse(result);
+        if (!parsed.success) throw new Error('gifts.claim: malformed result');
+        return parsed.data;
+      }),
+    sentToday: (): Promise<string[]> => {
+      if (!this.user) return Promise.resolve([]);
+      return this.request<unknown>('gifts.sentToday')
+        .then((result) =>
+          Array.isArray(result) ? result.filter((u): u is string => typeof u === 'string') : []
+        )
+        .catch((error: unknown) => {
+          if (isUnsupportedError(error)) return [];
+          throw error;
+        });
+    },
+  };
+
+  readonly visits = {
+    record: (payload: VisitRecordPayload): Promise<VisitRecordResult> =>
+      this.request<unknown>('visits.record', {
+        toUserUuid: payload.toUserUuid,
+        kind: payload.kind,
+      }).then((result) => {
+        const parsed = VisitRecordResultSchema.safeParse(result);
+        if (!parsed.success) throw new Error('visits.record: malformed result');
+        return parsed.data;
+      }),
+    inbox: (): Promise<Visit[]> => {
+      if (!this.user) return Promise.resolve([]);
+      return this.requestRows<Visit>('visits.inbox', undefined, VisitSchema);
+    },
+    seen: (visitUuids: string[]): Promise<VisitSeenResult> => {
+      // Nothing to mark: the host rejects an empty list, so answer here.
+      if (visitUuids.length === 0) {
+        return Promise.resolve({ seen: [], seenAt: new Date().toISOString() });
+      }
+      return this.request<unknown>('visits.seen', { visitUuids }).then((result) => {
+        const parsed = VisitSeenResultSchema.safeParse(result);
+        if (!parsed.success) throw new Error('visits.seen: malformed result');
+        return parsed.data;
+      });
+    },
+    sentToday: (): Promise<string[]> => {
+      if (!this.user) return Promise.resolve([]);
+      return this.request<unknown>('visits.sentToday')
+        .then((result) =>
+          Array.isArray(result) ? result.filter((u): u is string => typeof u === 'string') : []
+        )
+        .catch((error: unknown) => {
+          if (isUnsupportedError(error)) return [];
+          throw error;
+        });
     },
   };
 

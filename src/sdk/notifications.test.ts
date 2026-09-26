@@ -35,7 +35,7 @@ function fakeTransport(answer: (type: string, payload: unknown) => Promise<unkno
     init: (over: Partial<BridgeInit> = {}) =>
       initHandler!({
         type: 'init',
-        user: { uuid: UUID, username: 'me', avatar: null, createdAt: null },
+        user: { uuid: UUID, username: 'me', avatar: null, createdAt: null, supporter: false },
         sessionToken: 'jwt',
         expiresAt: null,
         capabilities: [

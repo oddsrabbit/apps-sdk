@@ -80,7 +80,18 @@ export const MATCH_ERROR_CODES = {
   full: 'match/full',
   /** An invitee is not connected to the creator on the follow graph. */
   notConnected: 'match/not-connected',
+  /**
+   * `matches.nudge` or `matches.claim` came before it is allowed: the turn is
+   * too young, or this player already nudged in the last day. `message` says
+   * when, in words a player can read ("You can nudge again in 5 hours.").
+   */
+  tooSoon: 'match/too-soon',
 } as const;
+
+/** How long the seat on turn must have been idle before `matches.nudge`, and the gap between one sender's nudges. */
+export const MATCH_NUDGE_AFTER_SECONDS = 24 * 3600;
+/** How long the seat on turn must have been idle before `matches.claim`. */
+export const MATCH_CLAIM_AFTER_SECONDS = 14 * 24 * 3600;
 
 const MatchUuid = z.string().uuid();
 /** Six characters from an unambiguous alphabet (no 0/O/1/I). */
@@ -125,6 +136,67 @@ export const NOTIFICATION_ERROR_CODES = {
 } as const;
 
 const NotificationKey = z.string().regex(NOTIFICATION_KEY_PATTERN);
+
+/** Largest serialised `showcase.publish` snapshot, in bytes of JSON. */
+export const SHOWCASE_MAX_BYTES = 8192;
+export const SHOWCASE_FRIENDS_MAX = 100;
+/** A gift's `kind`: the game's own word for it, e.g. `clover`. */
+export const GIFT_KIND_PATTERN = /^[a-z0-9-]{1,32}$/;
+export const GIFT_MESSAGE_MAX = 80;
+
+/**
+ * Per-call outcomes of `showcase.*`. Like the notification codes these describe
+ * one request, never the host, so the SDK does not treat them as "unsupported".
+ */
+export const SOCIAL_ERROR_CODES = {
+  /** `data` was not an object, or a uuid was malformed. */
+  invalid: 'social/invalid',
+  /** The snapshot is over `SHOWCASE_MAX_BYTES` once serialised. */
+  tooLarge: 'social/too-large',
+  /** Too many publishes in the last minute. */
+  rateLimited: 'social/rate-limited',
+  /** `showcase.get` for someone the viewer doesn't follow and isn't followed by. */
+  notConnected: 'social/not-connected',
+  /** The app's manifest does not declare `bridge:social`. */
+  forbidden: 'social/forbidden',
+} as const;
+
+/** Per-call outcomes of `gifts.*`. None of them retire the verb. */
+export const GIFT_ERROR_CODES = {
+  /** A bad kind or message, or a gift to yourself. */
+  invalid: 'gifts/invalid',
+  /** The recipient isn't connected to the sender on the follow graph. */
+  notConnected: 'gifts/not-connected',
+  /** The sender already gave this recipient a gift today (UTC). */
+  alreadySentToday: 'gifts/already-sent-today',
+  /** The sender has used today's gifts for this app (10, UTC day). */
+  tooMany: 'gifts/too-many',
+  /** No such gift for this viewer (someone else's, or older than 7 days). */
+  notFound: 'gifts/not-found',
+  /** The gift was already claimed. */
+  claimed: 'gifts/claimed',
+  /** Too many sends or claims in the last minute. */
+  rateLimited: 'gifts/rate-limited',
+} as const;
+
+/** Most uuids one `visits.seen` call may name. */
+export const VISITS_SEEN_MAX = 50;
+
+/** Per-call outcomes of `visits.*`. None of them retire the verb. */
+export const VISIT_ERROR_CODES = {
+  /** A bad kind, a visit to yourself, or a malformed `visits.seen` list. */
+  invalid: 'visits/invalid',
+  /** The friend isn't connected to the visitor on the follow graph. */
+  notConnected: 'visits/not-connected',
+  /** The visitor already visited this friend today (UTC). */
+  alreadyVisitedToday: 'visits/already-visited-today',
+  /** The visitor has used today's visits for this app (10, UTC day). */
+  tooMany: 'visits/too-many',
+  /** Too many records or seen calls in the last minute. */
+  rateLimited: 'visits/rate-limited',
+} as const;
+
+const Uuid = z.string().uuid();
 
 export const BridgeRequestSchema = z.discriminatedUnion('type', [
   z.object({
@@ -330,6 +402,24 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
     correlationId: CorrelationId,
     payload: z.object({ matchUuid: MatchUuid }),
   }),
+  // Remind the seat on turn that it is their move (a push). Only from a
+  // waiting player, once the turn is a day old, and at most once a day per
+  // sender; otherwise `match/too-soon`. Changes nothing about the match.
+  z.object({
+    type: z.literal('matches.nudge'),
+    correlationId: CorrelationId,
+    payload: z.object({ matchUuid: MatchUuid }),
+  }),
+  // End a stalled turn: once the seat on turn has been idle for 14 days, a
+  // waiting player may claim it. With two players left the match finishes
+  // scored as it stands (higher score wins, a tie is a draw, nobody forfeits);
+  // with three or four the idle seat is forfeited and the rest play on.
+  // Before 14 days, `match/too-soon`.
+  z.object({
+    type: z.literal('matches.claim'),
+    correlationId: CorrelationId,
+    payload: z.object({ matchUuid: MatchUuid }),
+  }),
   // People the viewer may invite: connected on the follow graph in either
   // direction. Scoped to matches rather than a general social read, so it
   // exposes exactly the set `matches.create` will accept and nothing more.
@@ -361,7 +451,7 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
   }),
   // ---- Scheduled notifications. All authenticated, and always the signed-in
   // user's own reminders for this app: there is no way to name another user.
-  // The SERVER enforces the limits (quiet hours, the user's opt-in, 5
+  // The SERVER enforces the limits (the user's opt-in, 5
   // pending; daily caps exist but are off for first-party games), so these
   // payloads say what the game would like, not what will happen. The limits
   // live in AppNotificationPolicy on the server.
@@ -370,13 +460,13 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
     correlationId: CorrelationId,
     payload: z.object({
       key: NotificationKey,
-      // When the game would like it delivered. The server may move it out of
-      // the user's quiet hours; the result says when it will really go out.
+      // When the game would like it delivered. It goes out then; there are no
+      // quiet hours.
       fireAt: z.string().datetime({ offset: true }),
       title: z.string().min(1).max(NOTIFICATION_TITLE_MAX),
       body: z.string().min(1).max(NOTIFICATION_BODY_MAX),
-      // IANA zone from the device, filled in by the SDK. Only used for quiet
-      // hours and the per-day cap, so a wrong one costs nothing but timing.
+      // IANA zone from the device, filled in by the SDK. Only used to pick the
+      // local day the per-day cap counts against, so a wrong one costs little.
       tz: z.string().min(1).max(64).optional(),
     }),
   }),
@@ -395,6 +485,74 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
   // never arrive. The bell entry is written either way.
   z.object({
     type: z.literal('notifications.status'),
+    correlationId: CorrelationId,
+  }),
+  // ---- Friends: showcases and gifts (`bridge:social`). All authenticated.
+  // "Friends" is the follow graph, either direction, with no block between
+  // them. The server enforces the size cap, rate limits and gift limits.
+  z.object({
+    type: z.literal('showcase.publish'),
+    correlationId: CorrelationId,
+    // The game's snapshot of itself for friends to look at. The platform
+    // stores it as-is; at most SHOWCASE_MAX_BYTES of JSON.
+    payload: z.object({ data: z.record(z.unknown()) }),
+  }),
+  z.object({
+    type: z.literal('showcase.friends'),
+    correlationId: CorrelationId,
+    payload: z
+      .object({ limit: z.number().int().min(1).max(SHOWCASE_FRIENDS_MAX).optional() })
+      .optional(),
+  }),
+  z.object({
+    type: z.literal('showcase.get'),
+    correlationId: CorrelationId,
+    payload: z.object({ userUuid: Uuid }),
+  }),
+  z.object({
+    type: z.literal('gifts.send'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      toUserUuid: Uuid,
+      kind: z.string().regex(GIFT_KIND_PATTERN),
+      message: z.string().max(GIFT_MESSAGE_MAX).optional(),
+    }),
+  }),
+  z.object({
+    type: z.literal('gifts.inbox'),
+    correlationId: CorrelationId,
+  }),
+  z.object({
+    type: z.literal('gifts.claim'),
+    correlationId: CorrelationId,
+    payload: z.object({ giftUuid: Uuid }),
+  }),
+  z.object({
+    type: z.literal('gifts.sentToday'),
+    correlationId: CorrelationId,
+  }),
+  // Visits: a sibling of gifts with its own one-per-friend-per-day slot. The
+  // push line comes from the app manifest's `social.visitLines`, never from
+  // the game at runtime.
+  z.object({
+    type: z.literal('visits.record'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      toUserUuid: Uuid,
+      kind: z.string().regex(GIFT_KIND_PATTERN),
+    }),
+  }),
+  z.object({
+    type: z.literal('visits.inbox'),
+    correlationId: CorrelationId,
+  }),
+  z.object({
+    type: z.literal('visits.seen'),
+    correlationId: CorrelationId,
+    payload: z.object({ visitUuids: z.array(Uuid).min(1).max(VISITS_SEEN_MAX) }),
+  }),
+  z.object({
+    type: z.literal('visits.sentToday'),
     correlationId: CorrelationId,
   }),
   z.object({
@@ -494,6 +652,13 @@ export const BridgeUserSchema = z.object({
   // as `avatar`: nullable so an outer host can explicitly disclaim the value,
   // default-null so older outer hosts that don't populate it still parse.
   createdAt: z.string().datetime().nullable().default(null),
+  // Whether the user holds the platform Supporter tier. `.default(false)` so
+  // older outer hosts that predate the field still parse (and read as "not a
+  // supporter", which is the safe side for anything that thanks them).
+  // Display-only: it reaches the mini-app through the user's device and can
+  // be edited there. A backend granting anything must read the `supporter`
+  // claim from the verified session token instead.
+  supporter: z.boolean().default(false),
 });
 
 export type BridgeUser = z.infer<typeof BridgeUserSchema>;
@@ -735,6 +900,11 @@ export const MatchSummarySchema = z.object({
   turnSeat: MatchSeat.nullable().default(null),
   // ISO datetime after which the seat on turn is skipped or forfeited.
   turnDeadline: z.string().nullable().default(null),
+  // ISO datetime the current turn began; null unless `active`. What a client
+  // measures `matches.nudge` (1 day) and `matches.claim` (14 days) against,
+  // so it can offer those only when the server would accept them. Defaulted
+  // so a view from a host that predates the field still parses.
+  turnStartedAt: z.string().nullable().default(null),
   // Set when `finished`. Null with `finished` means a draw.
   winnerSeat: MatchSeat.nullable().default(null),
   mySeat: MatchSeat,
@@ -768,6 +938,14 @@ export const MatchViewSchema = MatchSummarySchema.extend({
 
 export type MatchView = z.infer<typeof MatchViewSchema>;
 
+// Result of `matches.nudge`: when the reminder went out. The sender's next
+// nudge for this match is accepted a day after it.
+export const MatchNudgeResultSchema = z.object({
+  nudgedAt: z.string().datetime(),
+});
+
+export type MatchNudgeResult = z.infer<typeof MatchNudgeResultSchema>;
+
 // Result of `time.now`. The SDK turns it into an offset against Date.now().
 export const ServerTimeSchema = z.object({
   serverTime: z.string().datetime(),
@@ -775,8 +953,8 @@ export const ServerTimeSchema = z.object({
 
 export type ServerTime = z.infer<typeof ServerTimeSchema>;
 
-// One pending reminder. `fireAt` is what the game asked for, `deliverAt` when
-// it will actually go out after quiet hours.
+// One pending reminder. `fireAt` is what the game asked for; `deliverAt` is
+// kept for compatibility and equals it (there are no quiet hours).
 export const ScheduledNotificationSchema = z.object({
   key: z.string().regex(NOTIFICATION_KEY_PATTERN),
   fireAt: z.string().datetime(),
@@ -812,6 +990,100 @@ export const NotificationListSchema = z.object({
   pending: z.array(z.unknown()),
   serverTime: z.string().datetime(),
 });
+
+// One friend's snapshot (`showcase.friends`, `showcase.get`). The identity
+// triple matches every other row; `data` is whatever the game published.
+export const ShowcaseSchema = z.object({
+  uuid: z.string().uuid(),
+  username: z.string().min(1).max(64),
+  avatar: z.string().url().nullable().default(null),
+  data: z.record(z.unknown()),
+  updatedAt: z.string().datetime(),
+});
+
+export type Showcase = z.infer<typeof ShowcaseSchema>;
+
+// Result of `showcase.publish`.
+export const ShowcasePublishResultSchema = z.object({
+  updatedAt: z.string().datetime(),
+});
+
+export type ShowcasePublishResult = z.infer<typeof ShowcasePublishResultSchema>;
+
+// Result of `gifts.send`.
+export const GiftSendResultSchema = z.object({
+  giftUuid: z.string().uuid(),
+  sentAt: z.string().datetime(),
+});
+
+export type GiftSendResult = z.infer<typeof GiftSendResultSchema>;
+
+// One unclaimed gift in the viewer's inbox (`gifts.inbox`), newest first.
+export const GiftSchema = z.object({
+  giftUuid: z.string().uuid(),
+  from: z.object({
+    uuid: z.string().uuid(),
+    username: z.string().min(1).max(64),
+    avatar: z.string().url().nullable().default(null),
+  }),
+  kind: z.string().regex(GIFT_KIND_PATTERN),
+  message: z.string().max(GIFT_MESSAGE_MAX).nullable().default(null),
+  sentAt: z.string().datetime(),
+  // Whether the sender's email is verified: the server's say on whether this
+  // gift may earn the recipient anything. The game decides what to do with
+  // it. `.default(true)` so rows from hosts that predate the field still count.
+  counts: z.boolean().default(true),
+});
+
+export type Gift = z.infer<typeof GiftSchema>;
+
+// Result of `gifts.claim`. The game pays out `kind` on its own.
+export const GiftClaimResultSchema = z.object({
+  giftUuid: z.string().uuid(),
+  kind: z.string().regex(GIFT_KIND_PATTERN),
+  claimedAt: z.string().datetime(),
+});
+
+export type GiftClaimResult = z.infer<typeof GiftClaimResultSchema>;
+
+// Result of `visits.record`.
+export const VisitRecordResultSchema = z.object({
+  visitUuid: z.string().uuid(),
+  visitedAt: z.string().datetime(),
+});
+
+export type VisitRecordResult = z.infer<typeof VisitRecordResultSchema>;
+
+// One visit to the viewer (`visits.inbox`): last 7 days, newest first, seen
+// and unseen. `showcase` is the visitor's snapshot for this app as it is NOW
+// (null if they never published), so the game can draw the guest without a
+// second call; validate it like any `showcase.get` data.
+export const VisitSchema = z.object({
+  visitUuid: z.string().uuid(),
+  kind: z.string().regex(GIFT_KIND_PATTERN),
+  visitedAt: z.string().datetime(),
+  seenAt: z.string().datetime().nullable().default(null),
+  from: z.object({
+    uuid: z.string().uuid(),
+    username: z.string().min(1).max(64),
+    avatar: z.string().url().nullable().default(null),
+  }),
+  showcase: z.record(z.unknown()).nullable().default(null),
+  // Whether the visitor's email is verified; same meaning as on `Gift`.
+  counts: z.boolean().default(true),
+});
+
+export type Visit = z.infer<typeof VisitSchema>;
+
+// Result of `visits.seen`. `seen` lists only the uuids THIS call moved from
+// unseen to seen, so a game that pays out for exactly those pays once even
+// when two devices open at the same time.
+export const VisitSeenResultSchema = z.object({
+  seen: z.array(z.string().uuid()),
+  seenAt: z.string().datetime(),
+});
+
+export type VisitSeenResult = z.infer<typeof VisitSeenResultSchema>;
 
 export const BridgeInitSchema = z.object({
   type: z.literal('init'),

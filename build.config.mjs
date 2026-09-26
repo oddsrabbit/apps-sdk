@@ -134,11 +134,6 @@ const GAME_SOLITAIRE_JS = [
   'application.js',
 ];
 
-// Rabbit Word Battle. Async multiplayer word game on the matches surface
-// (docs/proposals/multiplayer-matches.md). Same vanilla drop-in pattern; no
-// assets, the board is canvas geometry and the rack is DOM.
-const GAME_WORD_BATTLE_JS = ['rules.js', 'board.js', 'application.js'];
-
 await rm('dist', { recursive: true, force: true });
 await mkdir('dist/host', { recursive: true });
 await mkdir('dist/rabbit-words', { recursive: true });
@@ -154,7 +149,6 @@ await mkdir('dist/solitaire/images', { recursive: true });
 await mkdir('dist/liquid/js', { recursive: true });
 await mkdir('dist/flappy-rabbits/js', { recursive: true });
 await mkdir('dist/flappy-rabbits/fonts', { recursive: true });
-await mkdir('dist/rabbit-word-battle/js', { recursive: true });
 
 const baseOpts = {
   bundle: true,
@@ -329,12 +323,6 @@ async function copyHostAssets() {
     ),
     copyFile('snake/fonts/press-start-2p-latin.woff2', 'dist/flappy-rabbits/fonts/press-start-2p-latin.woff2'),
     copyFile('snake/fonts/OFL.txt', 'dist/flappy-rabbits/fonts/OFL.txt'),
-    // Rabbit Word Battle — async multiplayer word game. System font, no assets.
-    copyHtmlWithBuildId('rabbit-word-battle/index.html', 'dist/rabbit-word-battle/index.html'),
-    copyFile('rabbit-word-battle/styles.css', 'dist/rabbit-word-battle/styles.css'),
-    ...GAME_WORD_BATTLE_JS.map((name) =>
-      copyFile(`rabbit-word-battle/js/${name}`, `dist/rabbit-word-battle/js/${name}`)
-    ),
     // Liquid — WebGL fluid simulation. Vendored vanilla JS, no bundling needed.
     copyHtmlWithBuildId('liquid/index.html', 'dist/liquid/index.html'),
     copyFile('liquid/js/script.js', 'dist/liquid/js/script.js'),

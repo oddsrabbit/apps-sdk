@@ -13,7 +13,7 @@ host, games), `oddsrabbit-app` (RN host), and the OddsRabbit WordPress backend
   way to list who it may invite), `OR.matches.{create,join,list,get,move,
   resign,invitable,watch}` in `src/sdk/sdk.ts` with tests in
   `src/sdk/matches.test.ts` and `src/schemas/matches.test.ts`; README; the
-  `rabbit-word-battle/` client (rules mirror, canvas board with pan/pinch,
+  `word-battle/` client (rules mirror, canvas board with pan/pinch,
   list/new/match
   screens) registered in `build.config.mjs`.
 - WordPress: `migrations/20260906_001_create_app_matches.sql` and
@@ -52,9 +52,26 @@ host, games), `oddsrabbit-app` (RN host), and the OddsRabbit WordPress backend
   exactly as on web instead of collapsing to `bridge/error`. Ships with the
   next App Store release; until then the game hides itself on mobile via the
   capability gate.
-- **Not done:** the forfeit-warning push, rate limits on the routes,
-  registering `rabbit-word-battle` as an app in the registry, and a real-device pass of
+- **Not done:** the forfeit-warning push (not needed while Word Battle, the
+  only shipped game, has no turn deadline), rate limits on the routes,
+  registering `word-battle` as an app in the registry, and a real-device pass of
   the client.
+
+**Nudge and claim added 2026‑09‑26** (not yet deployed): two new verbs,
+`matches.nudge` and `matches.claim`, capability-gated, plus a nullable
+`turnStartedAt` on every summary and the `match/too-soon` code. They exist
+because Word Battle has no turn clock, so a game whose opponent stops playing
+otherwise sits open forever. Rules in §2.5, the push in §4. Server side:
+`MatchService::nudge()/claim()`, the pure timing and scoring rules in
+`MatchStallPolicy.php` (asserted in `tools/test-match-rules.php`), two routes,
+and `migrations/20260926_001_add_match_turn_started_and_nudges.sql`
+(`app_matches.turn_started_at`, `app_match_players.last_nudged_at`, backfill).
+Both hosts gained the two cases and capabilities.
+
+**Word Battle moved to its own private repo on 2026‑09‑26** (`word-battle`, a
+sibling checkout like `rabbit-pets`), since it is the product and not a sample.
+Paths below such as `word-battle/js/rules.js` are now in that repo; this
+document stays here because it designs the SDK's matches surface.
 
 Companion to [`unified-leaderboard.md`](./unified-leaderboard.md), which this
 document assumes: capability handshake (§3.1 there), the three "unsupported"
@@ -71,7 +88,7 @@ Two games target the surface:
 | Game | Players | Hidden information | Rules engine | Purpose |
 | --- | --- | --- | --- | --- |
 | **Connect Four** | 2 | none | ~30 lines | week-one proof of the whole pipeline |
-| **Rabbit Word Battle** (Scrabble-like) | 2–4 | racks + bag | ~400 lines + dictionary | the actual product |
+| **Word Battle** (Scrabble-like) | 2–4 | racks + bag | ~400 lines + dictionary | the actual product |
 
 The surface is designed for the word game and Connect Four merely runs on it.
 The one decision that cannot be retrofitted is **per-viewer state** (§2.1): a
@@ -232,6 +249,10 @@ matches.move     { matchUuid, version, move }       → MatchView
                                                      422 `match/illegal-move`
                                                      with a `reason` string)
 matches.resign   { matchUuid }                      → MatchView
+matches.nudge    { matchUuid }                      → { nudgedAt: string }   (ISO; §2.5)
+matches.claim    { matchUuid }                      → MatchView              (§2.5)
+                                                    (both: 429 `match/too-soon`
+                                                     with a plain-words `message`)
 ```
 
 `MatchView`:
@@ -251,6 +272,9 @@ matches.resign   { matchUuid }                      → MatchView
   }>,
   turnSeat: number | null,
   turnDeadline: string | null,      // ISO
+  turnStartedAt: string | null,     // ISO, when the current turn began; null unless
+                                    // 'active'. Added with nudge/claim; defaults to
+                                    // null so views from older hosts still parse.
   winnerSeat: number | null,
   mySeat: number,
   view: Record<string, unknown>,    // game-specific, ALREADY filtered for this viewer
@@ -316,7 +340,12 @@ table alive without anybody having to be the bad guy.
 
 - **Lobby expiry.** A `lobby` match with unfilled seats is `abandoned` after
   **48 h**. Invited players who never joined are simply not in it.
-- **Turn deadline: 72 h**, stamped on every turn advance. On expiry, the
+- **Turn deadline: per game**, from the rules class's
+  `turnDeadlineSeconds()`, where 0 means none. **Word Battle has none**
+  (decided 2026‑09‑26): nobody is timed out, and a stalled game ends by
+  resigning, by scoreless turns (§3.3), or by a waiting player's claim after
+  14 idle days (below). For a game that sets one, it is
+  stamped on every turn advance. On expiry, the
   next `matches.get`/`matches.list` from *any* participant (or the hourly
   cron below) applies the rule: in a **2-player** game the absent player
   **forfeits** and the other wins; in a **3–4 player** game the absent player
@@ -325,6 +354,41 @@ table alive without anybody having to be the bad guy.
   return to the bag in the word game.
 - **Resign** is explicit and immediate. In a 2-player game it ends the match;
   otherwise the game continues without them.
+- **Nudge** (`matches.nudge`, added 2026‑09‑26). A waiting player — a
+  `joined` seat of an `active` match that is not the seat on turn — can push
+  the seat on turn a reminder once the turn is **24 h** old, and at most
+  **once per 24 h** per sender per match. Otherwise `match/too-soon`, whose
+  message says when in words ("You can nudge again in 5 hours."; waits are
+  rounded up, so the promise is never early). The nudge changes nothing about
+  the match and does not bump `version`. The per-sender stamp is
+  `app_match_players.last_nudged_at` on the sender's own seat row, written
+  under the match row lock.
+- **Claim** (`matches.claim`, added 2026‑09‑26). The same waiting player can
+  end a turn nobody has taken for **14 days**; earlier is `match/too-soon`
+  ("You can end this game in 3 days."). Nobody loses automatically:
+  - **2 seats still playing:** the match finishes **scored as it stands** —
+    the higher score in the players table wins, equal scores draw
+    (`winnerSeat` null). No end-of-game rack adjustment, and both seats stay
+    `joined`: the idle player did not lose on time, the game just stopped.
+  - **3–4 seats:** the idle seat is `forfeited` exactly as a deadline forfeit
+    does it (`setPlayerStatus` + `leaveRotation`, skip counter dropped), and
+    the turn passes. The forfeited seat's rack is left in `state`, out of play
+    — which is also what a deadline forfeit does today; the "tiles return to
+    the bag" line above is not implemented. If only one seat were left the
+    existing rule would finish the match for them.
+
+  Rules-agnostic, in `MatchService`: same row lock, `version` bump, deadline
+  settled first. Logged in the move log under the idle seat as
+  `{ type: 'claim', claimedBy }`, the way a deadline skip is logged as the
+  rules class's forced pass. Followed by the usual "finished" or "your turn"
+  push for the resulting state.
+- **`turnStartedAt`** is `app_matches.turn_started_at`, which
+  `MatchService::updateMatch()` restamps on every write of a non-null
+  `turn_seat` (activation, advance, forced skip, a resign or forfeit that
+  passes the turn, claim) and clears with it. The migration backfills active
+  matches from the last move's `created_at`, else `updated_at`. Clients should
+  show Nudge / End game only when `turnStartedAt` says the server will accept
+  them, and gate each on `capabilities.has('matches.nudge' | 'matches.claim')`.
 - **Finished matches are kept**, and `matches.list` shows them for 30 days.
   Nothing is deleted while a participant can still open it.
 - **Cron**: `cron/process-match-deadlines.php`, hourly, applies expired
@@ -350,7 +414,7 @@ case instant, the cron makes the abandoned case eventually correct.
   `actions.share` puts in the share text. Codes are single-app
   (`uq_join_code` is per `app_uuid`) and are cleared when the match starts.
 - **Share → open** needs one small host change: `games.js` accepts
-  `?target=match&match=<uuid>` (and `?join=<code>`) and forwards
+  `?target=match&match=<uuid>` (and `?target=join&code=<code>`) and forwards
   `{ target: 'match', matchUuid }` / `{ target: 'join', joinCode }` as
   `initialState`. The mobile `AppHost.tsx` needs the same two shapes. Until
   that lands, codes are typed by hand, which works everywhere today.
@@ -374,7 +438,7 @@ Do not ship under **Words With Friends** or **Scrabble**; both are trademarks.
 Mechanics (tile bag, racks, crosswords, premium squares) are not protectable
 and every clone uses them. The **exact premium-square layout** of either game
 is best avoided: generate our own symmetric layout and keep it in
-`TilesRules.php` as data. Named **Rabbit Word Battle**; the rules class and the
+`TilesRules.php` as data. Named **Word Battle**; the rules class and the
 wire id keep the `tiles` name, which is what `game` holds on every match row.
 
 ### 3.2 Dictionary
@@ -388,19 +452,28 @@ wire id keep the `tiles` name, which is what `game` holds on every match row.
   placement formed; compare the count.
 - Client: the rabbit-words list (`rabbit-words/src/words.ts`) is 5-letter only
   and useless here. Ship **no** dictionary in the client for the first cut; an
-  invalid word is rejected by the server with `reason: 'not-a-word: QZX'` and
+  invalid word is rejected by the server with `match/illegal-move` and the message `Not a word: QZX.`, and
   the tiles bounce back. A client-side check for instant red-underlining can
   come later as a Bloom filter (~200 KB) if the round trip feels slow. It is a
   polish item, not a correctness one.
 
-### 3.3 Rules (`TilesRules.php`, mirrored in `rabbit-word-battle/js/rules.js`)
+### 3.3 Rules (`TilesRules.php`, mirrored in `word-battle/js/rules.js`)
 
 - 15×15 board; 100 tiles with standard English letter distribution and values
   (public domain facts); 7-tile racks; 2 blanks.
+- **Two boards (2026‑09‑26).** `tiles` is Standard: one fixed layout of our
+  own (revised the same day so no two premium squares touch and no line
+  carries more than five). `tiles-wild` is Wild: the server rolls a random
+  layout when the match starts (each premium type from about half to double
+  the Standard count, no symmetry, clumps allowed) and keeps it in the
+  match state, so `viewFor` sends that match's layout. Two guards only, both
+  about the opening move: the ring around the centre stays plain, and the
+  middle row and column carry no word multipliers. Separate game ids rather
+  than a create option, so no SDK change was needed.
 - `initialState(seats)`: shuffle bag with a server-side CSPRNG (not a
   reproducible seed — there is nothing to reproduce and a predictable bag is
   an exploit), deal 7 to each seat, empty board, `turnSeat` = random.
-- Move types: `{ type: 'place', tiles: [{ row, col, letter, blankAs? }] }`,
+- Move types: `{ type: 'place', tiles: [{ row, col, letter, blank? }] }` (a blank sends the letter it stands for plus `blank: true`),
   `{ type: 'exchange', letters }`, `{ type: 'pass' }`.
 - Placement validity: all tiles in one row or column, contiguous once existing
   tiles are counted, at least one tile adjacent to an existing tile (or covers
@@ -411,14 +484,18 @@ wire id keep the `tiles` name, which is what `game` holds on every match row.
   for using all 7 tiles.
 - Endgame: bag empty **and** a player empties their rack → finished; each other
   player's remaining tile values are subtracted from them and added to the
-  finisher. Or **two full rounds of passes** → finished (prevents stalling);
-  or everyone but one has resigned/forfeited.
+  finisher. Or **two scoreless turns in a row from every active player** →
+  finished, and each player loses the value of their own rack. Swaps count
+  as scoreless turns as well as passes (decided 2026‑09‑26), so swapping
+  can't stall a game forever; the client warns before the turn that would end
+  it. Or everyone but one has resigned/forfeited.
 - `viewFor(state, seat)`: `board`, `scores`, `bagCount`, `myRack`,
   `rackCounts[]` (how many tiles each opponent holds — public in the physical
-  game), `lastMove` with the words formed and their scores. Never other racks,
+  game), `passes` (the scoreless run so far), `lastWords` (the words the last
+  placement formed and their scores). Never other racks,
   never the bag.
 
-### 3.4 Client (`rabbit-word-battle/`)
+### 3.4 Client (`word-battle/`)
 
 Same vanilla drop-in pattern as `flappy-rabbits/` (files copied by
 `build.config.mjs`; `index.html` carries `__BUILD_ID__`). The board is a
@@ -436,12 +513,16 @@ reusing its payload conventions and `bulkInsertInAppNotifications`:
 
 | Event | Recipient | `target` | Body |
 | --- | --- | --- | --- |
-| Invited to a match | each invitee | `match` | "{creator} challenged you to Rabbit Word Battle" |
+| Invited to a match | each invitee | `match` | "{creator} challenged you to Word Battle" |
 | Your turn | next seat, after commit | `match` | "Your move against {opponents}" |
+| Nudge (`matches.nudge`) | seat on turn | `match` | "{sender} nudged you: it's your move in {game}" |
 | Match finished | every participant except the mover | `match` | "You won 312–288" / "{winner} won" |
-| Forfeit warning | seat on turn, 12 h before deadline | `match` | "Move in Rabbit Word Battle or forfeit in 12h" |
+| Forfeit warning | seat on turn, 12 h before deadline | `match` | "Move in {game} or forfeit in 12h" (only for games with a deadline; Word Battle has none) |
 
 Payload adds `data.matchUuid`; web `link` is `/games/{slug}/?target=match&match=<uuid>`.
+The nudge uses the same payload, `collapse_id` and `games_notifications_push`
+opt-out as "Your turn", so it replaces an unread turn push rather than
+stacking on it. Sender names are plain (no `@`), like every match push.
 `collapse_id` is `match:{matchUuid}` so a rapid four-player round replaces
 rather than stacks. The forfeit warning is sent by the hourly cron (§2.5), the
 rest by `MatchService` after commit.
@@ -480,6 +561,8 @@ GET    /apps/{slug}/matches?status=&limit=          list (viewer's)
 GET    /apps/{slug}/matches/{matchUuid}             get (per-viewer)
 POST   /apps/{slug}/matches/{matchUuid}/moves       { version, move }
 POST   /apps/{slug}/matches/{matchUuid}/resign
+POST   /apps/{slug}/matches/{matchUuid}/nudge       → { nudgedAt }
+POST   /apps/{slug}/matches/{matchUuid}/claim       → { match }
 ```
 
 Rate limits: `moves` at 60/min/user (a move is a human action; anything faster
@@ -509,7 +592,7 @@ turns, both receive the pushes, and a stale `version` is rejected.
 2. `TilesRules.php` with a unit test per rule (placement, scoring, endgame,
    blank handling). This is the one component where tests pay for themselves
    immediately: scoring bugs are invisible in play and permanent in the log.
-3. `rabbit-word-battle/` client: rules mirror, board canvas with pan/pinch, DOM rack with
+3. `word-battle/` client: rules mirror, board canvas with pan/pinch, DOM rack with
    drag, exchange/pass UI, per-viewer state handling.
 4. 3–4 player lobby, skip/forfeit rules, forfeit-warning cron, "finished"
    notification.
@@ -540,10 +623,8 @@ turns, both receive the pushes, and a stale `version` is rejected.
 
 ## 8. Open questions
 
-1. **Turn deadline: 72 h or 48 h?** 72 h is forgiving for a four-player table
-   across time zones; 48 h keeps two-player games brisk. Could be per game
-   (Connect Four 24 h, Rabbit Word Battle 72 h) — the column supports it, the rules class
-   would set it.
+1. ~~**Turn deadline: 72 h or 48 h?**~~ Resolved 2026‑09‑26: per game, and
+   Word Battle has none. Scoreless turns (swaps included) end a stalled game.
 2. **Does a declined/ignored invite count against the inviter?** Today: no,
    the lobby just expires. If lobby spam appears, revisit.
 3. **Blank tile designation.** Once placed as a letter the blank is fixed for

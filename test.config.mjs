@@ -43,7 +43,7 @@ await rm(OUT_DIR, { recursive: true, force: true });
 await esbuild.build({
   entryPoints,
   outdir: OUT_DIR,
-  outbase: 'src',
+  outbase: '.',
   bundle: true,
   format: 'esm',
   platform: 'node',
@@ -64,9 +64,9 @@ await esbuild.build({
 // assertion has run. Listing the files works on both, and needs no glob support.
 //
 // esbuild mirrors `outbase` into `outdir`, so `src/ui/season.test.ts` lands at
-// `.test-build/ui/season.test.js`.
+// `.test-build/src/ui/season.test.js`.
 const testFiles = entryPoints.map((entry) =>
-  join(OUT_DIR, relative('src', entry).replace(/\.ts$/, '.js'))
+  join(OUT_DIR, relative('.', entry).replace(/\.ts$/, '.js'))
 );
 
 const child = spawn(process.execPath, ['--enable-source-maps', '--test', ...testFiles], {
