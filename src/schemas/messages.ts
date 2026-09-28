@@ -86,6 +86,11 @@ export const MATCH_ERROR_CODES = {
    * when, in words a player can read ("You can nudge again in 5 hours.").
    */
   tooSoon: 'match/too-soon',
+  /**
+   * The match's game has no such feature: `matches.check` on a game without a
+   * dictionary. About the game, not the host — the verb itself is supported.
+   */
+  unsupported: 'match/unsupported',
 } as const;
 
 /** How long the seat on turn must have been idle before `matches.nudge`, and the gap between one sender's nudges. */
@@ -100,6 +105,11 @@ const JoinCode = z.string().regex(JOIN_CODE_PATTERN);
 /** Rules-class id, e.g. `connect4`. */
 const MatchGame = z.string().min(1).max(32);
 const MatchSeat = z.number().int().min(0).max(MATCH_MAX_PLAYERS - 1);
+
+/** At most this many words in one `matches.check`. */
+export const MATCH_CHECK_MAX_WORDS = 16;
+/** A word `matches.check` will look up: 2 to 15 letters (the board is 15 wide). */
+export const MATCH_CHECK_WORD_PATTERN = /^[A-Za-z]{2,15}$/;
 
 const MatchMove = z
   .record(z.unknown())
@@ -419,6 +429,28 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
     type: z.literal('matches.claim'),
     correlationId: CorrelationId,
     payload: z.object({ matchUuid: MatchUuid }),
+  }),
+  // Look words up in the match's dictionary without playing them, so a game
+  // can say "QZX isn't a word" before the player commits a move. Read-only:
+  // nothing is recorded and `version` does not move. Participants only
+  // (`match/not-found` otherwise); `match/unsupported` for a game with no
+  // dictionary.
+  z.object({
+    type: z.literal('matches.check'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      matchUuid: MatchUuid,
+      words: z.array(z.string().regex(MATCH_CHECK_WORD_PATTERN)).min(1).max(MATCH_CHECK_MAX_WORDS),
+    }),
+  }),
+  // Play someone new: take the open seat at the oldest public two-player
+  // table for this game, or — with none waiting — open one (or hand back the
+  // one this player already has open) for the next person to take. A public
+  // table is a lobby with `matchmaking: true` and no join code.
+  z.object({
+    type: z.literal('matches.quick'),
+    correlationId: CorrelationId,
+    payload: z.object({ game: MatchGame }),
   }),
   // People the viewer may invite: connected on the follow graph in either
   // direction. Scoped to matches rather than a general social read, so it
@@ -877,6 +909,17 @@ export const InvitablePlayerSchema = z.object({
 
 export type InvitablePlayer = z.infer<typeof InvitablePlayerSchema>;
 
+// One move as recorded in the match log, echoed on a view (and a list row) so
+// the client can say and animate what just happened without diffing two boards.
+export const MatchLastMoveSchema = z.object({
+  ply: z.number().int().nonnegative(),
+  seat: MatchSeat,
+  move: z.record(z.unknown()),
+  scoreDelta: z.number().int().default(0),
+});
+
+export type MatchLastMove = z.infer<typeof MatchLastMoveSchema>;
+
 // The list-screen shape: everything a row needs to show whose turn it is and
 // who is playing, and nothing that costs a per-viewer filter (`view`) or is
 // private to the lobby (`joinCode`).
@@ -910,20 +953,21 @@ export const MatchSummarySchema = z.object({
   mySeat: MatchSeat,
   isMyTurn: z.boolean().default(false),
   updatedAt: z.string(),
+  // The last move, filtered for this viewer exactly as on a view, so a list
+  // row can say what just happened without a `matches.get` per row.
+  // Defaulted: a host that predates it sends none.
+  lastMove: MatchLastMoveSchema.nullable().default(null),
+  // A few game-specific words on that move, which the move itself cannot
+  // carry (a word game's move is squares, not the words they made). Opaque
+  // to the bridge like `view`; tiles sends `{ lastWords: [{ word, score }] }`.
+  recap: z.record(z.unknown()).nullable().default(null),
+  // A public table from `matches.quick`: seated by matchmaking rather than
+  // by invitation or join code.
+  matchmaking: z.boolean().default(false),
 });
 
 export type MatchSummary = z.infer<typeof MatchSummarySchema>;
 
-// One move as recorded in the match log, echoed on a view so the client can
-// animate what just happened without diffing two boards.
-export const MatchLastMoveSchema = z.object({
-  ply: z.number().int().nonnegative(),
-  seat: MatchSeat,
-  move: z.record(z.unknown()),
-  scoreDelta: z.number().int().default(0),
-});
-
-export type MatchLastMove = z.infer<typeof MatchLastMoveSchema>;
 
 // The full per-viewer picture of one match. `view` has ALREADY been filtered
 // for the requesting seat by the server's rules class: it is the only game
@@ -933,7 +977,6 @@ export const MatchViewSchema = MatchSummarySchema.extend({
   // fourth). Cleared once the match starts.
   joinCode: JoinCode.nullable().default(null),
   view: z.record(z.unknown()),
-  lastMove: MatchLastMoveSchema.nullable().default(null),
 });
 
 export type MatchView = z.infer<typeof MatchViewSchema>;
@@ -945,6 +988,14 @@ export const MatchNudgeResultSchema = z.object({
 });
 
 export type MatchNudgeResult = z.infer<typeof MatchNudgeResultSchema>;
+
+// Result of `matches.check`: the words the dictionary does not have,
+// upper-cased. Empty when every word is fine.
+export const MatchCheckResultSchema = z.object({
+  invalid: z.array(z.string()),
+});
+
+export type MatchCheckResult = z.infer<typeof MatchCheckResultSchema>;
 
 // Result of `time.now`. The SDK turns it into an offset against Date.now().
 export const ServerTimeSchema = z.object({

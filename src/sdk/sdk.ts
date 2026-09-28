@@ -10,6 +10,7 @@ import {
   MatchViewSchema,
   MatchSummarySchema,
   MatchNudgeResultSchema,
+  MatchCheckResultSchema,
   InvitablePlayerSchema,
   ServerTimeSchema,
   ScheduledNotificationSchema,
@@ -39,6 +40,7 @@ import {
   type MatchView,
   type MatchSummary,
   type MatchNudgeResult,
+  type MatchCheckResult,
   type MatchListFilter,
   type InvitablePlayer,
   type SeasonBoard,
@@ -76,6 +78,7 @@ export type {
   MatchPlayerStatus,
   MatchListFilter,
   MatchNudgeResult,
+  MatchCheckResult,
   InvitablePlayer,
   ScheduledNotification,
   NotificationScheduleResult,
@@ -547,6 +550,26 @@ export interface OddsRabbitGlobal {
      * Gate the button on `capabilities.has('matches.claim')`.
      */
     claim(payload: { matchUuid: string }): Promise<MatchView>;
+    /**
+     * Look `words` up in the match's dictionary without playing them — up to
+     * 16, each 2 to 15 letters. Resolves `{ invalid }`, the upper-cased words
+     * the dictionary does not have (empty when all are fine). Read-only:
+     * nothing is recorded, `version` does not move. Rejects `match/not-found`
+     * for a non-participant and `match/unsupported` for a game with no
+     * dictionary. The server still checks every word again on `move`.
+     *
+     * Gate the check on `capabilities.has('matches.check')`.
+     */
+    check(payload: { matchUuid: string; words: string[] }): Promise<MatchCheckResult>;
+    /**
+     * Play someone new. Takes the open seat at the oldest public two-player
+     * table for `game` — resolving the now-active view — or, with nobody
+     * waiting, opens one (or returns the one this player already has open)
+     * as a lobby with `matchmaking: true` for the next player to take.
+     *
+     * Gate the button on `capabilities.has('matches.quick')`.
+     */
+    quick(payload: { game: string }): Promise<MatchView>;
     /**
      * People the viewer may invite — connected on the follow graph in either
      * direction, which is exactly the set `create` accepts. `[]` when signed
@@ -1026,6 +1049,14 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
       }),
     claim: (payload: { matchUuid: string }): Promise<MatchView> =>
       this.requestMatchView('matches.claim', payload),
+    check: (payload: { matchUuid: string; words: string[] }): Promise<MatchCheckResult> =>
+      this.request<unknown>('matches.check', payload).then((result): MatchCheckResult => {
+        const parsed = MatchCheckResultSchema.safeParse(result);
+        if (!parsed.success) throw new Error('matches.check: malformed result');
+        return parsed.data;
+      }),
+    quick: (payload: { game: string }): Promise<MatchView> =>
+      this.requestMatchView('matches.quick', payload),
     invitable: (payload: { limit?: number; offset?: number } = {}): Promise<InvitablePlayer[]> => {
       if (!this.user) return Promise.resolve([]);
       return this.requestRows<InvitablePlayer>('matches.invitable', payload, InvitablePlayerSchema);

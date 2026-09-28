@@ -328,3 +328,73 @@ test('claim and nudge on a host without them retire only themselves', async () =
   assert.equal(sdk.capabilities.has('matches.nudge'), false);
   assert.equal(sdk.capabilities.has('matches.get'), true);
 });
+
+test('list rows keep the last move, recap and matchmaking flag', async () => {
+  const t = fakeTransport(() =>
+    Promise.resolve([
+      wireView({
+        lastMove: { ply: 3, seat: 1, move: { type: 'place' }, scoreDelta: 22 },
+        recap: { lastWords: [{ word: 'QUIZ', score: 22 }] },
+        matchmaking: true,
+      }),
+    ])
+  );
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init();
+  const [row] = await sdk.matches.list({ status: 'all' });
+  assert.equal(row!.lastMove?.scoreDelta, 22);
+  assert.deepEqual(row!.recap, { lastWords: [{ word: 'QUIZ', score: 22 }] });
+  assert.equal(row!.matchmaking, true);
+});
+
+test('check sends the words and resolves the invalid ones', async () => {
+  const t = fakeTransport(() => Promise.resolve({ invalid: ['QZX'] }));
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init({ capabilities: ['matches.get', 'matches.check'] });
+  assert.deepEqual(await sdk.matches.check({ matchUuid: UUID, words: ['QZX', 'CAT'] }), { invalid: ['QZX'] });
+  assert.deepEqual(t.calls[0], { type: 'matches.check', payload: { matchUuid: UUID, words: ['QZX', 'CAT'] } });
+});
+
+test('check rejects on a malformed result', async () => {
+  const t = fakeTransport(() => Promise.resolve({ ok: true }));
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init();
+  await assert.rejects(sdk.matches.check({ matchUuid: UUID, words: ['CAT'] }), /malformed result/);
+});
+
+test('match/unsupported is about the game, not the host', async () => {
+  const t = fakeTransport(() => reject(MATCH_ERROR_CODES.unsupported));
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init({ capabilities: ['matches.get', 'matches.check'] });
+  await assert.rejects(
+    sdk.matches.check({ matchUuid: UUID, words: ['CAT'] }),
+    (error: BridgeError) => error.code === 'match/unsupported'
+  );
+  assert.equal(sdk.capabilities.has('matches.check'), true);
+});
+
+test('quick sends the game and resolves the view, a public lobby included', async () => {
+  const t = fakeTransport(() =>
+    Promise.resolve(
+      wireView({ status: 'lobby', turnSeat: null, isMyTurn: false, matchmaking: true, view: {} })
+    )
+  );
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init({ capabilities: ['matches.get', 'matches.quick'] });
+  const view = await sdk.matches.quick({ game: 'tiles' });
+  assert.equal(view.status, 'lobby');
+  assert.equal(view.matchmaking, true);
+  assert.equal(view.joinCode, null);
+  assert.deepEqual(t.calls[0], { type: 'matches.quick', payload: { game: 'tiles' } });
+});
+
+test('check and quick on a host without them retire only themselves', async () => {
+  const t = fakeTransport(() => reject('bridge/unknown-type'));
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init({ capabilities: ['matches.get', 'matches.check', 'matches.quick'] });
+  await assert.rejects(sdk.matches.check({ matchUuid: UUID, words: ['CAT'] }));
+  await assert.rejects(sdk.matches.quick({ game: 'tiles' }));
+  assert.equal(sdk.capabilities.has('matches.check'), false);
+  assert.equal(sdk.capabilities.has('matches.quick'), false);
+  assert.equal(sdk.capabilities.has('matches.get'), true);
+});

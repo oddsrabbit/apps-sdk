@@ -6,6 +6,7 @@ import {
   BridgeRequestSchema,
   MATCH_ERROR_CODES,
   MATCH_MOVE_MAX_BYTES,
+  MatchCheckResultSchema,
   MatchNudgeResultSchema,
   MatchSummarySchema,
   MatchViewSchema,
@@ -28,6 +29,8 @@ test('every match verb is a bridge request type', () => {
     'matches.resign',
     'matches.nudge',
     'matches.claim',
+    'matches.check',
+    'matches.quick',
   ]) {
     assert.ok(BRIDGE_REQUEST_TYPES.includes(verb as never), verb);
   }
@@ -149,4 +152,60 @@ test('a match with a malformed seat fails as a whole, not by dropping the seat',
     updatedAt: '2026-09-06T10:00:00Z',
   });
   assert.ok(!parsed.success);
+});
+
+test('matches.check takes 1 to 16 words of 2 to 15 letters', () => {
+  assert.ok(request('matches.check', { matchUuid: UUID, words: ['QUIZ'] }).success);
+  assert.ok(request('matches.check', { matchUuid: UUID, words: ['quiz', 'At'] }).success, 'any case');
+  assert.ok(!request('matches.check', { matchUuid: UUID, words: [] }).success, 'at least one');
+  assert.ok(!request('matches.check', { matchUuid: UUID, words: new Array(17).fill('AT') }).success, 'at most 16');
+  assert.ok(!request('matches.check', { matchUuid: UUID, words: ['A'] }).success, 'one letter is not a word');
+  assert.ok(!request('matches.check', { matchUuid: UUID, words: ['A'.repeat(16)] }).success, 'wider than the board');
+  assert.ok(!request('matches.check', { matchUuid: UUID, words: ['CAT5'] }).success, 'letters only');
+  assert.ok(!request('matches.check', { words: ['CAT'] }).success, 'needs a match');
+});
+
+test('a check result is a list of words', () => {
+  assert.ok(MatchCheckResultSchema.safeParse({ invalid: [] }).success);
+  assert.ok(MatchCheckResultSchema.safeParse({ invalid: ['QZX'] }).success);
+  assert.ok(!MatchCheckResultSchema.safeParse({}).success);
+});
+
+test('matches.quick takes a game', () => {
+  assert.ok(request('matches.quick', { game: 'tiles' }).success);
+  assert.ok(!request('matches.quick', {}).success);
+  assert.ok(!request('matches.quick', { game: '' }).success);
+});
+
+test('a summary carries the last move, a recap and the matchmaking flag', () => {
+  const base = {
+    matchUuid: UUID,
+    game: 'tiles',
+    status: 'active',
+    version: 9,
+    maxPlayers: 2,
+    players: [
+      { seat: 0, uuid: UUID, username: 'me', status: 'joined', isSelf: true },
+      { seat: 1, uuid: OTHER, username: 'them', status: 'joined' },
+    ],
+    turnSeat: 0,
+    mySeat: 0,
+    updatedAt: '2026-09-10T08:00:00Z',
+  };
+  const old = MatchSummarySchema.safeParse(base);
+  assert.ok(old.success);
+  assert.equal(old.data.lastMove, null, 'an older host without them still parses');
+  assert.equal(old.data.recap, null);
+  assert.equal(old.data.matchmaking, false);
+
+  const full = MatchSummarySchema.safeParse({
+    ...base,
+    lastMove: { ply: 3, seat: 1, move: { type: 'place', tiles: [] }, scoreDelta: 22 },
+    recap: { lastWords: [{ word: 'QUIZ', score: 22 }] },
+    matchmaking: true,
+  });
+  assert.ok(full.success);
+  assert.equal(full.data.lastMove?.scoreDelta, 22);
+  assert.deepEqual(full.data.recap, { lastWords: [{ word: 'QUIZ', score: 22 }] });
+  assert.equal(full.data.matchmaking, true);
 });

@@ -15,6 +15,7 @@ export type {
   MatchPlayerStatus,
   MatchListFilter,
   MatchNudgeResult,
+  MatchCheckResult,
   InvitablePlayer,
   GiftSendPayload,
   Showcase,

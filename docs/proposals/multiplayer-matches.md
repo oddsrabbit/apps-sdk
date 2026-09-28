@@ -68,6 +68,23 @@ and `migrations/20260926_001_add_match_turn_started_and_nudges.sql`
 (`app_matches.turn_started_at`, `app_match_players.last_nudged_at`, backfill).
 Both hosts gained the two cases and capabilities.
 
+**Check, quick match and list recaps added 2026‑09‑28** (not yet deployed):
+two more capability-gated verbs and three defaulted summary fields.
+`matches.check({ matchUuid, words })` → `{ invalid }` looks words up in the
+match's dictionary without playing them (read-only; `version` does not move),
+so a word game can flag a bad word before the player commits; a game with no
+dictionary answers the new `match/unsupported` code. `matches.quick({ game })`
+→ `MatchView` seats the player at the oldest public two-player table for that
+game, or opens one (returning their existing one if they already have it
+open) with `matchmaking: true` and no join code. Every `MatchSummary` now also
+carries `lastMove` (moved up from `MatchView`, same per-viewer filter),
+`recap` (an opaque game-specific note on that move — tiles sends
+`{ lastWords }`, since its move is squares, not words) and `matchmaking`, so a
+list row can say what just happened without a `matches.get` per row. The
+fields ride the existing `matches.list` verb because they are additive
+display data a game can simply do without; the two behaviours are verbs so a
+game can gate its buttons on them.
+
 **Word Battle moved to its own private repo on 2026‑09‑26** (`word-battle`, a
 sibling checkout like `rabbit-pets`), since it is the product and not a sample.
 Paths below such as `word-battle/js/rules.js` are now in that repo; this
