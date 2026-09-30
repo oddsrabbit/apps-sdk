@@ -235,11 +235,34 @@
   }
 
   function onBoardChange() {
+    noteDailyAttempt();
     render();
     refreshStats();
     undoBtn.disabled = game.getUndoDepth() === 0;
     finishBtn.style.display = (!autoCompleting && game.canAutoComplete()) ? "inline-block" : "none";
     refreshStuckBanner();
+  }
+
+  // --- Daily attempts ---
+  //
+  // The daily ranks on retries (see dailyScore), so every fresh start of
+  // today's deal is counted — once, at its first move, so dealing the board
+  // and walking away costs nothing. Reopening the app restores the saved deal
+  // rather than dealing a new one, so a resume is never a retry. Replays of a
+  // deal already won aren't counted: its score is in and can't change.
+  var attemptLogged = false;
+
+  function noteDailyAttempt() {
+    if (attemptLogged) return;
+    if (game.getState() !== GameClass.STATE_PLAYING) return;
+    if (game.getMode() !== GameClass.MODE_DAILY || game.getMoves() === 0) return;
+    attemptLogged = true;
+    if (game.isDailyWonAlready()) return;
+    storage.bumpDailyAttempts(game.getDailyId());
+  }
+
+  function dailyRetries(id) {
+    return Math.max(0, storage.getDailyAttempts(id) - 1);
   }
 
   // --- Dead-end nudge ---
@@ -480,6 +503,7 @@
     }
     clearFriendsPanel();
     storage.clearSavedGame();
+    attemptLogged = false;
     game.newDeal(mode, opts);
     sound.deal();
   }
@@ -514,8 +538,13 @@
       // Submit to the daily leaderboard + populate the friends panel. The
       // submit is idempotent server-side (a replay 409s on already-submitted
       // and is swallowed), so it's safe to call on counted + replay alike.
-      submitDailyScore(dailyId, ms, moves);
-      loadAndRenderFriends(dailyId, { won: true, timeMs: ms, moves: moves });
+      var retries = dailyRetries(dailyId);
+      var result = { timeMs: ms, moves: moves, retries: retries };
+      submitDailyScore(dailyId, result);
+      // A replay's submit 409s, so the board keeps the first win's score —
+      // splicing this game in would show the viewer a row that isn't theirs
+      // on the board. Null takes the backend's own `isSelf` row instead.
+      loadAndRenderFriends(dailyId, alreadyCounted ? null : result);
     } else {
       // Random wins have no shared round to compare against — no leaderboard.
       clearFriendsPanel();
@@ -529,7 +558,13 @@
     ensureDailySeedAsync();
     syncDailyButtons();
     var mainText = isDaily ? "DAILY #" + game.getDailyId() + " SOLVED" : "YOU WON";
-    var subText = formatTime(ms) + "  ·  " + moves + " moves" + (isNewBest ? "  ·  NEW BEST" : "");
+    // The best is a time in both modes, so name it where the line leads with
+    // moves — a bare "NEW BEST" there reads as a moves record.
+    var byMoves = isDaily && usesMoveScoring(game.getDailyId());
+    var subText = byMoves
+      ? moves + " moves  ·  " + retriesLabel(retries) + "  ·  " + formatTime(ms)
+      : formatTime(ms) + "  ·  " + moves + " moves";
+    if (isNewBest) subText += byMoves ? "  ·  NEW BEST TIME" : "  ·  NEW BEST";
     // Say why there's no board under a random win. The rule (only the shared
     // daily deal is ranked) is a good one, but from the player's side it looks
     // identical to a leaderboard that failed to load — they solved a deal, put
@@ -545,11 +580,17 @@
   // --- Scores / friends leaderboard ---
   //
   // Daily deals are a shared round, so they map cleanly onto the platform
-  // scores API: every player races the same shuffle, and a faster solve
-  // should rank higher. scores.friends sorts score DESC (then earliest
-  // submission), so we invert time into the score — see dailyScore. The raw
-  // time + move count ride along in metadata for display. Random deals have
-  // no shared round and are skipped entirely.
+  // scores API: every player gets the same shuffle. From MOVE_SCORING_FROM_ID
+  // a daily ranks on how cleanly it was solved — fewest retries, then fewest
+  // moves — and not on speed, so a player taking their time loses nothing.
+  // Time was the ranking before that, and it rewarded scouting the deal with
+  // unlimited undo, restarting, and replaying the known line quickly; a retry
+  // now costs more than any number of moves. Undo stays free, but an undone
+  // move still counts toward the total.
+  //
+  // scores.friends sorts score DESC, so both schemes encode "better" as a
+  // bigger integer — see dailyScore. The raw numbers ride along in metadata
+  // for display. Random deals have no shared round and are skipped entirely.
 
   // roundKey is stable across the UTC day (matches the daily seed) so every
   // player on the same deal lands in the same leaderboard.
@@ -561,23 +602,57 @@
   // that no longer deals those cards.
   function dailyRoundKey(id) { return "daily2-" + id; }
 
-  // Faster solve → higher score. We cap at an hour and count down by the
-  // second so a 2-minute solve (3480) outranks a 10-minute one (3000). Floor
-  // at 1 so even a slow win still registers a positive score.
+  // Deal #22 is 2026-10-01. The switch sits on a month boundary because the
+  // season board sums daily scores, and a month adding solve-time scores to
+  // retries/moves ones would rank on whoever happened to play which days.
+  // Past deals in the modal keep reading back as the scheme they were played
+  // under.
+  var MOVE_SCORING_FROM_ID = 22;
+  function usesMoveScoring(id) { return id >= MOVE_SCORING_FROM_ID; }
+
+  // Retries, then moves, as one higher-is-better integer:
+  // 10000 + (9 - retries) * 1000 + (999 - moves), each capped so a digit
+  // never borrows from the next. 10000..19999 never overlaps the old
+  // solve-time range (1..3600), so a score says by itself which scheme wrote
+  // it. The backend mirrors this in AppScoreBounds (the ceiling) and
+  // GamesHomeService::solitaireLabel (reading it back for "Top today").
+  var RETRY_CAP = 9;
+  var MOVE_CAP = 999;
+  function movesScore(retries, moves) {
+    var r = Math.min(Math.max(retries | 0, 0), RETRY_CAP);
+    var m = Math.min(Math.max(moves | 0, 0), MOVE_CAP);
+    return 10000 + (RETRY_CAP - r) * 1000 + (MOVE_CAP - m);
+  }
+
+  // The pre-October scheme. Faster solve → higher score: capped at an hour
+  // and counted down by the second so a 2-minute solve (3480) outranks a
+  // 10-minute one (3000). Floor at 1 so even a slow win still registers.
   var SCORE_TIME_CAP_MS = 60 * 60 * 1000;
-  function dailyScore(ms) {
+  function timeScore(ms) {
     var capped = Math.min(Math.max(ms, 0), SCORE_TIME_CAP_MS);
     return Math.max(1, Math.round((SCORE_TIME_CAP_MS - capped) / 1000));
   }
 
-  function submitDailyScore(id, ms, moves) {
+  // result — { timeMs, moves, retries } for a won daily.
+  function dailyScore(id, result) {
+    return usesMoveScoring(id)
+      ? movesScore(result.retries, result.moves)
+      : timeScore(result.timeMs);
+  }
+
+  function retriesLabel(retries) {
+    if (retries <= 0) return "1st try";
+    return retries === 1 ? "1 retry" : retries + " retries";
+  }
+
+  function submitDailyScore(id, result) {
     if (!OR.scores || typeof OR.scores.submit !== "function") return;
     try {
       OR.scores
         .submit({
           roundKey: dailyRoundKey(id),
-          score: dailyScore(ms),
-          metadata: { timeMs: ms, moves: moves },
+          score: dailyScore(id, result),
+          metadata: { timeMs: result.timeMs, moves: result.moves, retries: result.retries },
         })
         .catch(function () {}); // 409 on replay (already-submitted) is expected.
     } catch (_) {}
@@ -609,7 +684,7 @@
   // leaderboard component (src/ui/leaderboard.ts, loaded as window.OddsRabbitUI).
   // The component owns the rows, avatars, medals, ranking and both CTA states;
   // what stays here is solitaire's part — which rounds, and that a "score" reads
-  // back as a solve time.
+  // back as moves (with retries badged) or, for pre-October deals, a solve time.
   //
   // Built for an ARBITRARY deal id, not for today, because two places render
   // these boards: the inline panel on the won overlay and the day-scrubbing
@@ -617,9 +692,9 @@
   // rounds" is answered exactly once and the modal reaches a past deal purely by
   // passing a different id.
   //
-  // Rows carry `metadata.timeMs`, which is what the player actually cares about;
-  // the stored score is a derived speed value (see dailyScore) and would be
-  // meaningless on screen.
+  // Rows carry the raw numbers in metadata — moves and retries from October,
+  // time before it — which is what the player actually cares about; the stored
+  // score is a packed ranking value (see dailyScore) and meaningless on screen.
   //
   // opts.viewerResult — the deal the player has just finished, spliced into
   //   Friends so their own row shows without waiting on the backend to have
@@ -636,10 +711,25 @@
     // one — the player has no way to tell it apart from an empty board.
     var dealNoun = isToday ? "today's deal" : "deal #" + id;
 
+    var byMoves = usesMoveScoring(id);
+
     function formatResult(row) {
       var meta = row.metadata || null;
+      if (byMoves) {
+        return meta && typeof meta.moves === "number" ? meta.moves + " moves" : "Solved";
+      }
       var timeMs = meta && typeof meta.timeMs === "number" ? meta.timeMs : null;
       return timeMs != null ? formatTime(timeMs) : "Solved";
+    }
+
+    // Retries rank ahead of moves, so a 130-move first try sits above a
+    // 90-move third attempt — the badge is what makes that order readable.
+    // Nothing on a first try: it's the common case, and a badge on every row
+    // would bury the ones that explain something.
+    function resultBadges(row) {
+      var meta = row.metadata || null;
+      if (!byMoves || !meta || typeof meta.retries !== "number" || meta.retries <= 0) return null;
+      return [retriesLabel(meta.retries)];
     }
 
     // The viewer's own row comes from the just-finished game, so it can be shown
@@ -654,10 +744,14 @@
         rows.push({
           uuid: OR.user.uuid,
           username: OR.user.username,
-          score: dailyScore(viewerResult.timeMs),
+          score: dailyScore(id, viewerResult),
           createdAt: "",
           avatar: OR.user.avatar || null,
-          metadata: { timeMs: viewerResult.timeMs },
+          metadata: {
+            timeMs: viewerResult.timeMs,
+            moves: viewerResult.moves,
+            retries: viewerResult.retries
+          },
           isSelf: true
         });
       } else {
@@ -670,7 +764,7 @@
       var others = 0;
       for (i = 0; i < rows.length; i++) if (!rows[i].isSelf) others++;
       if (others === 0) return [];
-      // Higher score = faster solve, so this is fastest-first.
+      // Higher score = better solve under either scheme, so this is best-first.
       rows.sort(function (a, b) {
         return b.score - a.score || (a.isSelf ? -1 : b.isSelf ? 1 : 0);
       });
@@ -700,6 +794,7 @@
           return OR.scores.friends({ roundKey: roundKey }).then(withViewer);
         },
         formatValue: formatResult,
+        badges: resultBadges,
         signInPrompt: OR.user
           ? null
           : {
@@ -733,7 +828,8 @@
         load: function () {
           return OR.scores.top({ roundKey: roundKey, order: "top", limit: BOARD_LIMIT });
         },
-        formatValue: formatResult
+        formatValue: formatResult,
+        badges: resultBadges
       };
       // The viewer's own placement when they're outside the top 20. Gated
       // separately from the board — `scores.rank` ships after `scores.top`, so
@@ -750,10 +846,11 @@
       tabs.push(globalTab);
     }
 
-    // Monthly board — total points, which for solitaire means total speed
-    // across the month's deals (the daily score is already speed-derived, see
-    // dailyScore). Unlike the daily board this one accumulates, so a run of
-    // good solves adds up to something instead of resetting at midnight.
+    // Monthly board — total points across the month's deals: from October each
+    // daily is worth more the fewer retries and moves it took (see dailyScore),
+    // so the total rewards solving often and cleanly. Unlike the daily board
+    // this one accumulates, so a run of good solves adds up to something
+    // instead of resetting at midnight.
     //
     // Keyed to the month THIS DEAL belongs to, not to the month it is being
     // looked at in. The modal scrubs back a week, so on the 1st through the 7th
@@ -894,8 +991,8 @@
     var lowerBound = Math.max(0, today - HISTORY_DAYS);
     // Today included, unlike rabbit-words' modal, which stops at yesterday
     // because its board doubles as a spoiler for a puzzle still in progress.
-    // A solve time spoils nothing: every player gets the same proven-winnable
-    // deal, and seeing that somebody did it in four minutes tells you nothing
+    // A result spoils nothing: every player gets the same proven-winnable
+    // deal, and seeing that somebody did it in 112 moves tells you nothing
     // about the cards.
     var upperBound = today;
     var viewId = startId == null ? today : (startId | 0);
@@ -905,8 +1002,9 @@
     if (dayModal) dayModal.close();
 
     // Reading the board must not cost the player the seconds they spend on it:
-    // the deal clock IS the ranking metric here. A no-op unless a deal is
-    // actually in progress, so the idle and won entry points are unaffected.
+    // the time is shown on their result and personal best. A no-op unless a
+    // deal is actually in progress, so the idle and won entry points are
+    // unaffected.
     game.pauseClock();
 
     var backdrop = document.createElement("div");
@@ -1118,7 +1216,11 @@
     var moves = game.getMoves();
     var lines = [];
     lines.push(buildShareTitle());
-    lines.push("Solved in " + formatTime(ms) + " (" + moves + " moves)");
+    if (game.getMode() === GameClass.MODE_DAILY && usesMoveScoring(game.getDailyId())) {
+      lines.push("Solved in " + moves + " moves, " + retriesLabel(dailyRetries(game.getDailyId())));
+    } else {
+      lines.push("Solved in " + formatTime(ms) + " (" + moves + " moves)");
+    }
     lines.push("🥕");
     lines.push("");
     lines.push("Play at " + LANDING_URL);
@@ -1543,10 +1645,22 @@
   function requestNewDeal() {
     var inProgress = game.getState() === GameClass.STATE_PLAYING && game.getMoves() > 0;
     if (inProgress) {
-      showConfirm("Leave this deal? Your progress will be lost.", "New deal", doNewDeal);
+      showConfirm(leaveDealMessage(), "New deal", doNewDeal);
       return;
     }
     doNewDeal();
+  }
+
+  // Leaving an unsolved daily throws the attempt away, and starting it again
+  // is a retry on the leaderboard — say so here, where the choice is made,
+  // rather than let the player find out from their result.
+  function leaveDealMessage() {
+    var id = game.getDailyId();
+    if (game.getMode() === GameClass.MODE_DAILY && usesMoveScoring(id) &&
+        id === Deck.dailyId() && !game.isDailyWonAlready()) {
+      return "Leave today's deal? Your progress will be lost, and starting it again counts as a retry.";
+    }
+    return "Leave this deal? Your progress will be lost.";
   }
 
   function doNewDeal() {
@@ -1628,10 +1742,11 @@
   // same pattern 2048 uses (see 2048/js/storage_manager.js). Both are
   // best-effort; the storage write is fire-and-forget.
   //
-  // Backgrounding also pauses the deal clock: the daily leaderboard ranks by
-  // solve time, so minutes spent in another app shouldn't count against the
-  // player. visibilitychange mirrors the bridge events for plain-browser
-  // hosts; pauseClock/resumeClock are idempotent, so double-firing is safe.
+  // Backgrounding also pauses the deal clock: the time no longer ranks
+  // anything, but it's still shown on the result and in the player's best, so
+  // minutes spent in another app shouldn't count against it.
+  // visibilitychange mirrors the bridge events for plain-browser hosts;
+  // pauseClock/resumeClock are idempotent, so double-firing is safe.
   if (OR.lifecycle && typeof OR.lifecycle.on === "function") {
     OR.lifecycle.on("pause", function () {
       persistSnapshot();
@@ -1796,6 +1911,10 @@
       var saved = storage.getSavedGame();
       var today = Deck.dailyId();
       if (saved && (saved.mode === GameClass.MODE_RANDOM || saved.dailyId === today)) {
+        // Before the restore, not after: restoreSaved emits a board change
+        // synchronously, and noteDailyAttempt would count the resume as a new
+        // attempt. A saved deal with a move in it was counted when it was made.
+        attemptLogged = (saved.moves | 0) > 0;
         if (game.restoreSaved(saved)) {
           statsContainerEl.classList.add("ready");
           OR.ready();

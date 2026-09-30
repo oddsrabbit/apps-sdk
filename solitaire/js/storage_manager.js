@@ -21,6 +21,13 @@
 //                      won deal doesn't re-increment the streak).
 //   savedGame        — JSON blob of in-progress state (deal + history).
 //                      Cleared on win/loss/new-deal.
+//   dailyAttempts    — "<dailyId>:<count>", how many times the player has
+//                      started today's deal and made a move in it. The
+//                      daily ranks on retries (count - 1), so this lives in
+//                      server-side storage rather than the browser: clearing
+//                      site data or switching devices doesn't reset it. One
+//                      key for the latest deal only — older counts have no
+//                      further use once that deal's score is in.
 
 (function () {
   var KEY_BEST_TIME = "bestTimeMs"; // legacy, migrate-only
@@ -30,6 +37,7 @@
   var KEY_LAST_DAILY = "lastDailyId";
   var KEY_LAST_DAILY_WON = "lastDailyWon";
   var KEY_SAVED_GAME = "savedGame";
+  var KEY_DAILY_ATTEMPTS = "dailyAttempts";
 
   function StorageManager() {
     this._bestDaily = 0;
@@ -38,6 +46,8 @@
     this._lastDailyId = -1;
     this._lastDailyWon = false;
     this._savedGame = null;
+    this._attemptsId = -1;
+    this._attempts = 0;
     this._bridge = null;
   }
 
@@ -80,6 +90,13 @@
       self._bridge.get(KEY_LAST_DAILY_WON).then(function (raw) {
         self._lastDailyWon = raw === "1";
       }).catch(noop),
+      self._bridge.get(KEY_DAILY_ATTEMPTS).then(function (raw) {
+        var parsed = parseAttempts(raw);
+        if (parsed) {
+          self._attemptsId = parsed.id;
+          self._attempts = parsed.count;
+        }
+      }).catch(noop),
       self._bridge.get(KEY_SAVED_GAME).then(function (raw) {
         if (!raw) return;
         try {
@@ -99,6 +116,16 @@
 
   function noop() {}
 
+  // "<dailyId>:<count>" → { id, count }, or null for anything else.
+  function parseAttempts(raw) {
+    if (!raw) return null;
+    var parts = String(raw).split(":");
+    var id = parseInt(parts[0], 10);
+    var count = parseInt(parts[1], 10);
+    if (isNaN(id) || isNaN(count) || count < 0) return null;
+    return { id: id, count: count };
+  }
+
   // mode is SolitaireGame.MODE_DAILY ("daily") or MODE_RANDOM ("random").
   StorageManager.prototype.getBestFor = function (mode) {
     return mode === "daily" ? this._bestDaily : this._bestRandom;
@@ -107,6 +134,9 @@
   StorageManager.prototype.getLastDailyId = function () { return this._lastDailyId; };
   StorageManager.prototype.getLastDailyWon = function () { return this._lastDailyWon; };
   StorageManager.prototype.getSavedGame = function () { return this._savedGame; };
+  StorageManager.prototype.getDailyAttempts = function (id) {
+    return this._attemptsId === id ? this._attempts : 0;
+  };
 
   StorageManager.prototype.setBestFor = function (mode, ms) {
     if (mode === "daily") {
@@ -134,6 +164,28 @@
     } else {
       this._write(KEY_SAVED_GAME, JSON.stringify(snapshot));
     }
+  };
+  // Counts locally at once, then re-reads the stored count before writing.
+  // The cache is only as fresh as hydrate(), so a second session opened
+  // earlier (another tab, the phone) would otherwise write over the attempts
+  // made there — scout on one, play clean on the other. Taking the larger of
+  // the two keeps whichever saw more.
+  StorageManager.prototype.bumpDailyAttempts = function (id) {
+    var self = this;
+    if (this._attemptsId !== id) {
+      this._attemptsId = id;
+      this._attempts = 0;
+    }
+    this._attempts++;
+    if (!this._bridge) return;
+    this._bridge.get(KEY_DAILY_ATTEMPTS).catch(noop).then(function (raw) {
+      var stored = parseAttempts(raw);
+      if (self._attemptsId !== id) return; // a newer deal took over the key
+      if (stored && stored.id === id) {
+        self._attempts = Math.max(self._attempts, stored.count + 1);
+      }
+      self._write(KEY_DAILY_ATTEMPTS, id + ":" + self._attempts);
+    });
   };
   StorageManager.prototype.clearSavedGame = function () {
     this.setSavedGame(null);
