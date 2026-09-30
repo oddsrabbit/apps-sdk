@@ -27,6 +27,12 @@ declare global {
  */
 export interface GeoLocation {
   image: string;
+  /**
+   * Optional extra frames of the same spot (e.g. neighbouring shots from the
+   * same street-level sequence). Shown after `image` as switchable thumbnails;
+   * older payloads without it still play.
+   */
+  images?: string[];
   lat: number;
   lng: number;
   place: string;
@@ -41,6 +47,9 @@ const MAX_TOTAL = MAX_ROUND_SCORE * ROUNDS_PER_DAY; // 15000
 // Score decay: score = MAX_ROUND_SCORE * e^(-km / SCALE_KM). Larger = gentler.
 // ~2000km half-ish-life keeps continental guesses rewarding without trivializing.
 const SCALE_KM = 2000;
+// Anything this close keeps the full 5,000. The decay curve is nearly flat here
+// anyway (25 km ≈ 4,938), so this mostly gives "perfect" a reachable meaning.
+const PERFECT_KM = 25;
 
 // 2026-06-20 UTC midnight is `puzzleIndex` 0; we display it as #1.
 const EPOCH_MS = Date.UTC(2026, 5, 20);
@@ -82,6 +91,10 @@ interface State {
   guesses: (GuessResult | null)[]; // parallel to locations
   current: number; // round index in view
   status: 'in_progress' | 'complete';
+  // Set once the server has this day's score (accepted, or already held it), so
+  // reopening a finished day doesn't resubmit. Absent for guests, which is what
+  // lets a guest who signs in later still have the day counted.
+  submitted?: boolean;
 }
 
 interface Stats {
@@ -102,15 +115,25 @@ const DEFAULT_STREAK: Streak = { current: 0, max: 0, lastPlayedPuzzleIndex: null
 
 // ---------- Module-level UI state ----------
 
-let currentState: State;
+// Null while today's game is unavailable (no stored game, no server content).
+let currentState: State | null = null;
 let currentStats: Stats = DEFAULT_STATS;
 let currentStreak: Streak = DEFAULT_STREAK;
 let currentFriends: FriendScore[] | undefined;
 let currentCommunity: CommunityData | null = null;
 
-// The player's not-yet-submitted pin for the current round. Ephemeral — a reload
-// mid-guess starts with no pin, which is expected.
-let pendingPin: { lat: number; lng: number } | null = null;
+// Whether the player has moved the guessing map yet. The guess is wherever the
+// fixed centre crosshair sits, so Guess stays disabled until they've aimed it —
+// otherwise an untouched map would submit the default view's centre.
+let pinArmed = false;
+
+// Where a tap asked the map to centre, while the pan there is still animating.
+// Guess reads this over `getCenter()` so a quick tap-then-Guess scores the
+// tapped spot, not a point partway along the pan. Cleared once the map settles.
+let aimTarget: L.LatLng | null = null;
+
+// Which frame of the current round's photos is showing (0 = `image`).
+let photoIndex = 0;
 
 // Which pane of the round is visible: the photo or the map. The two share the
 // full area (and toggle) instead of stacking, so neither is cramped on small
@@ -143,7 +166,22 @@ function haversineKm(aLat: number, aLng: number, bLat: number, bLng: number): nu
 }
 
 function scoreForKm(km: number): number {
+  if (km <= PERFECT_KM) return MAX_ROUND_SCORE;
   return Math.round(MAX_ROUND_SCORE * Math.exp(-km / SCALE_KM));
+}
+
+/**
+ * `lng` moved by whole turns to sit within 180° of `refLng`. Leaflet draws a
+ * line between two longitudes literally, so a guess at 170° against an answer
+ * at −170° would otherwise cross the whole map instead of the date line.
+ */
+function nearLng(lng: number, refLng: number): number {
+  return lng + 360 * Math.round((refLng - lng) / 360);
+}
+
+/** Every photo for a location, primary first. */
+function photosFor(location: GeoLocation): string[] {
+  return [location.image, ...(location.images ?? [])];
 }
 
 function totalScore(state: State): number {
@@ -195,7 +233,9 @@ function isLocation(v: unknown): v is GeoLocation {
     typeof o.lat === 'number' &&
     typeof o.lng === 'number' &&
     typeof o.place === 'string' &&
-    typeof o.attribution === 'string'
+    typeof o.attribution === 'string' &&
+    (o.images === undefined ||
+      (Array.isArray(o.images) && o.images.every((u) => typeof u === 'string')))
   );
 }
 
@@ -307,19 +347,52 @@ function applyResultToStreak(streak: Streak, puzzleIndex: number): Streak {
 
 // ---------- Scores bridge ----------
 
+/** Longitude folded into −180…180. */
+function wrapLng(lng: number): number {
+  return ((((lng + 180) % 360) + 360) % 360) - 180;
+}
+
+/**
+ * The day's pins as `[lat, lng]`, for the server to score from. Rounded to 5
+ * decimal places (~1 m; the server allows a point per round for it) to keep
+ * well inside the metadata byte cap. Longitudes are wrapped here too, not only
+ * at guess time: a day stored by an older build can hold e.g. 200, and the
+ * server refuses an unwrapped longitude as not sent by the game.
+ */
+function guessesForServer(state: State): ([number, number] | null)[] {
+  const round5 = (n: number): number => Math.round(n * 1e5) / 1e5;
+  return state.guesses.map((g) => (g ? [round5(g.lat), round5(wrapLng(g.lng))] : null));
+}
+
+/**
+ * Submit the day. The server recomputes the score from `guesses` against the
+ * round's published content and stores ITS number (AppScoreVerifier in the
+ * backend), so `score` here is a claim, not the record; it also strips the
+ * guesses before storing, since board reads return metadata and strong guesses
+ * sit on the answers. Keep ROUNDS_PER_DAY, MAX_ROUND_SCORE, SCALE_KM, PERFECT_KM,
+ * haversineKm() and scoreForKm() in step with that class.
+ */
 async function submitScoreToServer(state: State): Promise<void> {
   if (!window.OddsRabbit.user) return;
-  if (state.status !== 'complete') return;
+  if (state.status !== 'complete' || state.submitted) return;
   const kmTotal = state.guesses.reduce((s, g) => s + (g ? g.km : 0), 0);
   try {
     await window.OddsRabbit.scores.submit({
       roundKey: `puzzle-${state.puzzleIndex}`,
       score: totalScore(state),
-      metadata: { total: totalScore(state), kmTotal: Math.round(kmTotal) },
+      metadata: {
+        total: totalScore(state),
+        kmTotal: Math.round(kmTotal),
+        guesses: guessesForServer(state),
+      },
     });
-  } catch {
-    /* best-effort: 409 on replay, network failures leave panels empty */
+  } catch (error) {
+    // The server already holding this day's score is as good as accepting it.
+    // Anything else (offline, host hiccup) stays unflagged and retries next open.
+    if ((error as { code?: unknown } | null)?.code !== 'scores/already-submitted') return;
   }
+  state.submitted = true;
+  await writeJson('today', state);
 }
 
 async function loadFriends(puzzleIndex: number): Promise<FriendScore[]> {
@@ -371,28 +444,45 @@ function truePercentileBelow(entries: ScoreDistributionEntry[], viewerTotal: num
 
 const root = document.getElementById('root')!;
 
-function render(): void {
-  // Tear down any live map before we blow away its container.
+function teardownMap(): void {
   if (mapInstance) {
+    // Leaflet 1.9 finishes an animated zoom from a 250ms timer that remove()
+    // doesn't cancel; if the player zooms and moves on inside that window the
+    // timer runs against the removed map and throws (`_leaflet_pos`). Defuse it.
+    (mapInstance as unknown as { _onZoomTransitionEnd: () => void })._onZoomTransitionEnd = () => {};
     mapInstance.remove();
     mapInstance = null;
   }
-  root.innerHTML = '';
-  root.appendChild(renderHeader(currentState));
+}
 
-  if (currentState.status === 'in_progress') {
-    const guess = currentState.guesses[currentState.current] ?? null;
+function render(): void {
+  const state = currentState;
+  if (!state) {
+    renderUnavailable();
+    return;
+  }
+  // Tear down any live map before we blow away its container.
+  teardownMap();
+  root.innerHTML = '';
+  root.appendChild(renderHeader(state));
+
+  if (state.status === 'in_progress') {
+    const guess = state.guesses[state.current] ?? null;
     // Default pane per phase (render only runs on real transitions, not on
     // toggles): look at the photo first while guessing, see the result on the
     // map after. The player can still flip either way.
     roundView = guess ? 'map' : 'photo';
-    root.appendChild(renderRound(currentState, guess));
+    pinArmed = false;
+    aimTarget = null;
+    photoIndex = 0;
+    root.appendChild(renderRound(state, guess));
     // The map container is now in the DOM; mount Leaflet onto it.
-    mountRoundMap(currentState, guess);
+    mountRoundMap(state, guess);
   } else {
     root.appendChild(
-      renderEndGame(currentState, currentStats, currentStreak, currentFriends, currentCommunity)
+      renderEndGame(state, currentStats, currentStreak, currentFriends, currentCommunity)
     );
+    mountSummaryMap(state);
     runEndGameAnimations(root);
   }
   root.appendChild(renderResetTime());
@@ -492,19 +582,7 @@ function renderRound(state: State, guess: GuessResult | null): HTMLElement {
   // --- Photo pane ---
   const photoPane = document.createElement('div');
   photoPane.className = 'pane pane-photo';
-  const figure = document.createElement('figure');
-  figure.className = 'clue';
-  const img = document.createElement('img');
-  img.className = 'clue-photo';
-  img.alt = 'Where was this photo taken?';
-  img.src = location.image;
-  img.addEventListener('error', () => figure.classList.add('clue-photo-failed'));
-  const cap = document.createElement('figcaption');
-  cap.className = 'clue-attribution';
-  cap.textContent = location.attribution;
-  figure.appendChild(img);
-  figure.appendChild(cap);
-  photoPane.appendChild(figure);
+  photoPane.appendChild(renderClue(location));
   if (!guess) {
     const toMap = document.createElement('button');
     toMap.type = 'button';
@@ -518,16 +596,29 @@ function renderRound(state: State, guess: GuessResult | null): HTMLElement {
   // --- Map pane ---
   const mapPane = document.createElement('div');
   mapPane.className = 'pane pane-map';
+  const mapWrap = document.createElement('div');
+  mapWrap.className = 'geo-map-wrap';
   const mapEl = document.createElement('div');
   mapEl.className = 'geo-map';
   mapEl.id = 'geo-map';
-  mapPane.appendChild(mapEl);
+  mapWrap.appendChild(mapEl);
+  if (!guess) {
+    // The guess is the map's centre, marked by a fixed crosshair: drag the map
+    // under it (or tap to jump there). A finger never covers the spot it's
+    // choosing, and arrow keys can aim it too.
+    const crosshair = document.createElement('div');
+    crosshair.className = 'map-crosshair';
+    crosshair.setAttribute('aria-hidden', 'true');
+    mapWrap.appendChild(crosshair);
+  }
+  mapPane.appendChild(mapWrap);
 
   if (guess) {
     const result = document.createElement('div');
     result.className = 'round-result';
+    const perfect = guess.km <= PERFECT_KM ? ' <span class="round-perfect">Perfect!</span>' : '';
     result.innerHTML = `
-      <p class="round-distance"><strong>${escapeHtml(formatKm(guess.km))}</strong> away · ${guess.score.toLocaleString()} / ${MAX_ROUND_SCORE}</p>
+      <p class="round-distance"><strong>${escapeHtml(formatKm(guess.km))}</strong> away · ${guess.score.toLocaleString()} / ${MAX_ROUND_SCORE.toLocaleString()}${perfect}</p>
       <p class="round-place">${escapeHtml(location.place)}</p>
     `;
     mapPane.appendChild(result);
@@ -536,9 +627,18 @@ function renderRound(state: State, guess: GuessResult | null): HTMLElement {
     next.type = 'button';
     next.className = 'control-btn control-btn-primary';
     next.textContent = state.current < ROUNDS_PER_DAY - 1 ? 'Next round' : 'See results';
-    next.addEventListener('click', () => void advanceRound());
+    const fromRound = state.current;
+    next.addEventListener('click', () => {
+      next.disabled = true;
+      void advanceRound(fromRound);
+    });
     mapPane.appendChild(next);
   } else {
+    const hint = document.createElement('p');
+    hint.className = 'map-hint';
+    hint.textContent = 'Drag the map to put the crosshair on the spot, or tap to jump there.';
+    mapPane.appendChild(hint);
+
     const back = document.createElement('button');
     back.type = 'button';
     back.className = 'view-back';
@@ -551,7 +651,7 @@ function renderRound(state: State, guess: GuessResult | null): HTMLElement {
     submit.className = 'control-btn control-btn-primary';
     submit.id = 'guess-btn';
     submit.textContent = 'Guess';
-    submit.disabled = pendingPin === null;
+    submit.disabled = !pinArmed;
     submit.addEventListener('click', () => void submitGuess());
     mapPane.appendChild(submit);
   }
@@ -561,50 +661,247 @@ function renderRound(state: State, guess: GuessResult | null): HTMLElement {
   return wrap;
 }
 
-/** Create the Leaflet map for the current round and wire interactions. */
-function mountRoundMap(state: State, guess: GuessResult | null): void {
-  const location = state.locations[state.current]!;
-  const map = L.map('geo-map', {
+/**
+ * OpenStreetMap's own tile server. Its usage policy
+ * (operations.osmfoundation.org/policies/tiles/) is fine for light use but asks
+ * heavy app traffic to move to a commercial provider (MapTiler, Stadia,
+ * Protomaps…) — if the game grows, swap the URL and attribution here and add
+ * the new host to the games host's CSP. The old `{s}.` subdomains are
+ * deprecated in favour of this single host.
+ */
+const TILE_URL = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+const TILE_ATTRIBUTION =
+  '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors';
+
+function createMap(elementId: string): L.Map {
+  const map = L.map(elementId, {
     worldCopyJump: true,
     minZoom: 1,
     maxZoom: 18,
   }).setView([20, 0], 1);
+  L.tileLayer(TILE_URL, { attribution: TILE_ATTRIBUTION, maxZoom: 18 }).addTo(map);
   mapInstance = map;
+  // Containers sized by CSS after mount need a nudge so tiles fill correctly —
+  // unless a re-render has already removed this map, where Leaflet would throw.
+  setTimeout(() => {
+    if (mapInstance === map) map.invalidateSize();
+  }, 0);
+  return map;
+}
 
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '&copy; OpenStreetMap contributors',
-    maxZoom: 18,
-  }).addTo(map);
+// Markers are SVG circles themed from CSS (see `.map-dot-*`), so the exact spot
+// is the dot's centre — no glyph anchor to guess at — and Leaflet's bundled
+// marker PNGs, whose paths break under esbuild, never come into it.
+function guessDot(latlng: L.LatLngExpression): L.CircleMarker {
+  return L.circleMarker(latlng, { className: 'map-dot map-dot-guess', radius: 7, fillOpacity: 1, weight: 2 });
+}
+function truthDot(latlng: L.LatLngExpression): L.CircleMarker {
+  return L.circleMarker(latlng, { className: 'map-dot map-dot-truth', radius: 8, fillOpacity: 1, weight: 2 });
+}
+function guessLine(from: L.LatLngExpression, to: L.LatLngExpression): L.Polyline {
+  return L.polyline([from, to], { className: 'guess-line', weight: 2 });
+}
 
-  // Leaflet's default marker uses bundled PNGs whose paths break under esbuild;
-  // CSS-only divIcons sidestep that entirely.
-  const pinIcon = (cls: string, glyph: string): L.DivIcon =>
-    L.divIcon({ className: `map-pin ${cls}`, html: glyph, iconSize: [24, 24], iconAnchor: [12, 24] });
+/**
+ * The round's clue: the photo (shown whole, never cropped — the edges can hold
+ * the clue), a thumbnail strip when the location has more than one frame, and
+ * a retry for a photo that failed to load rather than asking for a blind guess.
+ * Tapping the photo opens it full screen.
+ */
+function renderClue(location: GeoLocation): HTMLElement {
+  const photos = photosFor(location);
+  const figure = document.createElement('figure');
+  figure.className = 'clue';
 
-  if (guess) {
-    // Revealed: show guess + truth + the line between them, framed to both.
-    const guessLatLng: L.LatLngExpression = [guess.lat, guess.lng];
-    const truthLatLng: L.LatLngExpression = [location.lat, location.lng];
-    L.marker(guessLatLng, { icon: pinIcon('map-pin-guess', '📍') }).addTo(map);
-    L.marker(truthLatLng, { icon: pinIcon('map-pin-truth', '✓') }).addTo(map);
-    L.polyline([guessLatLng, truthLatLng], { className: 'guess-line', weight: 2 }).addTo(map);
-    map.fitBounds(L.latLngBounds([guessLatLng, truthLatLng]).pad(0.3));
-    map.dragging.disable();
-    map.scrollWheelZoom.disable();
-  } else {
-    let marker: L.Marker | null = null;
-    map.on('click', (e: L.LeafletMouseEvent) => {
-      pendingPin = { lat: e.latlng.lat, lng: e.latlng.lng };
-      if (marker) marker.setLatLng(e.latlng);
-      else marker = L.marker(e.latlng, { icon: pinIcon('map-pin-guess', '📍') }).addTo(map);
-      const btn = document.getElementById('guess-btn') as HTMLButtonElement | null;
-      if (btn) btn.disabled = false;
-      void window.OddsRabbit.actions.haptic('light');
+  const frame = document.createElement('div');
+  frame.className = 'clue-frame';
+  const img = document.createElement('img');
+  img.className = 'clue-photo';
+  img.alt = 'Where was this photo taken? Tap to view full screen.';
+  let attempt = 0;
+  const show = (i: number): void => {
+    photoIndex = i;
+    attempt = 0;
+    figure.classList.remove('clue-photo-failed');
+    img.src = photos[i]!;
+    figure.querySelectorAll<HTMLElement>('.clue-thumb').forEach((t, j) => {
+      t.classList.toggle('clue-thumb-active', j === i);
+      t.setAttribute('aria-pressed', String(j === i));
     });
+  };
+  img.addEventListener('error', () => figure.classList.add('clue-photo-failed'));
+  img.addEventListener('load', () => figure.classList.remove('clue-photo-failed'));
+  img.addEventListener('click', () => {
+    if (!figure.classList.contains('clue-photo-failed')) {
+      showPhotoLightbox(photos[photoIndex]!, location.attribution);
+    }
+  });
+  frame.appendChild(img);
+
+  const retry = document.createElement('button');
+  retry.type = 'button';
+  retry.className = 'clue-retry';
+  retry.textContent = "Photo didn't load — tap to retry";
+  retry.addEventListener('click', () => {
+    // A fresh query string so the browser refetches instead of replaying the
+    // cached failure. The CDN ignores unknown params.
+    attempt += 1;
+    const url = photos[photoIndex]!;
+    figure.classList.remove('clue-photo-failed');
+    img.src = `${url}${url.includes('?') ? '&' : '?'}retry=${attempt}`;
+  });
+  frame.appendChild(retry);
+  figure.appendChild(frame);
+
+  if (photos.length > 1) {
+    const thumbs = document.createElement('div');
+    thumbs.className = 'clue-thumbs';
+    photos.forEach((url, i) => {
+      const t = document.createElement('button');
+      t.type = 'button';
+      t.className = 'clue-thumb';
+      t.setAttribute('aria-label', `Photo ${i + 1} of ${photos.length}`);
+      t.style.backgroundImage = `url("${url.replace(/"/g, '%22')}")`;
+      t.addEventListener('click', () => show(i));
+      thumbs.appendChild(t);
+    });
+    figure.appendChild(thumbs);
   }
 
-  // Containers sized by CSS after mount need a nudge so tiles fill correctly.
-  setTimeout(() => map.invalidateSize(), 0);
+  const cap = document.createElement('figcaption');
+  cap.className = 'clue-attribution';
+  cap.textContent = location.attribution;
+  figure.appendChild(cap);
+
+  show(photoIndex);
+  return figure;
+}
+
+/**
+ * Full-screen photo. Tap toggles between fit-to-screen and a 2.5× zoom centred
+ * on the tapped point; the zoomed image scrolls to pan (and native pinch still
+ * works on top).
+ */
+function showPhotoLightbox(src: string, attribution: string): void {
+  const backdrop = document.createElement('div');
+  backdrop.className = 'lightbox';
+  backdrop.setAttribute('role', 'dialog');
+  backdrop.setAttribute('aria-modal', 'true');
+  backdrop.setAttribute('aria-label', 'Photo, full screen');
+
+  const scroller = document.createElement('div');
+  scroller.className = 'lightbox-scroll';
+  const img = document.createElement('img');
+  img.className = 'lightbox-img';
+  img.src = src;
+  img.alt = 'Clue photo. Tap to zoom.';
+  scroller.appendChild(img);
+
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'lightbox-close';
+  closeBtn.setAttribute('aria-label', 'Close');
+  closeBtn.innerHTML = '&times;';
+  const cap = document.createElement('p');
+  cap.className = 'lightbox-caption';
+  cap.textContent = attribution;
+
+  backdrop.append(scroller, closeBtn, cap);
+  document.body.appendChild(backdrop);
+  closeBtn.focus();
+
+  img.addEventListener('click', (e) => {
+    const rect = img.getBoundingClientRect();
+    const fx = (e.clientX - rect.left) / rect.width;
+    const fy = (e.clientY - rect.top) / rect.height;
+    const zoomed = backdrop.classList.toggle('lightbox-zoomed');
+    if (zoomed) {
+      // Keep the tapped point under the finger after the image grows.
+      scroller.scrollLeft = fx * img.offsetWidth - scroller.clientWidth / 2;
+      scroller.scrollTop = fy * img.offsetHeight - scroller.clientHeight / 2;
+    }
+  });
+
+  const close = (): void => {
+    document.removeEventListener('keydown', onKey);
+    backdrop.remove();
+  };
+  const onKey = (e: KeyboardEvent): void => {
+    if (e.key === 'Escape') close();
+  };
+  document.addEventListener('keydown', onKey);
+  closeBtn.addEventListener('click', close);
+  scroller.addEventListener('click', (e) => {
+    if (e.target === scroller) close();
+  });
+}
+
+/** Create the Leaflet map for the current round and wire interactions. */
+function mountRoundMap(state: State, guess: GuessResult | null): void {
+  const location = state.locations[state.current]!;
+
+  if (guess) {
+    const map = createMap('geo-map');
+    // Revealed: guess + truth + the line between them, framed to both. The map
+    // stays draggable and zoomable — seeing where the place really is, and
+    // what's around it, is half the fun of the reveal.
+    const truthLatLng: L.LatLngExpression = [location.lat, location.lng];
+    const guessLatLng: L.LatLngExpression = [guess.lat, nearLng(guess.lng, location.lng)];
+    guessLine(guessLatLng, truthLatLng).addTo(map);
+    guessDot(guessLatLng).addTo(map);
+    truthDot(truthLatLng).addTo(map);
+    map.fitBounds(L.latLngBounds([guessLatLng, truthLatLng]).pad(0.3), { maxZoom: 14, animate: false });
+    return;
+  }
+
+  // Guessing: the guess is the centre. Leaflet's own double-click zoom would
+  // zoom around the tapped point while our click handler pans to it; doing
+  // both in one step (centre on it, zoom in) keeps the two in agreement.
+  const map = createMap('geo-map');
+  map.doubleClickZoom.disable();
+  const arm = (): void => {
+    if (pinArmed) return;
+    pinArmed = true;
+    const btn = document.getElementById('guess-btn') as HTMLButtonElement | null;
+    if (btn) btn.disabled = false;
+  };
+  map.on('dragstart zoomstart keydown', arm);
+  map.on('moveend', () => {
+    aimTarget = null;
+  });
+  map.on('click', (e: L.LeafletMouseEvent) => {
+    map.panTo(e.latlng);
+    aimTarget = e.latlng;
+    arm();
+    void window.OddsRabbit.actions.haptic('light');
+  });
+  map.on('dblclick', (e: L.LeafletMouseEvent) => {
+    map.setView(e.latlng, Math.min(map.getMaxZoom(), map.getZoom() + 1));
+    aimTarget = e.latlng;
+  });
+}
+
+/** End-screen map: all of today's guesses against their answers, numbered. */
+function mountSummaryMap(state: State): void {
+  if (!document.getElementById('summary-map')) return;
+  const map = createMap('summary-map');
+  const points: L.LatLngExpression[] = [];
+  state.locations.forEach((loc, i) => {
+    const truth: L.LatLngExpression = [loc.lat, loc.lng];
+    points.push(truth);
+    const g = state.guesses[i];
+    if (g) {
+      const guessLatLng: L.LatLngExpression = [g.lat, nearLng(g.lng, loc.lng)];
+      points.push(guessLatLng);
+      guessLine(guessLatLng, truth).addTo(map);
+      guessDot(guessLatLng).addTo(map);
+    }
+    L.marker(truth, {
+      icon: L.divIcon({ className: 'map-num', html: String(i + 1), iconSize: [22, 22], iconAnchor: [11, 11] }),
+      title: loc.place,
+    }).addTo(map);
+  });
+  if (points.length > 0) map.fitBounds(L.latLngBounds(points).pad(0.2), { maxZoom: 6, animate: false });
 }
 
 function renderEndGame(
@@ -643,6 +940,12 @@ function renderEndGame(
   });
   wrap.appendChild(recap);
 
+  // All three rounds on one map. Mounted by render() once this is in the DOM.
+  const summary = document.createElement('div');
+  summary.className = 'geo-map summary-map';
+  summary.id = 'summary-map';
+  wrap.appendChild(summary);
+
   if (community) {
     wrap.appendChild(renderCommunityDistribution(community, total));
   }
@@ -666,14 +969,47 @@ function renderEndGame(
     statsRow.appendChild(cell);
   }
   wrap.appendChild(statsRow);
+  wrap.appendChild(renderPersonalDistribution(stats, total));
 
   const share = document.createElement('button');
   share.type = 'button';
   share.className = 'share-btn';
   share.textContent = 'Share result';
-  share.addEventListener('click', () => void shareResult(state));
+  share.addEventListener('click', () => showShareModal(state));
   wrap.appendChild(share);
 
+  return wrap;
+}
+
+/** The player's own days by score band — the local `stats.distribution`. */
+function renderPersonalDistribution(stats: Stats, viewerTotal: number): HTMLElement {
+  const wrap = document.createElement('section');
+  wrap.className = 'personal-distribution';
+  const titleEl = document.createElement('h3');
+  titleEl.className = 'hist-title';
+  titleEl.textContent = 'Your Scores';
+  wrap.appendChild(titleEl);
+
+  const userBucket = bucketForTotal(viewerTotal);
+  const max = Math.max(1, ...stats.distribution);
+  const hist = document.createElement('div');
+  hist.className = 'histogram';
+  DISTRIBUTION_BUCKETS.forEach((bucket, i) => {
+    const count = stats.distribution[i] ?? 0;
+    const bar = document.createElement('div');
+    bar.className = bucket === userBucket ? 'hist-bar hist-bar-current' : 'hist-bar';
+    const label = document.createElement('span');
+    label.className = 'hist-label';
+    label.textContent = BUCKET_LABEL[bucket];
+    const fill = document.createElement('div');
+    fill.className = 'hist-fill';
+    fill.style.width = '0%';
+    fill.dataset.fillTo = String(Math.max(8, (count / max) * 100));
+    fill.textContent = String(count);
+    bar.append(label, fill);
+    hist.appendChild(bar);
+  });
+  wrap.appendChild(hist);
   return wrap;
 }
 
@@ -750,17 +1086,6 @@ function renderCommunityDistribution(
 }
 
 /**
- * A place a leaderboard panel lives. Globe mounts panels in two independent
- * spots — the end-game screen and the past-round modal, which are on screen at
- * the same time when the modal is opened over a finished game — so each holds
- * its own slot rather than sharing one "current panel" that would tear down the
- * other's board.
- *
- * Mounting destroys whatever the slot held, which is what stops the Global
- * tab's `scores.top` from painting into detached nodes after the modal has been
- * paged to another puzzle or closed.
- */
-/**
  * Rows to fetch for a public board. The REST route and the SDK schema both cap
  * this at 100, so it is "everyone the server will hand over".
  *
@@ -773,6 +1098,17 @@ function renderCommunityDistribution(
  */
 const BOARD_LIMIT = 100;
 
+/**
+ * A place a leaderboard panel lives. Globe mounts panels in two independent
+ * spots — the end-game screen and the past-round modal, which are on screen at
+ * the same time when the modal is opened over a finished game — so each holds
+ * its own slot rather than sharing one "current panel" that would tear down the
+ * other's board.
+ *
+ * Mounting destroys whatever the slot held, which is what stops the Global
+ * tab's `scores.top` from painting into detached nodes after the modal has been
+ * paged to another puzzle or closed.
+ */
 interface PanelSlot {
   mount(panel: LeaderboardPanel): HTMLElement;
   clear(): void;
@@ -848,7 +1184,7 @@ function renderLeaderboardPanel(
       label: 'Global',
       emptyText: 'No scores yet — be the first on the board.',
       load: () => OR.scores.top({ roundKey: globalRound, order: 'top', limit: BOARD_LIMIT }),
-      // The viewer's own placement when they're outside the top 20. Separately
+      // The viewer's own placement when they're outside the top BOARD_LIMIT. Separately
       // gated: `scores.rank` ships after `scores.top`, so a host can have the
       // board and not the rank. The panel only calls this when the viewer is
       // absent from the rows above, and a failure costs the pinned row alone.
@@ -1004,6 +1340,7 @@ function renderResetTime(): HTMLElement {
   const el = document.createElement('p');
   el.className = 'reset-time';
   el.textContent = formatTimeUntilReset();
+  const renderedDay = todayPuzzleIndex();
   if (resetTimeInterval !== undefined) window.clearInterval(resetTimeInterval);
   resetTimeInterval = window.setInterval(() => {
     if (!el.isConnected) {
@@ -1012,6 +1349,9 @@ function renderResetTime(): HTMLElement {
       return;
     }
     el.textContent = formatTimeUntilReset();
+    // Midnight UTC passed with the game open: pick up the new day (the
+    // countdown alone would just start again from 24h on a stale screen).
+    if (todayPuzzleIndex() !== renderedDay) void refreshIfStale();
   }, 60_000);
   return el;
 }
@@ -1041,8 +1381,8 @@ function showInstructions(onClose?: () => void): void {
   backdrop.innerHTML = `
     <div class="modal">
       <h2 id="modal-title">How to play</h2>
-      <p>Each day brings <strong>three photos</strong> from somewhere in the world. For each one, tap the map to drop a pin where you think it was taken, then hit <strong>Guess</strong>.</p>
-      <p class="legend-note">The closer your pin, the more of the 5,000 points you keep — so a perfect guess is 15,000 across the three rounds. A new puzzle drops every day at midnight UTC.</p>
+      <p>Each day brings <strong>three photos</strong> from somewhere in the world. Tap a photo to see it full screen. Then open the map, move it until the crosshair sits where you think the photo was taken (drag, or tap a spot to jump there), and hit <strong>Guess</strong>.</p>
+      <p class="legend-note">The closer you are, the more of the 5,000 points you keep — within ${PERFECT_KM} km keeps them all, so a perfect day is 15,000. A new puzzle drops every day at midnight UTC.</p>
       <button type="button" class="modal-close">Got it</button>
     </div>
   `;
@@ -1066,26 +1406,37 @@ function showInstructions(onClose?: () => void): void {
 
 async function submitGuess(): Promise<void> {
   const state = currentState;
-  if (state.status !== 'in_progress' || pendingPin === null) return;
+  if (!state || state.status !== 'in_progress' || !pinArmed || !mapInstance) return;
+  // Already guessed (a double tap landing before the re-render).
+  if (state.guesses[state.current]) return;
   const location = state.locations[state.current]!;
-  const km = haversineKm(pendingPin.lat, pendingPin.lng, location.lat, location.lng);
+  // wrap(): a pin on a repeated world copy reads as e.g. lng 200; store it
+  // normalised to −180…180.
+  const pin = (aimTarget ?? mapInstance.getCenter()).wrap();
+  const km = haversineKm(pin.lat, pin.lng, location.lat, location.lng);
   state.guesses[state.current] = {
-    lat: pendingPin.lat,
-    lng: pendingPin.lng,
+    lat: pin.lat,
+    lng: pin.lng,
     km,
     score: scoreForKm(km),
   };
-  pendingPin = null;
   void window.OddsRabbit.actions.haptic('success');
   await writeJson('today', state);
   render();
 }
 
-async function advanceRound(): Promise<void> {
+/**
+ * Move on from round `fromRound`. Keyed to the round the button was rendered
+ * for, and state changes happen before the first await, so a second tap landing
+ * before the re-render is a no-op instead of skipping a round or finishing the
+ * day twice (which double-counted `played` and reset the streak to 1).
+ */
+async function advanceRound(fromRound: number): Promise<void> {
   const state = currentState;
+  if (!state || state.status !== 'in_progress' || state.current !== fromRound) return;
+  if (!state.guesses[fromRound]) return;
   if (state.current < ROUNDS_PER_DAY - 1) {
     state.current += 1;
-    pendingPin = null;
     await writeJson('today', state);
     render();
     return;
@@ -1129,21 +1480,14 @@ const TIER_EMOJI = ['🟩', '🟨', '🟧', '🟥', '⬛'];
 const TIER_COLOR = ['#4a9d54', '#e0b93a', '#e0843a', '#d6543f', '#3a3a3a'];
 
 /**
- * Exact distance — the precise number is the competitive brag. Mirrors the
- * in-game `formatKm`: one decimal under 10 km so a near-perfect guess keeps its
- * tiebreaker (3.4 km, not "3 km"), whole kilometres with grouping above.
- */
-function shareKm(km: number): string {
-  return km < 10 ? `${km.toFixed(1)} km` : `${Math.round(km).toLocaleString()} km`;
-}
-
-/**
  * One line per round: closeness color + actual distance — the distance is the
  * real brag in a geo game, and it's spoiler-safe (your error, not the location).
+ * `formatKm` keeps one decimal under 10 km, so a near-perfect guess keeps its
+ * tiebreaker (3.4 km, not "3 km").
  */
 function buildShareGrid(state: State): string {
   return state.guesses
-    .map((g) => (g ? `${TIER_EMOJI[closenessTier(g.km)]} ${shareKm(g.km)}` : '⬜ —'))
+    .map((g) => (g ? `${TIER_EMOJI[closenessTier(g.km)]} ${formatKm(g.km)}` : '⬜ —'))
     .join('\n');
 }
 
@@ -1153,10 +1497,6 @@ function buildShareTitle(state: State): string {
 
 function buildShareText(state: State): string {
   return `${buildShareTitle(state)}\n\n${buildShareGrid(state)}\n\nPlay at ${SHARE_LANDING_URL}`;
-}
-
-async function shareResult(state: State): Promise<void> {
-  showShareModal(state);
 }
 
 function showShareModal(state: State): void {
@@ -1318,38 +1658,44 @@ function triggerDownload(blob: Blob, filename: string): void {
 
 const SQUARE_EMPTY = '#d4d6db';
 
-/** Load a cross-origin image for canvas compositing. `crossOrigin` keeps the
- * canvas un-tainted so toBlob works (images.oddsrabbit.com sends ACAO:*). */
-function loadShareImage(url: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('share image load failed'));
-    img.src = url;
-  });
+/**
+ * A simple wireframe globe (orthographic, seen from the equator): outline,
+ * parallels as horizontal chords, meridians as ellipses.
+ */
+function drawGlobe(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number): void {
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = '#e8effd';
+  ctx.fill();
+  ctx.clip();
+  ctx.strokeStyle = '#2f6df0';
+  ctx.lineWidth = 4;
+  for (const lat of [-60, -30, 0, 30, 60]) {
+    const y = cy - r * Math.sin(toRad(lat));
+    const half = r * Math.cos(toRad(lat));
+    ctx.beginPath();
+    ctx.moveTo(cx - half, y);
+    ctx.lineTo(cx + half, y);
+    ctx.stroke();
+  }
+  for (const lng of [0, 30, 60]) {
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, Math.max(1, r * Math.sin(toRad(lng))), r, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  ctx.restore();
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.strokeStyle = '#2f6df0';
+  ctx.lineWidth = 6;
+  ctx.stroke();
 }
 
-/** Draw `img` into the target rect with object-fit: cover (center-crop). */
-function drawImageCover(
-  ctx: CanvasRenderingContext2D,
-  img: HTMLImageElement,
-  x: number,
-  y: number,
-  w: number,
-  h: number
-): void {
-  const scale = Math.max(w / img.width, h / img.height);
-  const sw = w / scale;
-  const sh = h / scale;
-  const sx = (img.width - sw) / 2;
-  const sy = (img.height - sh) / 2;
-  ctx.drawImage(img, sx, sy, sw, sh, x, y, w, h);
-}
-
-// Renders the result as a 1080×1080 PNG: today's first clue photo on top (the
-// question, not the answer — no location is ever shown), then one tile per round
-// colored by closeness with the exact distance under each.
+// Renders the result as a 1080×1080 PNG: a globe graphic on top, then one tile
+// per round colored by closeness with the exact distance under each. No clue
+// photo — it's shared the same day, and today's photo would hand friends who
+// haven't played yet a look at the question.
 async function buildShareImage(state: State): Promise<Blob> {
   const SIZE = 1080;
   const canvas = document.createElement('canvas');
@@ -1376,27 +1722,8 @@ async function buildShareImage(state: State): Promise<Blob> {
     150
   );
 
-  // Clue photo band (best-effort — skipped if it fails to load). Shows today's
-  // FIRST photo: the prompt, never the location.
-  let tilesTop = 250;
-  const firstImage = state.locations[0]?.image;
-  if (firstImage) {
-    try {
-      const img = await loadShareImage(firstImage);
-      const px = 90;
-      const pw = SIZE - 2 * px;
-      const py = 220;
-      const ph = 430;
-      ctx.save();
-      drawRoundedRect(ctx, px, py, pw, ph, 24);
-      ctx.clip();
-      drawImageCover(ctx, img, px, py, pw, ph);
-      ctx.restore();
-      tilesTop = py + ph + 50;
-    } catch {
-      /* no photo — fall back to the tiles-only layout below */
-    }
-  }
+  drawGlobe(ctx, SIZE / 2, 440, 190);
+  const tilesTop = 680;
 
   // One tile per round, colored by closeness, exact distance underneath.
   const COLS = ROUNDS_PER_DAY;
@@ -1414,10 +1741,11 @@ async function buildShareImage(state: State): Promise<Blob> {
     drawRoundedRect(ctx, x, startY, TILE, TILE, RADIUS);
     ctx.fill();
     ctx.fillStyle = '#333333';
-    ctx.font = '600 36px system-ui, -apple-system, "Segoe UI", sans-serif';
+    // 30px so a five-digit distance ("14,329 km") fits within its tile's column.
+    ctx.font = '600 30px system-ui, -apple-system, "Segoe UI", sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
-    ctx.fillText(g ? shareKm(g.km) : '—', x + TILE / 2, startY + TILE + 14);
+    ctx.fillText(g ? formatKm(g.km) : '—', x + TILE / 2, startY + TILE + 14);
   });
 
   ctx.fillStyle = '#999999';
@@ -1597,10 +1925,7 @@ async function showLeaderboardModal(puzzleIndex: number): Promise<void> {
 
 /** Holding screen when today's server locations aren't available (no fallback). */
 function renderUnavailable(): void {
-  if (mapInstance) {
-    mapInstance.remove();
-    mapInstance = null;
-  }
+  teardownMap();
   root.innerHTML = '';
   const wrap = document.createElement('div');
   wrap.className = 'end-game';
@@ -1610,49 +1935,87 @@ function renderUnavailable(): void {
   verdict.textContent = "Today's puzzle isn't available yet.";
   const sub = document.createElement('p');
   sub.textContent = 'Check back in a moment, or make sure you have a connection.';
-  wrap.appendChild(verdict);
-  wrap.appendChild(sub);
-  wrap.appendChild(renderResetTime());
+  const retry = document.createElement('button');
+  retry.type = 'button';
+  retry.className = 'control-btn control-btn-primary';
+  retry.textContent = 'Try again';
+  retry.addEventListener('click', () => {
+    retry.disabled = true;
+    retry.textContent = 'Checking…';
+    void startDay();
+  });
+  wrap.append(verdict, sub, retry, renderResetTime());
   root.appendChild(wrap);
+}
+
+/**
+ * Load (or reload) today's game and render it. Runs at boot, from the
+ * unavailable screen's retry, and when the day rolls over with the game open.
+ * Concurrent calls share one run.
+ */
+let startingDay: Promise<void> | null = null;
+function startDay(): Promise<void> {
+  startingDay ??= (async () => {
+    const [state, stats, streak] = await Promise.all([
+      loadState(),
+      readJson<Stats>('stats', DEFAULT_STATS),
+      readJson<Streak>('streak', DEFAULT_STREAK),
+    ]);
+    currentStats = stats;
+    currentStreak = streak;
+    currentState = state;
+    currentFriends = undefined;
+    currentCommunity = null;
+
+    if (state?.status === 'complete') {
+      await submitScoreToServer(state);
+      const [friends, community] = await Promise.all([
+        loadFriends(state.puzzleIndex),
+        loadCommunityData(state.puzzleIndex),
+      ]);
+      currentFriends = friends;
+      currentCommunity = community;
+    }
+    // Null state (unsupported host, unseeded round, offline) renders the
+    // holding screen — locations are server-only, there's no local fallback.
+    render();
+  })().finally(() => {
+    startingDay = null;
+  });
+  return startingDay;
+}
+
+/**
+ * Reload when what's on screen is out of date: the holding screen (today's
+ * content may have landed), or a finished game from a previous day. A game
+ * still in progress is left alone even across midnight — the player finishes
+ * the day they started rather than losing it mid-round.
+ */
+async function refreshIfStale(): Promise<void> {
+  const state = currentState;
+  const rolledOver = state?.status === 'complete' && state.puzzleIndex !== todayPuzzleIndex();
+  if (!state || rolledOver) await startDay();
 }
 
 async function bootstrap(): Promise<void> {
   await window.OddsRabbit.whenReady();
 
-  const [state, stats, streak, seenIntro] = await Promise.all([
-    loadState(),
-    readJson<Stats>('stats', DEFAULT_STATS),
-    readJson<Streak>('streak', DEFAULT_STREAK),
+  const [, seenIntro] = await Promise.all([
+    startDay(),
     readJson<boolean>('seen_intro', false),
   ]);
-  currentStats = stats;
-  currentStreak = streak;
 
-  // No playable game: locations are server-only and today's aren't available
-  // (unsupported host, unseeded round, or offline). Show a holding screen.
+  window.OddsRabbit.lifecycle.on('pause', () => {
+    if (currentState) void writeJson('today', currentState);
+  });
+  window.OddsRabbit.lifecycle.on('resume', () => void refreshIfStale());
+
+  // No playable game: nothing to introduce or overlay yet.
+  const state = currentState;
   if (!state) {
-    renderUnavailable();
     window.OddsRabbit.ready();
     return;
   }
-
-  currentState = state;
-
-  if (state.status === 'complete') {
-    await submitScoreToServer(state);
-    const [friends, community] = await Promise.all([
-      loadFriends(state.puzzleIndex),
-      loadCommunityData(state.puzzleIndex),
-    ]);
-    currentFriends = friends;
-    currentCommunity = community;
-  }
-
-  window.OddsRabbit.lifecycle.on('pause', () => {
-    void writeJson('today', currentState);
-  });
-
-  render();
 
   // Deep-link from a push tap: overlay a past round's results on today's game.
   const leaderboardPuzzleIndex = parseLeaderboardIntent(window.OddsRabbit.initialState);

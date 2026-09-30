@@ -23,9 +23,25 @@
   --lb-you-bg: color-mix(in srgb, var(--you) 12%, transparent);
 }
 
-:root[data-color-scheme='dark'],
+/* Dark palette, twice: once for the host's explicit signal (the colorScheme
+   param, applied by the inline script in index.html) and once for the OS
+   preference when the host sent none. These can't share one rule — an at-rule
+   isn't a selector, and a list like `:root[…], @media (…) { … }` is invalid
+   CSS that the browser drops whole (which is how dark mode used to never
+   apply). Keep the two blocks in step. */
+:root[data-color-scheme='dark'] {
+  --bg: #16161a;
+  --surface: #1f1f25;
+  --text: #f3f3f5;
+  --muted: #a0a0ad;
+  --border: #33333c;
+  --accent: #5b8cff;
+  --good: #5cc06a;
+  --you: #5b8cff;
+  color-scheme: dark;
+}
 @media (prefers-color-scheme: dark) {
-  :root:not([data-color-scheme='light']) {
+  :root:not([data-color-scheme]) {
     --bg: #16161a;
     --surface: #1f1f25;
     --text: #f3f3f5;
@@ -35,6 +51,19 @@
     --good: #5cc06a;
     --you: #5b8cff;
     color-scheme: dark;
+  }
+}
+
+/* OpenStreetMap only serves a light style; in dark mode, invert the tiles and
+   rotate the hue back so water stays blue — a standard trick that avoids a
+   second tile provider. Only the tile pane: markers and lines keep their
+   colours. */
+:root[data-color-scheme='dark'] .leaflet-tile-pane {
+  filter: invert(1) hue-rotate(180deg) brightness(0.9) contrast(0.9);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-color-scheme]) .leaflet-tile-pane {
+    filter: invert(1) hue-rotate(180deg) brightness(0.9) contrast(0.9);
   }
 }
 
@@ -135,17 +164,56 @@ header h1 {
 }
 
 .clue { margin: 0; }
+.clue-frame { position: relative; }
+/* `contain`, not `cover`: the whole frame is the clue, and cropping its edges
+   can cut off the sign or plate that gives it away. Tap for full screen. */
 .clue-photo {
-  width: 100%; height: auto; max-height: 56vh; object-fit: cover;
-  border-radius: 12px; display: block; background: var(--border);
+  width: 100%; height: auto; max-height: 56vh; object-fit: contain;
+  border-radius: 12px; display: block; background: var(--border); cursor: zoom-in;
 }
-.clue-photo-failed .clue-photo { min-height: 160px; }
+.clue-photo-failed .clue-photo { min-height: 200px; cursor: default; }
+.clue-retry {
+  display: none; position: absolute; inset: 0; margin: auto; width: max-content; height: max-content;
+  padding: 10px 16px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--surface); color: var(--text); font-weight: 600; cursor: pointer;
+}
+.clue-photo-failed .clue-retry { display: block; }
+.clue-thumbs { display: flex; gap: 8px; justify-content: center; margin-top: 8px; }
+.clue-thumb {
+  width: 56px; height: 40px; padding: 0; border-radius: 8px; cursor: pointer;
+  border: 2px solid transparent; background: var(--border) center / cover no-repeat;
+  opacity: 0.7;
+}
+.clue-thumb-active { border-color: var(--accent); opacity: 1; }
 .clue-attribution { color: var(--muted); font-size: 0.72rem; margin: 4px 2px 0; }
 
+.geo-map-wrap { position: relative; }
 .geo-map {
   width: 100%; height: 56vh; min-height: 300px;
   border-radius: 12px; overflow: hidden; border: 1px solid var(--border);
+  /* Leaflet's panes and controls carry z-indexes up to 1000 with no stacking
+     context of their own, which would put the zoom buttons over our modals
+     (z-index 100). Isolating the container keeps them inside the map. */
+  isolation: isolate;
 }
+.geo-map.leaflet-container { background: var(--border); }
+.summary-map { height: 38vh; min-height: 240px; margin-bottom: 16px; }
+
+/* The guess is the map's centre; this marks it. Ring + dot, exactly centred,
+   with a white halo so it reads on any tile. Above Leaflet's panes (≤ 700),
+   below its controls (1000); never catches a tap. */
+.map-crosshair {
+  position: absolute; left: 50%; top: 50%; width: 28px; height: 28px;
+  transform: translate(-50%, -50%); pointer-events: none; z-index: 800;
+  border: 3px solid var(--you); border-radius: 50%;
+  box-shadow: 0 0 0 2px #fff, inset 0 0 0 2px #fff;
+}
+.map-crosshair::after {
+  content: ''; position: absolute; left: 50%; top: 50%; width: 6px; height: 6px;
+  transform: translate(-50%, -50%); border-radius: 50%;
+  background: var(--you); box-shadow: 0 0 0 1.5px #fff;
+}
+.map-hint { color: var(--muted); font-size: 0.8rem; margin: 8px 0 0; text-align: center; }
 
 .round-result { text-align: center; margin: 12px 0 8px; }
 .round-distance { font-size: 1.1rem; margin: 0; }
@@ -160,12 +228,47 @@ header h1 {
 .control-btn-primary { background: var(--accent); color: var(--accent-text); border-color: transparent; }
 .control-btn:disabled { opacity: 0.45; cursor: default; }
 
-/* ---- Map pins (CSS-only divIcons) ---- */
-.map-pin {
+/* ---- Map markers ----
+   Leaflet writes stroke/fill as SVG attributes; CSS properties outrank those,
+   which is how these follow the theme. (`color` does nothing on an SVG path.) */
+.map-dot { stroke: #fff; }
+.map-dot-guess { fill: var(--you); }
+.map-dot-truth { fill: var(--good); }
+.guess-line { stroke: var(--you); stroke-dasharray: 6 6; }
+.map-num {
   display: flex; align-items: center; justify-content: center;
-  font-size: 20px; line-height: 1;
+  border-radius: 50%; background: var(--good); color: #fff;
+  border: 2px solid #fff; font-size: 12px; font-weight: 700; line-height: 1;
 }
-.guess-line { color: var(--accent); stroke-dasharray: 6 6; }
+.round-perfect { color: var(--good); font-weight: 700; margin-left: 4px; }
+
+/* ---- Photo lightbox ---- */
+.lightbox {
+  position: fixed; inset: 0; z-index: 200; background: rgba(0, 0, 0, 0.92);
+}
+.lightbox-scroll {
+  position: absolute; inset: 0; overflow: auto;
+  display: flex; align-items: center; justify-content: center;
+  padding: calc(var(--oddsrabbit-safe-top, 0px) + var(--oddsrabbit-chrome-height, 48px))
+           var(--oddsrabbit-safe-right, 0px)
+           calc(32px + var(--oddsrabbit-safe-bottom, 0px))
+           var(--oddsrabbit-safe-left, 0px);
+}
+.lightbox-img { max-width: 100%; max-height: 100%; object-fit: contain; cursor: zoom-in; }
+.lightbox-zoomed .lightbox-scroll { display: block; }
+.lightbox-zoomed .lightbox-img { max-width: none; max-height: none; width: 250%; cursor: zoom-out; }
+.lightbox-close {
+  position: absolute; z-index: 1;
+  top: calc(var(--oddsrabbit-safe-top, 0px) + 8px);
+  right: calc(12px + var(--oddsrabbit-safe-right, 0px));
+  width: 40px; height: 40px; border-radius: 50%; border: none;
+  background: rgba(255, 255, 255, 0.15); color: #fff; font-size: 1.6rem; cursor: pointer;
+}
+.lightbox-caption {
+  position: absolute; left: 0; right: 0; margin: 0; text-align: center;
+  bottom: calc(8px + var(--oddsrabbit-safe-bottom, 0px));
+  color: rgba(255, 255, 255, 0.7); font-size: 0.72rem; pointer-events: none;
+}
 
 /* ---- End screen ---- */
 .end-game { text-align: center; }
@@ -192,6 +295,7 @@ header h1 {
   transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .hist-bar-current .hist-fill { background: var(--you); color: #fff; }
+.personal-distribution { margin-bottom: 16px; }
 .hist-you { font-size: 0.72rem; color: var(--you); font-weight: 700; }
 
 /* Wrapper only. Everything inside — tabs, rows, avatars, medals, the sign-in
