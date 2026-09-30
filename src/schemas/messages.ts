@@ -21,10 +21,13 @@ export type AppColorScheme = z.infer<typeof AppColorSchemeSchema>;
  * is a caller bug worth rejecting.
  *
  * Note this is the request side only — `SeasonBoardSchema.metric`, what the
- * server sends back, is deliberately open. `best_n` is designed (§3.7) but
- * unbuilt; adding it means a host redeploy before any game can send it.
+ * server sends back, is deliberately open.
+ *
+ * `best_n` is accepted here, but a game should not SEND it: hosts from before
+ * it existed (older mobile builds) reject the request. Omit `metric` and the
+ * server picks the period's own — which is how rabbit-words reads its board.
  */
-export const SEASON_METRICS = ['sum', 'max', 'qualified_avg'] as const;
+export const SEASON_METRICS = ['sum', 'max', 'qualified_avg', 'best_n'] as const;
 export const SeasonMetricSchema = z.enum(SEASON_METRICS);
 export type SeasonMetric = z.infer<typeof SeasonMetricSchema>;
 
@@ -736,8 +739,8 @@ export const SeasonEntrySchema = z.object({
   username: z.string().min(1).max(64),
   avatar: z.string().url().nullable().default(null),
   // The ranked number, whichever metric produced it. Generic because the metric
-  // varies per app: a points total for rabbit-globe, a mean for rabbit-words, a
-  // single best score for 2048.
+  // varies per app: a points total for rabbit-globe, the sum of a player's best
+  // N days for rabbit-words (a mean before 2026-10).
   value: z.number(),
   // Days in the period with a recorded score. Both the qualifier input for
   // `qualified_avg` and a row badge in its own right.
@@ -767,9 +770,14 @@ export const SeasonBoardSchema = z.object({
   // for bundles already in the wild — and a silent one, because a rejected
   // envelope renders as an empty month, not an error. rabbit-globe and solitaire
   // send no `metric` at all and take the app's server-side default, so a config
-  // change alone would be enough to blank their boards. `best_n` is already
-  // designed (§3.7). A metric the bundle doesn't recognise still has a correctly
-  // ranked board behind it; the UI just captions it generically.
+  // change alone would be enough to blank their boards. That is exactly how
+  // `best_n` shipped: rabbit-words bundles from before it hardcode
+  // `qualified_avg`, the server answers with the period's own metric, and they
+  // caption it generically. A metric the bundle doesn't recognise still has a
+  // correctly ranked board behind it.
+  //
+  // The metric is per PERIOD, not per app: a past month keeps the metric it ran
+  // under, so one app can return different values for different months.
   metric: z.string().min(1),
   // Puzzle days the server actually expanded for this period — NOT calendar
   // days. A game's launch month is partial (rabbit-globe's epoch is 2026-06-20,
@@ -793,6 +801,10 @@ export const SeasonBoardSchema = z.object({
   // computed server-side as `ceil(puzzleDays * 2/3)` and sent so the client can
   // state the rule without re-deriving it — two implementations of one formula
   // will drift. Null for metrics that have no qualifier.
+  //
+  // On a `best_n` board it is N: how many of a player's best days count. A
+  // player below it just has empty slots worth zero — they are ranked on the
+  // same number as everyone else, not below a line.
   //
   // NOT a visibility filter. `AppScoresService::seasonForPeriod` orders by
   // `LEAST(COUNT(*), qualifyingDays) DESC, avg_score DESC` with no `HAVING`, so

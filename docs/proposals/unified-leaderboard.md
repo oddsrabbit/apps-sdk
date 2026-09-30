@@ -973,3 +973,44 @@ What shipped, all in `solitaire/`, no backend and no SDK change:
   own line under the name. Left as a game-scoped override: it is this game's
   9px pixel type and narrow panel that run out of room, and the shared rules are
   fine at the widths the others have.
+
+## 5.8 Reversal: rabbit-words moves to `best_n` from October 2026 (2026-09-30)
+
+§3.7 said *"qualified average: playing more never hurts you."* That holds
+**only below `Q`**. Above it, days played stop counting and only the average
+moves, so every extra day can lower your average. A player reported the
+consequence: a qualified leader's best move is to read the public board and sit
+out the rest of the month (especially the last day), and everyone chasing them
+can see exactly what they need. It's the batting-title problem, and a public
+board is what makes it playable.
+
+**Rule:** a rabbit-words season is the **sum of your best N days**, with
+`N = ceil(puzzleDays × 2/3)`, the same number as the old `Q`. Ties are broken
+by total points, then earliest first play. Another day can only fill an empty
+slot or replace a weaker one, so no score can lower you and skipping never
+helps. The tiebreak is also a total, and it can only rise when you play. The
+"12/20 days" badge now means empty slots, not a lower tier. The server returns
+N as `qualifyingDays`, so the Regular honor's attendance bar doesn't move.
+
+The §3.7 objection (*"once 20 good days are banked, late-month days stop
+mattering"*) is weaker than it looks: a late day still replaces your weakest
+counted day, so it stops mattering only for someone whose 20 counted days are
+all 6s.
+
+**Per-period, not per-app.** `DailyGameRegistry` has `seasonMetricSince:
+'2026-10'` and `previousSeasonMetric: 'qualified_avg'`. September and earlier
+keep ranking (and closing) under the average they were played to, so a frozen
+podium never disagrees with the board it came from.
+
+**Old bundles.** Every rabbit-words bundle before this one sends
+`metric: 'qualified_avg'`. The server treats a request for a game's *own*
+metric (current or previous) as "this game's board" and answers with the
+period's metric. The response `metric` is open, so those bundles caption the
+board generically ("Ranked across October 2026.") and render the server's
+ranking. The new bundle sends no `metric` at all. That also keeps it working
+on mobile builds whose request whitelist predates `best_n`.
+
+**Podium.** Under `best_n` the podium is the board's top three, qualified or
+not. A player short of N days already carries a zero in each empty slot, so
+anyone who still outscores a full attendee earned the place on the same rule.
+The qualified-only podium rule remains for `qualified_avg` seasons.

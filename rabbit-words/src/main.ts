@@ -681,7 +681,7 @@ function viewerResultFromState(state: State): ViewerResult | null {
  *
  * **Everyone → Season → Friends**, public boards first. Words has two global
  * boards for two different jobs: the day's whole field (`scores.top` on this
- * puzzle) and the month's standing (a season board ranked by qualified average).
+ * puzzle) and the month's standing (a season board ranked by your best days).
  * See §3.7 and §5.3 of docs/proposals/unified-leaderboard.md — and the
  * `hasEveryone` block below for why the daily board, ruled out there, is in.
  */
@@ -825,36 +825,35 @@ function renderFriendsPanel(options: FriendsPanelOptions): HTMLElement {
     });
   }
 
-  // The month, ranked by qualified average: play enough of it to qualify, then
-  // your mean score places you (§3.7). This is the board that still separates
-  // players once a day's field is too tied to — the daily board above is the
-  // company, this one is the standing.
+  // The month, ranked by the sum of your best two days in three (§3.7). This is
+  // the board that still separates players once a day's field is too tied to —
+  // the daily board above is the company, this one is the standing.
   //
-  // Empty means nobody PLAYED, not nobody qualified: the server returns
-  // sub-qualifier players too, ranked below everyone who met it (see
-  // `qualifyingDays` in messages.ts). "Nobody has qualified yet" would be wrong
-  // on a board that is empty and misleading on one that isn't.
+  // No `metric`: the server ranks each month by the rule that month ran under
+  // (`qualified_avg` through September 2026, `best_n` after), and the
+  // past-round modal can show last month. Naming one here is how the bundles
+  // before this one got pinned to the retired average. Omitting it also keeps
+  // this working on hosts that predate `best_n` in their request whitelist.
+  //
+  // Empty means nobody PLAYED: the server returns every player, including
+  // those with days still to fill (see `qualifyingDays` in messages.ts).
   if (hasSeason) {
     tabs.push(
       createSeasonTab({
         load: () =>
           OR.scores.season({
             period,
-            metric: 'qualified_avg',
             limit: BOARD_LIMIT,
           }),
         // Words needs this more than the other two: a 1–6 daily score means the
         // top 20 is a wall of near-identical averages, so "where am I" is the
-        // only question the board can actually answer for most players. The
-        // metric must match the board's or the rank describes a different
-        // ordering.
+        // only question the board can actually answer for most players. No
+        // metric here either — the board and the rank resolve the same one
+        // server-side, and naming one could make them disagree.
         ...(OR.capabilities.has('scores.seasonRank')
           ? {
               loadRank: () =>
-                OR.scores.seasonRank({
-                  period,
-                  metric: 'qualified_avg',
-                }),
+                OR.scores.seasonRank({ period }),
             }
           : {}),
         // Names the month rather than saying "this month": on the past-round

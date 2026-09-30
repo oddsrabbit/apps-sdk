@@ -78,7 +78,7 @@ test('sum boards share ranks, qualified_avg boards stay positional', async () =>
   assert.equal(qualified.tab.rankTies, false);
 
   // A metric this bundle predates is still ranked by the server on its value.
-  const future = await loaded(board({ metric: 'best_n' }));
+  const future = await loaded(board({ metric: 'wins' }));
   assert.equal(future.tab.rankTies, true);
 });
 
@@ -117,7 +117,7 @@ test('average is a badge on points boards and suppressed where it is the value',
   // an average, and the badge rounds — `avg 5` beside a value of `4.50` reads
   // as a contradiction, where a missing badge only reads as less information.
   const future = await loaded(
-    board({ metric: 'best_n', entries: [entry({ daysPlayed: 12, average: 4.5 })] })
+    board({ metric: 'wins', entries: [entry({ daysPlayed: 12, average: 4.5 })] })
   );
   assert.deepEqual(future.tab.badges!(future.rows[0]!, 0), ['12 days']);
 
@@ -149,7 +149,7 @@ test('values format per metric', async () => {
 
   // Unknown metric: don't round away the decimals of something that turns out
   // to be an average.
-  const future = await loaded(board({ metric: 'best_n', entries: [entry({ value: 4.5 })] }));
+  const future = await loaded(board({ metric: 'wins', entries: [entry({ value: 4.5 })] }));
   assert.equal(future.tab.formatValue(future.rows[0]!, 0), '4.50');
 });
 
@@ -162,6 +162,39 @@ test('the qualifier states what happens below the threshold', async () => {
   // board's own ordering.
   assert.match(tab.emptyText, /Play 21 of 31 days in July 2026 to qualify/);
   assert.match(tab.emptyText, /Below that you rank under everyone who has/);
+});
+
+test('best_n ranks on its value, formats as points, and hides the average', async () => {
+  const b = board({
+    metric: 'best_n',
+    puzzleDays: 30,
+    qualifyingDays: 20,
+    entries: [entry({ value: 87, daysPlayed: 12, average: 4.3 }), entry({ value: 80, daysPlayed: 25 })],
+  });
+  const { tab, rows } = await loaded(b);
+  // The server breaks equal sums by total points, then first play, so equal
+  // values are not ties and ranks stay positional.
+  assert.equal(tab.rankTies, false);
+  assert.equal(tab.formatValue(rows[0]!, 0), '87');
+  // Below N the badge shows empty slots; the average is left off because it
+  // counts the days that don't.
+  assert.deepEqual(tab.badges!(rows[0]!, 0), ['12/20 days']);
+  assert.deepEqual(tab.badges!(rows[1]!, 1), ['25 days']);
+});
+
+test('best_n captions the rule and that playing cannot hurt', async () => {
+  const { tab } = await loaded(
+    board({ metric: 'best_n', period: '2026-10', puzzleDays: 31, qualifyingDays: 21, entries: [] })
+  );
+  assert.match(tab.emptyText, /Your best 21 days of 31 in October 2026 add up to your score/);
+  assert.match(tab.emptyText, /playing another day can't lower it/);
+  // The average-board wording must not leak onto a best_n board.
+  assert.doesNotMatch(tab.emptyText, /qualify/);
+
+  const single = await loaded(
+    board({ metric: 'best_n', period: '2026-10', puzzleDays: 31, qualifyingDays: 1, entries: [] })
+  );
+  assert.match(single.tab.emptyText, /Your best day of 31 in October 2026 is your score/);
 });
 
 test('an unsupported host reads as unavailable, never as an empty month', async () => {

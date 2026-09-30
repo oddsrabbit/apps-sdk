@@ -31,16 +31,18 @@ export interface SeasonTabOptions {
   /** Tab label. Default `Season`. */
   label?: string;
   /**
-   * Copy when the month has no ranked players yet. On a `qualified_avg` board
-   * the qualifier sentence is appended automatically, so this only needs to say
-   * what's happened, not what the rule is.
+   * Copy when the month has no ranked players yet. On a `qualified_avg` or
+   * `best_n` board the rule sentence is appended automatically, so this only
+   * needs to say what's happened, not what the rule is.
    */
   emptyText?: string;
   /**
    * Show each player's per-day average as a row badge. Defaults to true on
    * `sum` and `max` boards and false everywhere else — on `qualified_avg` the
-   * ranked value IS the average and the badge would just repeat it, and on a
-   * metric this bundle doesn't know it might be. Set explicitly to override.
+   * ranked value IS the average and the badge would just repeat it; on
+   * `best_n` it averages in the days that DON'T count, so it would contradict
+   * the ranking; and on a metric this bundle doesn't know it might be either.
+   * Set explicitly to override.
    *
    * On a `sum` board this is the figure that separates skill from attendance —
    * the metric's documented weakness (§3.7) is that a monthly total mostly
@@ -48,8 +50,9 @@ export interface SeasonTabOptions {
    */
   showAverage?: boolean;
   /**
-   * Format the ranked value. Defaults to a localised integer for `sum`/`max`,
-   * two decimal places for `qualified_avg`, and — for a metric this bundle
+   * Format the ranked value. Defaults to a localised integer for
+   * `sum`/`max`/`best_n`, two decimal places for `qualified_avg`, and — for a
+   * metric this bundle
    * doesn't know — whichever of the two the value's own shape implies.
    */
   formatValue?(value: number, board: SeasonBoard): string;
@@ -109,29 +112,47 @@ export function formatPeriod(period: string): string {
  * Only `qualified_avg`, whose server-side ordering is
  * `LEAST(COUNT(*), qualifyingDays) DESC, avg_score DESC` — capped attendance
  * first, average only as the tie-break. Two rows showing the same average are
- * therefore not necessarily tied, so ranks stay positional there. `sum` and
- * `max` order on the value itself and share ranks.
+ * therefore not necessarily tied, so ranks stay positional there. `best_n`
+ * is the same: the server breaks equal sums by total points, then earliest
+ * first play (proposal §5.8). `sum` and `max` order on the value itself and
+ * share ranks.
  */
 function isPositional(board: SeasonBoard): boolean {
-  return board.metric === 'qualified_avg';
+  return board.metric === 'qualified_avg' || board.metric === 'best_n';
 }
 
 /**
- * The qualifier sentence, when the board has one.
+ * The rule sentence, when the board's ranking needs one.
  *
- * States what happens BELOW the threshold as well as above it, because the
- * server returns those players rather than hiding them — see `qualifyingDays`
- * in `messages.ts`. Without the second clause the board contradicts its own
- * caption: rows appear that a viewer would expect their average to have placed,
- * sitting below rows with a worse one.
+ * `qualified_avg` states what happens BELOW the threshold as well as above it,
+ * because the server returns those players rather than hiding them — see
+ * `qualifyingDays` in `messages.ts`. Without the second clause the board
+ * contradicts its own caption: rows appear that a viewer would expect their
+ * average to have placed, sitting below rows with a worse one.
+ *
+ * `best_n` says the thing players will otherwise get wrong: that playing
+ * another day can't hurt. Under the average it replaced, it could — and the
+ * leaders had learned to sit the last day out.
  */
 function qualifierFor(board: SeasonBoard): string | null {
-  if (board.metric !== 'qualified_avg' || board.qualifyingDays === null) return null;
-  return (
-    `Play ${board.qualifyingDays} of ${board.puzzleDays} days in ` +
-    `${formatPeriod(board.period)} to qualify — then your average ranks you. ` +
-    `Below that you rank under everyone who has.`
-  );
+  if (board.qualifyingDays === null) return null;
+  if (board.metric === 'qualified_avg') {
+    return (
+      `Play ${board.qualifyingDays} of ${board.puzzleDays} days in ` +
+      `${formatPeriod(board.period)} to qualify — then your average ranks you. ` +
+      `Below that you rank under everyone who has.`
+    );
+  }
+  if (board.metric === 'best_n') {
+    const one = board.qualifyingDays === 1;
+    const days = one ? 'day' : `${board.qualifyingDays} days`;
+    return (
+      `Your best ${days} of ${board.puzzleDays} in ` +
+      `${formatPeriod(board.period)} ${one ? 'is' : 'add up to'} your score — ` +
+      `playing another day can't lower it.`
+    );
+  }
+  return null;
 }
 
 /**
@@ -151,9 +172,13 @@ function showsAverageByDefault(board: SeasonBoard): boolean {
 /**
  * Has this row met the board's qualifier? True when the board has no qualifier
  * at all, so callers can treat "qualified" as the default state.
+ *
+ * On `best_n` "below it" means empty slots, not a lower tier — the "12/20 days"
+ * badge is how a player sees they have days left to fill.
  */
 function isQualified(board: SeasonBoard, daysPlayed: number): boolean {
-  if (board.metric !== 'qualified_avg' || board.qualifyingDays === null) return true;
+  if (board.metric !== 'qualified_avg' && board.metric !== 'best_n') return true;
+  if (board.qualifyingDays === null) return true;
   return daysPlayed >= board.qualifyingDays;
 }
 
@@ -193,8 +218,11 @@ function noteFor(board: SeasonBoard): string {
     // to know they're not ranked and what would change that.
     return qualifierFor(board) ?? `Average score across ${when}.`;
   }
-  // A metric this bundle predates — `best_n` is designed but unbuilt (§3.7), and
-  // `SeasonBoardSchema.metric` is open precisely so one doesn't blank the board.
+  if (board.metric === 'best_n') {
+    return qualifierFor(board) ?? `Total points across ${when}.`;
+  }
+  // A metric this bundle predates — `SeasonBoardSchema.metric` is open
+  // precisely so one doesn't blank the board.
   // The ranking behind it is still the server's and still correct; only the
   // caption is unknown, so say the neutral true thing.
   return `Ranked across ${when}.`;
@@ -202,7 +230,7 @@ function noteFor(board: SeasonBoard): string {
 
 function defaultFormat(value: number, board: SeasonBoard): string {
   if (board.metric === 'qualified_avg') return value.toFixed(2);
-  if (board.metric === 'sum' || board.metric === 'max') {
+  if (board.metric === 'sum' || board.metric === 'max' || board.metric === 'best_n') {
     return Math.round(value).toLocaleString();
   }
   // Unknown metric: let the value decide rather than rounding away the decimals

@@ -427,8 +427,10 @@ export interface OddsRabbitGlobal {
      * reward for a game whose whole design is coming back tomorrow. A month
      * accumulates.
      *
-     * `period` is `YYYY-MM`. `metric` defaults to whatever the app is
-     * configured for server-side — pass it only to override. The result carries
+     * `period` is `YYYY-MM`. `metric` defaults to whatever the app ranked
+     * that period by server-side — pass it only to override, and prefer not
+     * to: a game's metric can change between months, and the server knows
+     * which month ran under which. The result carries
      * `puzzleDays` and `qualifyingDays` so the UI can state the rule it's
      * ranking by without re-deriving it.
      *
