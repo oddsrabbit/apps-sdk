@@ -606,13 +606,9 @@ h1.title {
 .friends-panel .lb-list {
   max-height: 38vh;
   overflow-y: auto;
-}
-
-.solitaire-lb .lb-row {
-  padding: 7px 8px;
-  border-bottom: 2px solid var(--wood-mid);
-  /* Lets the season badges take a line of their own — see below. */
-  flex-wrap: wrap;
+  /* Vertical only. `overflow-y: auto` alone computes overflow-x to auto too,
+     so any row a pixel too wide grew a horizontal scrollbar under the board. */
+  overflow-x: hidden;
 }
 
 .solitaire-lb .lb-row-you {
@@ -620,37 +616,51 @@ h1.title {
   border-bottom-color: var(--wood-pale);
 }
 
-/* Season rows carry up to three badges ("9 days", "avg 1,300", "🔥 5") between
-   the name and the value, and at this game's width they were erasing the name:
-   `.lb-name` is `flex: 1` with a zero basis, while the badges and the value are
-   both `flex: none`, so on a 320px board the two of them took every pixel and
-   the username rendered at zero width with the row overflowing anyway. That is
-   the wrong thing to drop — a board of anonymous rows isn't a leaderboard.
+/* Every row is two lines: the name on top, the result and its badges under it.
 
-   So the badges get a line of their own under the name. `order` moves them past
-   the value (they're before it in the DOM), a 100% basis breaks the line, and
-   the indent lines them up with the name rather than with the rank column.
-   Solitaire-scoped because it's this game's 9px pixel type and 320px panel that
-   run out of room; the shared rules are fine at the widths everyone else has.
-   The `flex-wrap` this needs is on `.lb-row` above. */
-.solitaire-lb .lb-name { flex: 1 1 auto; }
+   At this game's 9px pixel type on a 320px panel, one line can't hold a
+   username, "148 moves" and a "2 retries" badge — and the season board's three
+   badges ("9 days", "avg 1,300", "🔥 5") left the name zero pixels. Letting
+   the row wrap only when it overflowed fixed that, but made the board ragged:
+   short names stayed on one line, long names and badged rows took two, and the
+   "(you)" row's unshrinkable name pushed the list into a horizontal scroll.
+   A fixed two-line grid is the same height for every row on every board.
+
+   Rank and avatar span both lines; the name spans the whole right side; the
+   value starts line two and the badges follow it, so a badged row reads
+   "131 moves · 2 retries". `grid-row: 2` pins the value there even though it
+   comes after the badges in the DOM. Solitaire-scoped because it's this game's
+   type and panel width that run out of room; the shared one-line row is fine
+   at the widths everyone else has. */
+.solitaire-lb .lb-row {
+  padding: 7px 8px;
+  border-bottom: 2px solid var(--wood-mid);
+  display: grid;
+  grid-template-columns: auto auto auto minmax(0, 1fr);
+  column-gap: 10px;
+  row-gap: 4px;
+  align-items: center;
+}
+.solitaire-lb .lb-rank { grid-column: 1; grid-row: 1 / span 2; }
+.solitaire-lb .lb-avatar { grid-column: 2; grid-row: 1 / span 2; }
+.solitaire-lb .lb-name { grid-column: 3 / span 2; grid-row: 1; }
+.solitaire-lb .lb-value { grid-column: 3; grid-row: 2; }
 .solitaire-lb .lb-badges {
-  order: 1;
-  flex: 1 0 100%;
+  grid-column: 4;
+  grid-row: 2;
   flex-wrap: wrap;
-  padding-left: 42px;
-  margin-top: 4px;
+  min-width: 0;
 }
 .solitaire-lb .lb-badge {
   font-size: 8px;
   letter-spacing: 0;
   border-radius: 0;
 }
-/* Same column as the badges, for the same reason — it is the name column the
-   pinned note is annotating, and the shared 62px is measured off a 30px avatar
-   this game shrinks to 22px. */
+/* Lines up with the name column, which it is annotating: 8px row padding +
+   26px rank + 10px gap + 22px avatar + 10px gap. The shared 62px is measured
+   off a 30px avatar this game shrinks to 22px. */
 .solitaire-lb .lb-pinned-note {
-  padding-left: 42px;
+  padding-left: 76px;
   font-size: 8px;
   letter-spacing: 1px;
 }

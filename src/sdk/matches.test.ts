@@ -398,3 +398,84 @@ test('check and quick on a host without them retire only themselves', async () =
   assert.equal(sdk.capabilities.has('matches.quick'), false);
   assert.equal(sdk.capabilities.has('matches.get'), true);
 });
+
+const MESSAGE_UUID = '33333333-3333-4333-8333-333333333333';
+
+function wireMessage(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    messageUuid: MESSAGE_UUID,
+    seat: 1,
+    uuid: OTHER,
+    username: 'them',
+    kind: 'text',
+    text: 'nice move',
+    sentAt: '2026-09-30T10:00:00Z',
+    ...over,
+  };
+}
+
+test('chat sends the page request and resolves the messages', async () => {
+  const t = fakeTransport(() =>
+    Promise.resolve({ conversationUuid: OTHER, messages: [wireMessage()], unread: 0, hasMore: true })
+  );
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init({ capabilities: ['matches.get', 'matches.chat'] });
+  const page = await sdk.matches.chat({ matchUuid: UUID, limit: 30, markSeen: true });
+  assert.equal(page.messages.length, 1);
+  assert.equal(page.messages[0]!.text, 'nice move');
+  assert.equal(page.messages[0]!.isSelf, false);
+  assert.equal(page.messages[0]!.nonce, null);
+  assert.equal(page.hasMore, true);
+  assert.deepEqual(t.calls[0], {
+    type: 'matches.chat',
+    payload: { matchUuid: UUID, limit: 30, markSeen: true },
+  });
+});
+
+test('one malformed chat message drops itself, not the page', async () => {
+  const t = fakeTransport(() =>
+    Promise.resolve({
+      conversationUuid: null,
+      messages: [wireMessage(), wireMessage({ username: '' }), wireMessage({ kind: 'sticker', text: '' })],
+    })
+  );
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init();
+  const page = await sdk.matches.chat({ matchUuid: UUID });
+  assert.equal(page.messages.length, 2);
+  assert.equal(page.messages[1]!.kind, 'other', 'an unknown kind is read as other');
+  assert.equal(page.unread, 0);
+});
+
+test('chat rejects on a malformed page', async () => {
+  const t = fakeTransport(() => Promise.resolve({ ok: true }));
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init();
+  await assert.rejects(sdk.matches.chat({ matchUuid: UUID }), /malformed page/);
+});
+
+test('chatSend resolves the stored message with its nonce', async () => {
+  const t = fakeTransport(() =>
+    Promise.resolve(wireMessage({ seat: 0, uuid: UUID, username: 'me', isSelf: true, text: 'gg', nonce: 'abcdefgh' }))
+  );
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init({ capabilities: ['matches.get', 'matches.chat', 'matches.chatSend'] });
+  const sent = await sdk.matches.chatSend({ matchUuid: UUID, text: 'gg', nonce: 'abcdefgh' });
+  assert.equal(sent.isSelf, true);
+  assert.equal(sent.nonce, 'abcdefgh');
+  assert.deepEqual(t.calls[0], {
+    type: 'matches.chatSend',
+    payload: { matchUuid: UUID, text: 'gg', nonce: 'abcdefgh' },
+  });
+});
+
+test('a refused chat message does not retire the verb', async () => {
+  const t = fakeTransport(() => reject(MATCH_ERROR_CODES.chatRefused));
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init({ capabilities: ['matches.get', 'matches.chatSend'] });
+  await assert.rejects(
+    sdk.matches.chatSend({ matchUuid: UUID, text: 'hi' }),
+    (error: BridgeError) => error.code === 'match/chat-refused'
+  );
+  assert.equal(sdk.capabilities.has('matches.chatSend'), true);
+});

@@ -11,6 +11,8 @@ import {
   MatchSummarySchema,
   MatchNudgeResultSchema,
   MatchCheckResultSchema,
+  MatchChatMessageSchema,
+  MatchChatPageWireSchema,
   InvitablePlayerSchema,
   ServerTimeSchema,
   ScheduledNotificationSchema,
@@ -41,6 +43,8 @@ import {
   type MatchSummary,
   type MatchNudgeResult,
   type MatchCheckResult,
+  type MatchChatMessage,
+  type MatchChatPage,
   type MatchListFilter,
   type InvitablePlayer,
   type SeasonBoard,
@@ -79,6 +83,8 @@ export type {
   MatchListFilter,
   MatchNudgeResult,
   MatchCheckResult,
+  MatchChatMessage,
+  MatchChatPage,
   InvitablePlayer,
   ScheduledNotification,
   NotificationScheduleResult,
@@ -161,6 +167,24 @@ export interface MatchMovePayload {
   version: number;
   /** Game-specific action, e.g. `{ col: 3 }`. Never a board. Capped at 2 KB. */
   move: Record<string, unknown>;
+}
+
+export interface MatchChatPayload {
+  matchUuid: string;
+  /** A `messageUuid`: return the page just older than it. Omit for the latest. */
+  before?: string;
+  /** Max messages, 1..50 (default 30). */
+  limit?: number;
+  /** Mark the conversation read for the viewer. Only while chat is on screen. */
+  markSeen?: boolean;
+}
+
+export interface MatchChatSendPayload {
+  matchUuid: string;
+  /** 1 to 500 characters after trimming. */
+  text: string;
+  /** The sender's own id for this message, `[A-Za-z0-9_-]{8,64}`; makes a retry safe. */
+  nonce?: string;
 }
 
 export interface MatchWatchOptions {
@@ -572,6 +596,36 @@ export interface OddsRabbitGlobal {
      * Gate the button on `capabilities.has('matches.quick')`.
      */
     quick(payload: { game: string }): Promise<MatchView>;
+    /**
+     * A page of the match's conversation, oldest message first. The
+     * conversation is the platform's own chat — two seats share their DM,
+     * three or four a group linked to the match — so the same messages are in
+     * each player's Chat inbox. Without `before`, the latest page (up to
+     * `limit`, max 50); with a `messageUuid`, the page just older than it.
+     * Send `markSeen: true` only while the chat is on screen. A match with no
+     * messages yet answers an empty page with `conversationUuid: null`.
+     * Rejects `match/not-found` for a non-participant; one malformed message
+     * drops itself rather than the page.
+     *
+     * There is no chat push channel and a message does not move `version`, so
+     * `watch` never fires for one: poll this while the match is open. On the
+     * list screen, each summary's `chatUnread` badges the row instead.
+     *
+     * Gate the chat on `capabilities.has('matches.chat')`.
+     */
+    chat(payload: MatchChatPayload): Promise<MatchChatPage>;
+    /**
+     * Say something in the match's conversation, creating it on first use.
+     * Text only, 1 to 500 characters after trimming. Pass a `nonce` of your
+     * own (8 to 64 of `[A-Za-z0-9_-]`) so a retry after a dropped response is
+     * stored once; it comes back on the stored message. Resolves that
+     * message. Rejects `match/chat-refused` when the platform would refuse it
+     * in Chat too (muted, blocked, moderation, sending too fast) — show the
+     * `message`. Allowed after the match ends.
+     *
+     * Gate on `capabilities.has('matches.chatSend')`.
+     */
+    chatSend(payload: MatchChatSendPayload): Promise<MatchChatMessage>;
     /**
      * People the viewer may invite — connected on the follow graph in either
      * direction, which is exactly the set `create` accepts. `[]` when signed
@@ -1059,6 +1113,23 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
       }),
     quick: (payload: { game: string }): Promise<MatchView> =>
       this.requestMatchView('matches.quick', payload),
+    // Rejects on failure like `check`: an empty page from a broken host would
+    // read as "nobody has said anything", which is a lie a player acts on.
+    chat: (payload: MatchChatPayload): Promise<MatchChatPage> =>
+      this.request<unknown>('matches.chat', payload).then((result): MatchChatPage => {
+        const envelope = MatchChatPageWireSchema.safeParse(result);
+        if (!envelope.success) throw new Error('matches.chat: malformed page');
+        return {
+          ...envelope.data,
+          messages: parseRows<MatchChatMessage>(MatchChatMessageSchema, envelope.data.messages),
+        };
+      }),
+    chatSend: (payload: MatchChatSendPayload): Promise<MatchChatMessage> =>
+      this.request<unknown>('matches.chatSend', payload).then((result): MatchChatMessage => {
+        const parsed = MatchChatMessageSchema.safeParse(result);
+        if (!parsed.success) throw new Error('matches.chatSend: malformed message');
+        return parsed.data;
+      }),
     invitable: (payload: { limit?: number; offset?: number } = {}): Promise<InvitablePlayer[]> => {
       if (!this.user) return Promise.resolve([]);
       return this.requestRows<InvitablePlayer>('matches.invitable', payload, InvitablePlayerSchema);

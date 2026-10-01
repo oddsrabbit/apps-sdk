@@ -94,6 +94,12 @@ export const MATCH_ERROR_CODES = {
    * dictionary. About the game, not the host — the verb itself is supported.
    */
   unsupported: 'match/unsupported',
+  /**
+   * `matches.chatSend` was refused for this one message: the sender is muted
+   * or blocked, the text failed moderation, or they are sending too fast.
+   * `message` says which, in words a player can read. Nothing was sent.
+   */
+  chatRefused: 'match/chat-refused',
 } as const;
 
 /** How long the seat on turn must have been idle before `matches.nudge`, and the gap between one sender's nudges. */
@@ -113,6 +119,11 @@ const MatchSeat = z.number().int().min(0).max(MATCH_MAX_PLAYERS - 1);
 export const MATCH_CHECK_MAX_WORDS = 16;
 /** A word `matches.check` will look up: 2 to 15 letters (the board is 15 wide). */
 export const MATCH_CHECK_WORD_PATTERN = /^[A-Za-z]{2,15}$/;
+
+/** Longest message `matches.chatSend` accepts, in characters after trimming. */
+export const MATCH_CHAT_MAX_CHARS = 500;
+/** Most messages one `matches.chat` page returns. */
+export const MATCH_CHAT_PAGE_MAX = 50;
 
 const MatchMove = z
   .record(z.unknown())
@@ -444,6 +455,39 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
     payload: z.object({
       matchUuid: MatchUuid,
       words: z.array(z.string().regex(MATCH_CHECK_WORD_PATTERN)).min(1).max(MATCH_CHECK_MAX_WORDS),
+    }),
+  }),
+  // The match's conversation: a page of messages, newest last. Backed by the
+  // platform's own chat, so the same messages are in the players' Chat inbox
+  // (two seats share their DM; three or four, a group linked to the match).
+  // Without `before`, the latest page; with it, the page just older than that
+  // message. `markSeen` marks the conversation read for the viewer, which is
+  // what a game sends while its chat is actually on screen. Participants only
+  // (`match/not-found` otherwise). A match nobody has written in yet answers
+  // an empty page with a null `conversationUuid` — nothing is created by a read.
+  z.object({
+    type: z.literal('matches.chat'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      matchUuid: MatchUuid,
+      before: z.string().uuid().optional(),
+      limit: z.number().int().min(1).max(MATCH_CHAT_PAGE_MAX).optional(),
+      markSeen: z.boolean().optional(),
+    }),
+  }),
+  // Say something in the match's conversation (creating it on first use).
+  // Text only; the platform's chat keeps photos and voice notes. `nonce` is
+  // the sender's own id for this message, so a retried send after a dropped
+  // response is stored once. Allowed after the match ends too ("gg").
+  // Refused with `match/chat-refused` when the platform would refuse it in
+  // Chat (muted, blocked, moderation, rate).
+  z.object({
+    type: z.literal('matches.chatSend'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      matchUuid: MatchUuid,
+      text: z.string().trim().min(1).max(MATCH_CHAT_MAX_CHARS),
+      nonce: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/).optional(),
     }),
   }),
   // Play someone new: take the open seat at the oldest public two-player
@@ -976,6 +1020,10 @@ export const MatchSummarySchema = z.object({
   // A public table from `matches.quick`: seated by matchmaking rather than
   // by invitation or join code.
   matchmaking: z.boolean().default(false),
+  // Messages in the match's conversation the viewer has not seen, so a list
+  // row and the match screen can badge the chat without a `matches.chat` per
+  // match. Display data like `recap`: defaulted, so an older host reads 0.
+  chatUnread: z.number().int().nonnegative().default(0),
 });
 
 export type MatchSummary = z.infer<typeof MatchSummarySchema>;
@@ -1008,6 +1056,46 @@ export const MatchCheckResultSchema = z.object({
 });
 
 export type MatchCheckResult = z.infer<typeof MatchCheckResultSchema>;
+
+// One message in a match's conversation. `seat` ties it to a player in the
+// match; null for someone in the conversation who holds no seat (a group
+// member added in Chat). `kind` is what the platform stored: only `text` has
+// `text`; anything else (a photo, a voice note) is for the game to mention
+// and leave to Chat. Unknown kinds read as `other` rather than failing.
+export const MatchChatMessageSchema = z.object({
+  messageUuid: z.string().uuid(),
+  seat: MatchSeat.nullable().default(null),
+  uuid: z.string().uuid(),
+  username: z.string().min(1).max(64),
+  avatar: z.string().url().nullable().default(null),
+  kind: z.enum(['text', 'image', 'voice', 'video', 'other']).catch('other'),
+  text: z.string().max(4000).default(''),
+  sentAt: z.string().datetime({ offset: true }),
+  isSelf: z.boolean().default(false),
+  // Echoed from `matches.chatSend`, so a sender can swap its pending bubble
+  // for the stored one.
+  nonce: z.string().nullable().default(null),
+});
+
+export type MatchChatMessage = z.infer<typeof MatchChatMessageSchema>;
+
+// Result of `matches.chat`. `messages` is oldest first and parsed one row at a
+// time in the SDK, so one malformed message drops itself, not the page.
+export const MatchChatPageSchema = z.object({
+  conversationUuid: z.string().uuid().nullable().default(null),
+  messages: z.array(MatchChatMessageSchema),
+  // Unseen by the viewer, after `markSeen` was applied.
+  unread: z.number().int().nonnegative().default(0),
+  // More, older messages exist before the first one here.
+  hasMore: z.boolean().default(false),
+});
+
+export type MatchChatPage = z.infer<typeof MatchChatPageSchema>;
+
+/** The page as it crosses the bridge, before its messages are parsed row by row. */
+export const MatchChatPageWireSchema = MatchChatPageSchema.extend({
+  messages: z.array(z.unknown()),
+});
 
 // Result of `time.now`. The SDK turns it into an offset against Date.now().
 export const ServerTimeSchema = z.object({

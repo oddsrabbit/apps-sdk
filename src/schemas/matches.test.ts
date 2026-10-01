@@ -7,6 +7,9 @@ import {
   MATCH_ERROR_CODES,
   MATCH_MOVE_MAX_BYTES,
   MatchCheckResultSchema,
+  MatchChatMessageSchema,
+  MatchChatPageSchema,
+  MATCH_CHAT_MAX_CHARS,
   MatchNudgeResultSchema,
   MatchSummarySchema,
   MatchViewSchema,
@@ -31,6 +34,8 @@ test('every match verb is a bridge request type', () => {
     'matches.claim',
     'matches.check',
     'matches.quick',
+    'matches.chat',
+    'matches.chatSend',
   ]) {
     assert.ok(BRIDGE_REQUEST_TYPES.includes(verb as never), verb);
   }
@@ -197,6 +202,7 @@ test('a summary carries the last move, a recap and the matchmaking flag', () => 
   assert.equal(old.data.lastMove, null, 'an older host without them still parses');
   assert.equal(old.data.recap, null);
   assert.equal(old.data.matchmaking, false);
+  assert.equal(old.data.chatUnread, 0);
 
   const full = MatchSummarySchema.safeParse({
     ...base,
@@ -208,4 +214,39 @@ test('a summary carries the last move, a recap and the matchmaking flag', () => 
   assert.equal(full.data.lastMove?.scoreDelta, 22);
   assert.deepEqual(full.data.recap, { lastWords: [{ word: 'QUIZ', score: 22 }] });
   assert.equal(full.data.matchmaking, true);
+});
+
+test('matches.chat takes a match, an optional cursor and a page size up to 50', () => {
+  assert.ok(request('matches.chat', { matchUuid: UUID }).success);
+  assert.ok(request('matches.chat', { matchUuid: UUID, before: OTHER, limit: 50, markSeen: true }).success);
+  assert.ok(!request('matches.chat', { matchUuid: UUID, limit: 51 }).success, 'at most 50');
+  assert.ok(!request('matches.chat', { matchUuid: UUID, before: 'latest' }).success, 'cursor is a message uuid');
+  assert.ok(!request('matches.chat', {}).success, 'needs a match');
+});
+
+test('matches.chatSend takes trimmed text of 1 to 500 characters', () => {
+  assert.ok(request('matches.chatSend', { matchUuid: UUID, text: 'gg' }).success);
+  assert.ok(request('matches.chatSend', { matchUuid: UUID, text: 'gg', nonce: 'm-1a2b3c4d' }).success);
+  assert.ok(request('matches.chatSend', { matchUuid: UUID, text: 'x'.repeat(MATCH_CHAT_MAX_CHARS) }).success);
+  assert.ok(!request('matches.chatSend', { matchUuid: UUID, text: 'x'.repeat(MATCH_CHAT_MAX_CHARS + 1) }).success);
+  assert.ok(!request('matches.chatSend', { matchUuid: UUID, text: '   ' }).success, 'blank after trimming');
+  assert.ok(!request('matches.chatSend', { matchUuid: UUID, text: 'hi', nonce: 'short' }).success);
+});
+
+test('a chat page defaults what an older server leaves out', () => {
+  const message = {
+    messageUuid: UUID,
+    uuid: OTHER,
+    username: 'them',
+    kind: 'image',
+    sentAt: '2026-09-30T10:00:00+02:00',
+  };
+  const parsed = MatchChatMessageSchema.safeParse(message);
+  assert.ok(parsed.success);
+  assert.equal(parsed.data.text, '');
+  assert.equal(parsed.data.seat, null);
+  const page = MatchChatPageSchema.safeParse({ messages: [message] });
+  assert.ok(page.success);
+  assert.equal(page.data.conversationUuid, null);
+  assert.equal(page.data.hasMore, false);
 });

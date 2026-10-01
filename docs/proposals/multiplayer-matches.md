@@ -85,6 +85,21 @@ fields ride the existing `matches.list` verb because they are additive
 display data a game can simply do without; the two behaviours are verbs so a
 game can gate its buttons on them.
 
+**In-match chat added 2026‑09‑30** (client side only; server and web host
+not yet written): two capability-gated verbs and one defaulted summary field,
+specified in §2.8. `matches.chat` reads a page of the match's conversation and
+`matches.chatSend` writes to it; `MatchSummary.chatUnread` badges list rows.
+The conversation is the platform's own chat, not a new store: two seats share
+their DM, three or four get a group linked to the match, so the same messages
+are in each player's Chat inbox. Done: the SDK (schemas, methods, tests), the
+RN host (`AppHost.tsx` cases, `app.service.ts` REST calls, types) and the
+Word Battle client (a chat sheet over the match screen, list badges, and the
+dev harness). **To do:** the WordPress routes and service (§2.8), the two
+`games.js` cases and capabilities, rebuilding the sandbox host (it relays
+only verbs its own schema knows, so until then it filters chat out of
+`init.capabilities` — safe, the game just hides the button), and an App Store
+release for mobile.
+
 **Word Battle moved to its own private repo on 2026‑09‑26** (`word-battle`, a
 sibling checkout like `rabbit-pets`), since it is the product and not a sample.
 Paths below such as `word-battle/js/rules.js` are now in that repo; this
@@ -447,6 +462,74 @@ per-month **season** on the word game by *total points scored in finished
 matches*, which the existing `scores.season` machinery cannot serve (it expands
 `period` through `DailyGameRegistry`, and a match is not a daily row). Park it.
 
+### 2.8 In-match chat
+
+The match's conversation is a **platform chat conversation**, reached
+through the match. Nothing is stored twice and nothing new is moderated:
+messages go through the same service as Chat, so blocks, mutes, reports and
+rate limits apply unchanged, and a message sent in either place shows in
+both.
+
+**Which conversation.** Resolved per match, server side, on first use:
+
+- **Two seats:** the two players' DM (get-or-create, as `getOrCreateDM`).
+  Their earlier DM history shows in the game, which is the point — it is the
+  same chat. Between strangers (a quick match), the DM's usual
+  message-request rules apply.
+- **Three or four seats:** a group, created on the first `chatSend` with every
+  seat that is `joined` (resigned and forfeited players stay in it), named
+  after the game ("Word Battle · @a, @b, @c"). Its uuid is stored on the
+  match: `app_matches.chat_conversation_uuid CHAR(36) NULL`. A seat that
+  joins later is added.
+- A **read never creates** anything: no conversation yet answers
+  `{ conversationUuid: null, messages: [] }`.
+
+**Bridge verbs** (`src/schemas/messages.ts`):
+
+| Verb | Payload | Result |
+| --- | --- | --- |
+| `matches.chat` | `{ matchUuid, before?: messageUuid, limit?: 1..50, markSeen?: bool }` | `MatchChatPage` |
+| `matches.chatSend` | `{ matchUuid, text: 1..500 chars trimmed, nonce?: [A-Za-z0-9_-]{8,64} }` | `MatchChatMessage` |
+
+`MatchChatMessage` is `{ messageUuid, seat|null, uuid, username, avatar,
+kind: text|image|voice|video|other, text, sentAt, isSelf, nonce|null }` —
+the score-row identity quartet again, so avatars hash the same. A photo or
+voice note comes through as its `kind` with empty `text`; the game names it
+and leaves it to Chat. `MatchChatPage` is `{ conversationUuid|null, messages
+(oldest first), unread, hasMore }`.
+
+**Errors:** `match/not-found` for a non-participant (an `invited` seat that
+never joined counts as one); `match/chat-refused` — new — when the chat
+service refuses the message (blocked, muted, moderation, too fast), with a
+message a player can read. It is a per-call code and never retires the verb.
+
+**REST** (what both hosts call; the RN host's are in `app.service.ts`):
+
+```
+GET  /apps/{slug}/matches/{uuid}/chat?before=&limit=&markSeen=1
+     → { status, conversationUuid, messages: MatchChatMessage[], unread, hasMore }
+POST /apps/{slug}/matches/{uuid}/chat   { text, nonce? }
+     → { status, message: MatchChatMessage }
+```
+
+`nonce` is stored with the message (unique per conversation + sender), and a
+POST that repeats one answers the stored message instead of a second copy.
+`markSeen=1` is the same "seen" write as Chat's `markConversationAsSeen`, so
+reading in the game clears the Chat inbox badge too. `chatUnread` on every
+`MatchSummary` is the viewer's unread count in the match's conversation
+(0 when there is none); for a two-seat match that is the whole DM's unread
+count, which is what the inbox shows too.
+
+**Not a move.** Chat never touches `version`, so `watch` does not fire for
+it; the client polls `matches.chat` itself (every 4 s with the chat open, 15 s
+closed, paused while hidden). No push is sent by the match system: the chat
+service's own message push already reaches the other players, and a push
+tap opens the conversation in Chat.
+
+**`games.js`** needs the two cases (same validation as `AppHost.tsx`:
+lower-cased uuids, `limit` 1..50, text 1..500, the nonce pattern) and both
+names in its capabilities list.
+
 ## 3. The word game specifically
 
 ### 3.1 Naming and IP
@@ -634,9 +717,8 @@ turns, both receive the pushes, and a stale `version` is rejected.
   match only.
 - **Rated matchmaking.** Needs a rating table and a queue; the follow graph and
   join codes cover the social case, which is the case oddsrabbit is for.
-- **In-match chat.** The platform has chat (`chat-routes.php`); linking a match
-  to a group thread is a product question about where conversations live, not
-  a matches question.
+- ~~**In-match chat.**~~ Taken up 2026‑09‑30: the match reaches the
+  platform's own conversation (§2.8) rather than holding one of its own.
 
 ## 8. Open questions
 
