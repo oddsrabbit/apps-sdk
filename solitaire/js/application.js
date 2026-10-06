@@ -18,6 +18,24 @@
 
   var LANDING_URL = "https://www.oddsrabbit.com/games/solitaire/";
 
+  // --- First paint ---
+  //
+  // The renderer is built NOW, ahead of the bridge check, the handshake, the
+  // storage hydrate and the card atlas, because it is what sizes the canvas
+  // and publishes --stage-w / --stage-h — and the stage the HUD, the overlay
+  // and the Finish button are positioned against shrink-wraps the canvas.
+  // It used to be built only once all of those had resolved (it needed the
+  // atlas to construct), so for the whole boot the page was laid out by the
+  // CSS fallback and the HUD sat wherever that box put it, then jumped when
+  // the real size landed. Neither host covers that window (web drops its
+  // loading cover when init is sent; mobile has none), so every load showed
+  // it. Only card faces need the atlas, and they arrive later through
+  // renderer.setAtlas(); the constructor sizes the board, wires its own
+  // resize listeners and paints the empty table on its own. Same fix, and
+  // the same reasoning, as flappy-rabbits/js/application.js.
+  var canvas = document.querySelector(".game-canvas");
+  var renderer = new RendererClass(canvas);
+
   var OR = window.OddsRabbit;
   if (!OR) {
     console.error("solitaire: OddsRabbit bridge not available — game requires the SDK host.");
@@ -27,8 +45,12 @@
 
   // --- DOM handles ---
 
-  var canvas = document.querySelector(".game-canvas");
   var statsContainerEl = document.querySelector(".stats-container");
+  // The controls half of the header row. Kept invisible (styles.css) until
+  // bootstrap has painted the sound and vibration toggles from the saved
+  // settings and settled whether the leaderboard button shows — see
+  // revealHudControls.
+  var hudControlsEl = document.querySelector(".hud-controls");
   var movesEl = document.querySelector(".moves-container");
   var timeEl = document.querySelector(".time-container");
   var undoBtn = document.querySelector(".undo-button");
@@ -70,12 +92,13 @@
   // --- Instances ---
 
   var storage = new StorageClass();
-  // The card art lives in an atlas PNG, so the renderer cannot exist until
-  // that image has decoded. The fetch starts here, at module scope, so it
-  // overlaps the bridge handshake and the storage hydrate rather than adding
-  // its latency on top of them; bootstrap() awaits it and assigns `renderer`.
-  // Everything that touches `renderer` runs after first paint (pointer
-  // handlers, render()), and both guard for the gap.
+  // The card art lives in an atlas PNG, so the renderer cannot draw a dealt
+  // board until that image has decoded. The fetch starts here, at module
+  // scope, so it overlaps the bridge handshake and the storage hydrate rather
+  // than adding its latency on top of them; bootstrap() awaits it and hands
+  // it to renderer.setAtlas(). The renderer itself already exists (see First
+  // paint above), so `renderer` is never null — what the pointer handlers and
+  // render() guard on is renderer.hasAtlas(), the gap before card art.
   //
   // The URL comes off the canvas' data-atlas attribute rather than being
   // hardcoded here, because index.html is the only file the build rewrites
@@ -87,25 +110,15 @@
   // failure that lands before bootstrap attaches its handler can't surface as
   // an unhandled rejection in the host console.
   atlasPromise.catch(function () {});
-  var renderer = null;
   // Procedural audio (js/sound_manager.js). Constructed up front but stays
   // suspended until the first user gesture unlocks it (see initSound); the
   // play* methods self-guard when muted/suspended, so handlers below never
   // need to check.
   var sound = new SoundClass();
-  var MUTED_KEY = "soundMuted";
 
-  // Vibration on/off, persisted separately from the mute setting. They are two
-  // different senses and players silence them for different reasons — sound
-  // because they are somewhere quiet, vibration because the buzzing is
-  // distracting or drains the battery — so one switch for both would force a
-  // player who wants neither one of them to give up the other.
-  //
-  // Stored inverted ("1" means OFF) so that the absence of the key, a failed
-  // read, and an explicit "on" all mean the same thing. Haptics are on by
-  // default, and a storage failure must not silently disable a feature the
-  // player never asked to turn off.
-  var HAPTICS_KEY = "hapticsOff";
+  // Vibration on/off. Persisted by StorageManager (as `hapticsOff`, inverted —
+  // see the note there) and copied in here at boot; kept as a plain flag
+  // because haptic() reads it on every card move.
   var hapticsEnabled = true;
   var game = new GameClass({
     storage: storage,
@@ -115,8 +128,13 @@
     },
   });
   var input = new InputClass(canvas, {
-    hitTest: function (x, y) { return renderer ? renderer.hitTest(x, y) : null; },
-    isDraggable: function (loc) { return renderer ? renderer.isDraggable(loc) : false; },
+    // Dead until the card art is in. Before that there is nothing on the
+    // table to hit (the board, if a restore is coming, isn't painted yet),
+    // and every handler downstream of a hit — pickup's cardScreenPosition,
+    // drop's layout read — assumes the board the player is touching is the
+    // one on screen. No hit, no tap/pickup/drop events.
+    hitTest: function (x, y) { return renderer.hasAtlas() ? renderer.hitTest(x, y) : null; },
+    isDraggable: function (loc) { return renderer.hasAtlas() ? renderer.isDraggable(loc) : false; },
   });
 
   // --- Drag state ---
@@ -138,9 +156,19 @@
 
   // Overlay's data-state controls which sub-buttons show via CSS. Possible
   // values: 'idle' (pre-deal), 'playing' (hidden), 'won' (post-win).
+  //
+  // Mirrored on <html> as data-overlay for the host, which reads the colour
+  // the status bar sits on from there: the scrim runs under the status bar,
+  // and it is much darker than the felt the host would otherwise read off
+  // <body>. styles.css maps the attribute to --oddsrabbit-edge-top; the host
+  // watches <html>'s attributes, so toggling it is enough. See
+  // docs/game-header-guidelines.md, item 8.
   function setOverlayState(state) {
     overlay.setAttribute("data-state", state);
-    overlay.classList.toggle("visible", state !== "playing");
+    var visible = state !== "playing";
+    overlay.classList.toggle("visible", visible);
+    if (visible) document.documentElement.setAttribute("data-overlay", state);
+    else document.documentElement.removeAttribute("data-overlay");
   }
 
   function setOverlayText(main, sub) {
@@ -183,24 +211,17 @@
   function render() {
     var board = game.getBoard();
     if (!board) {
-      // Pre-deal. Once the atlas is in, paint the slot ghosts so the idle
-      // overlay has a card table behind it rather than a green field.
-      if (renderer) {
-        renderer.drawEmptyTable();
-        return;
-      }
-      // Before that, plain felt — enough that the canvas doesn't flash white.
-      // Uses the renderer's exported felt colour so the idle board can't drift
-      // from the in-game one again (a stale dark-wood hex used to live here).
-      var ctx = canvas.getContext("2d");
-      ctx.fillStyle = RendererClass.COL_FELT;
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      // Pre-deal: the slot ghosts, so the idle overlay has a card table
+      // behind it rather than a green field. Procedural, so this works with
+      // or without the atlas.
+      renderer.drawEmptyTable();
       return;
     }
-    // A board exists but the atlas hasn't decoded yet — only reachable if a
-    // restore lands before the atlas resolves. Leave the felt as painted
-    // above; bootstrap renders again once the renderer is up.
-    if (!renderer) return;
+    // A board exists but the atlas hasn't decoded yet. Bootstrap doesn't
+    // restore or deal until it has, so this shouldn't be reachable; if it is,
+    // leave the empty table up rather than paint a board with no cards.
+    // setAtlas() repaints the renderer's last board when the art lands.
+    if (!renderer.hasAtlas()) return;
     var targets = dragState ? dragState.legalTargets : null;
     renderer.draw(board, dragState, targets);
   }
@@ -1777,8 +1798,9 @@
   // Browsers keep the AudioContext suspended until a user gesture, so
   // resume() on the first pointer/key event. once:true tears the listeners
   // down after the first hit; capture so we see the gesture even when the
-  // canvas handlers stop propagation. The mute preference persists via the
-  // storage bridge under MUTED_KEY (same shape as match3).
+  // canvas handlers stop propagation. The mute preference persists through
+  // StorageManager (soundMuted, same shape as match3), which has already
+  // hydrated it by the time this runs.
   function initSound() {
     function unlockAudio() { sound.resume(); }
     var unlockOpts = { once: true, capture: true };
@@ -1796,17 +1818,12 @@
       soundToggleEl.setAttribute("aria-pressed", muted ? "true" : "false");
       soundToggleEl.setAttribute("aria-label", muted ? "Unmute sound" : "Mute sound");
     }
-    // Hydrate the saved preference, then paint. Defaults to unmuted on any
-    // read failure (the safer default for a brand-new player who hasn't
-    // expressed a choice yet).
-    if (OR.storage && OR.storage.get) {
-      OR.storage.get(MUTED_KEY)
-        .then(function (raw) { sound.setMuted(raw === "1"); })
-        .catch(function () {})
-        .then(paintSoundToggle);
-    } else {
-      paintSoundToggle();
-    }
+    // Paint from the saved preference synchronously, so the icon is right
+    // before revealHudControls shows it. storage.hydrate() has already read
+    // it, defaulting to unmuted on any read failure (the safer default for a
+    // brand-new player who hasn't expressed a choice yet).
+    sound.setMuted(storage.getMuted());
+    paintSoundToggle();
     if (soundToggleEl) {
       soundToggleEl.addEventListener("click", function () {
         // A click is a gesture — make sure the context is live so the
@@ -1814,9 +1831,7 @@
         sound.resume();
         var muted = sound.toggleMute();
         paintSoundToggle();
-        if (OR.storage && OR.storage.set) {
-          OR.storage.set(MUTED_KEY, muted ? "1" : "0").catch(function () {});
-        }
+        storage.setMuted(muted);
       });
     }
   }
@@ -1836,6 +1851,11 @@
   // isn't there. That is the right trade. The setting still syncs, so their
   // phone shows it switched off and can switch it back.
   function initHaptics() {
+    // Copied in ahead of the touch gate so the flag always reflects the saved
+    // setting, whether or not this device shows the toggle (where it doesn't,
+    // the host answers haptic() as a no-op anyway). storage.hydrate() has
+    // already read it; any read failure leaves the default (on) in place.
+    hapticsEnabled = storage.getHapticsEnabled();
     var toggleEl = document.querySelector(".haptic-toggle");
     if (!toggleEl) return;
     if (!IS_TOUCH_DEVICE) return;   // stays `hidden` from the markup
@@ -1855,16 +1875,8 @@
       );
     }
 
-    // Hydrate, then paint. Any read failure leaves the default (on) in place —
-    // see the note on HAPTICS_KEY.
-    if (OR.storage && OR.storage.get) {
-      OR.storage.get(HAPTICS_KEY)
-        .then(function (raw) { hapticsEnabled = raw !== "1"; })
-        .catch(function () {})
-        .then(paintHapticToggle);
-    } else {
-      paintHapticToggle();
-    }
+    // Synchronously, so the icon is right before revealHudControls shows it.
+    paintHapticToggle();
 
     toggleEl.addEventListener("click", function () {
       hapticsEnabled = !hapticsEnabled;
@@ -1874,9 +1886,7 @@
       // than having to trust an icon. Switching it off stays silent, which is
       // its own confirmation.
       if (hapticsEnabled) haptic("light");
-      if (OR.storage && OR.storage.set) {
-        OR.storage.set(HAPTICS_KEY, hapticsEnabled ? "0" : "1").catch(function () {});
-      }
+      storage.setHapticsEnabled(hapticsEnabled);
     });
   }
 
@@ -1888,22 +1898,47 @@
   // no column for CSS to fit it into, and the vertical layout is recomputed
   // from the viewport on every resize, so the two have to move together.
   // The renderer registers its own resize/orientationchange listeners and
-  // repaints the last board itself.
+  // repaints the last board itself — from script load, since it is built
+  // there (see First paint), so the board tracks the viewport through the
+  // whole boot and not only once the game is up.
 
   // --- Bootstrap sequence ---
+
+  // Show the HUD's controls. They start `visibility: hidden` (styles.css) —
+  // laid out, so the row and the HUD band the renderer measures are already
+  // their final size, but not painted — because three of them would
+  // otherwise visibly change after the player first sees them: the sound and
+  // vibration icons flip to the saved setting once storage answers, and the
+  // leaderboard trophy pops in once the host's capability answer arrives,
+  // shoving the rest of the row along. Called once all three have settled,
+  // and from every failure path too: a HUD left invisible would strand the
+  // player with no New deal button and no mute.
+  function revealHudControls() {
+    if (hudControlsEl) hudControlsEl.classList.add("ready");
+  }
 
   function bootstrap() {
     OR.whenReady().then(function () {
       // First thing past the handshake: the host's capability answer rides in
       // on `init`, so nothing before this point knows whether there is a board
-      // to offer. Ahead of the storage/atlas wait deliberately — the modal
-      // needs neither, so the button shouldn't wait on them.
+      // to offer. Settled here, ahead of the storage/atlas wait, so the
+      // trophy's `hidden` state is final well before revealHudControls shows
+      // the row it sits in.
       wireLeaderboardButtons();
-      return Promise.all([storage.hydrate(), atlasPromise]);
-    }).then(function (results) {
-      renderer = new RendererClass(canvas, results[1]);
+      return storage.hydrate();
+    }).then(function () {
+      // As soon as the settings are in, not after the atlas: both paint their
+      // toggle synchronously from the hydrated values, so the row is right
+      // before it is shown — and if the atlas then fails, the HUD the catch
+      // below reveals still has a working mute that shows the saved state.
+      // The atlas has been loading since script load, in parallel with the
+      // handshake and the hydrate, so waiting on it second costs nothing.
       initSound();
       initHaptics();
+      return atlasPromise;
+    }).then(function (atlas) {
+      renderer.setAtlas(atlas);
+      revealHudControls();
       // Restore an in-progress deal if we have one. Daily deals only
       // restore if the seed still matches today — yesterday's deal
       // wouldn't count toward today's streak, so silently discarding it
@@ -1934,6 +1969,7 @@
       // missing cards.png would otherwise leave the player on bare felt with
       // no explanation.
       showFatalError("Couldn't start the game. Try reloading.");
+      revealHudControls();
       try { OR.ready(); } catch (e) {}
     });
   }

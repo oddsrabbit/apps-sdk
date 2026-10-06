@@ -10,7 +10,7 @@ import {
   type LeaderboardRow,
   type LeaderboardTab,
 } from '../../src/ui/leaderboard';
-import { createSeasonTab, currentPeriod } from '../../src/ui/season';
+import { createSeasonTab, currentPeriod, formatPeriod } from '../../src/ui/season';
 import * as L from 'leaflet';
 
 declare global {
@@ -1133,6 +1133,20 @@ function panelSlot(): PanelSlot {
 const endGamePanelSlot = panelSlot();
 
 /**
+ * The season a puzzle belongs to, `YYYY-MM` in UTC.
+ *
+ * Derived from the puzzle rather than from the clock. The past-round modal
+ * scrubs back seven days, which crosses a month boundary in the first week of
+ * every month — `currentPeriod()` there would caption August's board over a
+ * July puzzle's results, and pin the viewer's rank in a month that doesn't
+ * contain the day they're looking at. Same UTC rule as `currentPeriod()`: a
+ * puzzle index IS a UTC day offset from `EPOCH_MS`.
+ */
+function periodForPuzzle(puzzleIndex: number): string {
+  return currentPeriod(new Date(EPOCH_MS + puzzleIndex * DAY_MS));
+}
+
+/**
  * Friends + Global boards for one puzzle, rendered by the shared leaderboard UI
  * (`src/ui/leaderboard.ts`).
  *
@@ -1203,12 +1217,16 @@ function renderLeaderboardPanel(
   // the daily boards this one accumulates, which is the point: a daily game
   // whose leaderboard wipes at midnight never remembers that you came back.
   if (OR.capabilities.has('scores.season')) {
+    const period = periodForPuzzle(puzzleIndex);
     tabs.push(
       createSeasonTab({
-        load: () => OR.scores.season({ period: currentPeriod(), limit: BOARD_LIMIT }),
+        load: () => OR.scores.season({ period, limit: BOARD_LIMIT }),
         ...(OR.capabilities.has('scores.seasonRank')
-          ? { loadRank: () => OR.scores.seasonRank({ period: currentPeriod() }) }
+          ? { loadRank: () => OR.scores.seasonRank({ period }) }
           : {}),
+        // Names the month rather than saying "this month": on the past-round
+        // modal this board can be last month's.
+        emptyText: `Nobody has played in ${formatPeriod(period)} yet — be the first.`,
       })
     );
   }
@@ -2033,6 +2051,27 @@ async function bootstrap(): Promise<void> {
 
   window.OddsRabbit.ready();
 }
+
+// Mirrors "an overlay is open" onto <html> for the host, which reads the colour
+// the status bar sits on from there (styles.css, :root[data-overlay]). The
+// lightbox wins when both are up — it sits above the modals and is far darker.
+// Watches <body> rather than hooking each overlay because the shared
+// leaderboard's .lb-backdrop is opened by code outside this file.
+function watchOverlays(): void {
+  const sync = (): void => {
+    const overlay = document.querySelector('.lightbox')
+      ? 'lightbox'
+      : document.querySelector('.modal-backdrop, .lb-backdrop')
+        ? 'modal'
+        : null;
+    if (overlay) document.documentElement.setAttribute('data-overlay', overlay);
+    else document.documentElement.removeAttribute('data-overlay');
+  };
+  new MutationObserver(sync).observe(document.body, { childList: true });
+  sync();
+}
+
+watchOverlays();
 
 bootstrap().catch((error) => {
   root.textContent = `Failed to start: ${error instanceof Error ? error.message : String(error)}`;

@@ -3,8 +3,12 @@ function HTMLActuator() {
   this.scoreContainer   = document.querySelector(".score-container");
   this.bestContainer    = document.querySelector(".best-container");
   this.messageContainer = document.querySelector(".game-message");
+  this.scoresContainer  = document.querySelector(".scores-container");
 
-  this.score = 0;
+  // null until the first actuate, not 0: the first score this actuator sees is
+  // a restored game's, and diffing it against 0 would float "+<whole score>"
+  // over the chip on every load. See updateScore().
+  this.score = null;
 }
 
 HTMLActuator.prototype.actuate = function (grid, metadata) {
@@ -23,6 +27,9 @@ HTMLActuator.prototype.actuate = function (grid, metadata) {
 
     self.updateScore(metadata.score);
     self.updateBestScore(metadata.bestScore);
+    // Reveal the chips once they hold real numbers (styles.css hides them
+    // until then). Idempotent, so every later actuate is a no-op here.
+    if (self.scoresContainer) self.scoresContainer.classList.add("ready");
 
     if (metadata.terminated) {
       if (metadata.over) {
@@ -101,7 +108,9 @@ HTMLActuator.prototype.setTilePosition = function (element, position) {
 HTMLActuator.prototype.updateScore = function (score) {
   this.clearContainer(this.scoreContainer);
 
-  var difference = score - this.score;
+  // No animation on the first update — that's the restored score being
+  // painted, not points just earned.
+  var difference = this.score === null ? 0 : score - this.score;
   this.score = score;
 
   this.scoreContainer.textContent = this.score;

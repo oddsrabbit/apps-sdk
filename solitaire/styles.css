@@ -39,6 +39,15 @@
   --card-cream: #f2f7f4;
 }
 
+/* What the status bar sits on while the overlay is up: the .game-message scrim
+   (rgba(27, 77, 48, 0.92)) over the felt (#2e7d4f), flattened to an opaque
+   colour. Only a hint, for the app's status-bar and back-button tone — the
+   game draws the colour itself (it runs edge to edge), and without this the
+   host would pick a tone for the much lighter felt it reads off <body>.
+   application.js sets data-overlay on <html> for as long as the overlay
+   shows (setOverlayState). See docs/game-header-guidelines.md, item 8. */
+:root[data-overlay] { --oddsrabbit-edge-top: #1d5132; }
+
 html, body {
   margin: 0;
   padding: 0;
@@ -200,6 +209,16 @@ body {
   align-items: center;
   gap: 6px;
   min-width: 0;
+  /* Hidden — but still laid out, so the row and the HUD band renderer.js
+     measures are already their final size — until application.js has painted
+     the sound and vibration toggles from the hydrated settings and settled
+     whether the leaderboard button shows (revealHudControls). Shown earlier,
+     a muted player watched the speaker flip off a beat after load and the
+     trophy popped in and shoved the row along. Same as the chips below. */
+  visibility: hidden;
+}
+.hud-controls.ready {
+  visibility: visible;
 }
 
 .stats-container {
@@ -387,13 +406,18 @@ body {
    so any [hidden] on these needs saying again here. */
 .undo-button[hidden], .restart-button[hidden], .leaderboard-button[hidden] { display: none; }
 
-/* js/renderer.js overwrites the buffer height and BOTH CSS dimensions on load
-   and on every resize (Renderer.prototype.resize). The declarations here are
-   only the pre-boot fallback — the paint between first byte and the atlas
-   resolving, or a fatal bridge error where the renderer is never constructed
-   — which is why they are expressed against the viewport and carry the old
-   fixed 998x1036 aspect. Nearest neighbour on the upscale so the art stays
-   blocky.
+/* js/renderer.js overwrites the buffer height and BOTH CSS dimensions (inline
+   styles, so they win over these) as soon as its script runs — application.js
+   builds it at script load, ahead of the bridge handshake and the atlas — and
+   on every resize (Renderer.prototype.resize). The declarations here only
+   cover the moment before that script runs. They fill the viewport rather
+   than keeping the buffer's 998x1036 aspect, which on a phone came out far
+   shorter than the screen: the stage shrink-wraps the canvas and the HUD is
+   pinned to the stage's top, so the HUD sat partway down the screen and then
+   jumped to the top once the renderer sized the board. Filling the screen
+   puts the HUD where it will end up. The buffer is blank felt at that point,
+   so stretching it to a different aspect distorts nothing. Nearest neighbour
+   on the upscale so the art stays blocky.
 
    `touch-action: none` is on the canvas alone rather than on the page: it is
    the only surface with a gesture on it, and putting it higher would also
@@ -404,8 +428,7 @@ body {
 .game-canvas {
   display: block;
   width: 100vw;
-  height: auto;
-  aspect-ratio: 998 / 1036;
+  height: 100vh;
   background: var(--wood);
   image-rendering: pixelated;
   image-rendering: crisp-edges;

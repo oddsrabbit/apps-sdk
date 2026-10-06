@@ -1,11 +1,14 @@
 /* Press Start 2P (OFL 1.1, see fonts/OFL.txt). Latin subset only — covers all
-   the text the game shows; ~5KB. font-display: swap shows the system mono
-   fallback for the first paint, then upgrades when the woff2 arrives. */
+   the text the game shows; ~5KB. Preloaded from index.html, and
+   font-display: block rather than swap: the system mono fallback is much
+   narrower, so swapping it in late reflowed the header and buttons. Block
+   holds the text invisible for the few ms the woff2 takes instead (the browser
+   still falls back after ~3s on a stalled load). */
 @font-face {
   font-family: "Press Start 2P";
   font-style: normal;
   font-weight: 400;
-  font-display: swap;
+  font-display: block;
   src: url("./fonts/press-start-2p-latin.woff2") format("woff2");
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
@@ -44,12 +47,17 @@ html, body {
 body { margin: 0 0 calc(16px + var(--oddsrabbit-safe-bottom, 0px)); }
 
 /* --content-w is .container's content width, mirrored so the header row can
-   line up with it; the mobile rule below sets both. */
-:root { --content-w: min(520px, calc(100vw - 32px)); }
+   line up with it; the mobile rule below sets both. The 16px gutters sit
+   inside the safe areas so a landscape notch can't cover the board (same as
+   2048's --board). */
+:root {
+  --content-w: min(520px, calc(100vw - 32px
+    - var(--oddsrabbit-safe-left, 0px) - var(--oddsrabbit-safe-right, 0px)));
+}
 
 .container {
   width: 520px;
-  max-width: calc(100vw - 32px);
+  max-width: var(--content-w);
   margin: 0 auto;
 }
 
@@ -409,9 +417,16 @@ strong.important {
 }
 
 @media screen and (max-width: 540px), screen and (max-height: 720px) {
-  :root { --content-w: calc(100vw - 32px); }
+  :root {
+    --content-w: calc(100vw - 32px
+      - var(--oddsrabbit-safe-left, 0px) - var(--oddsrabbit-safe-right, 0px));
+  }
   body { margin: 0 0 calc(12px + var(--oddsrabbit-safe-bottom, 0px)); }
-  .container { width: auto; padding: 0 16px; }
+  .container {
+    width: auto;
+    padding: 0 calc(16px + var(--oddsrabbit-safe-right, 0px))
+             0 calc(16px + var(--oddsrabbit-safe-left, 0px));
+  }
   .restart-button { font-size: 9px; padding: 8px 10px; }
   .board-frame { padding: 16px; }
   .game-message { top: 16px; right: 16px; bottom: 16px; left: 16px; gap: 14px; }

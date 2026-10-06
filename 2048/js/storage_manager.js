@@ -18,7 +18,12 @@ function StorageManager() {
   this.bestScoreKey = "bestScore";
   this.gameStateKey = "gameState";
   this.pendingWinKey = "pendingWin";
+  // The best score the platform has CONFIRMED on the "highscore" board. Written
+  // only when a submit resolves, so a dropped request leaves it behind the real
+  // best and the next trigger retries. See submitHighScore() in application.js.
+  this.submittedBestKey = "submittedBest";
   this._best = 0;
+  this._submittedBest = 0;
   this._state = null;
   this._pendingWin = null;
   this._winRecorded = false;
@@ -44,10 +49,19 @@ StorageManager.prototype.hydrate = function () {
     self._bridge.get(self.bestScoreKey),
     self._bridge.get(self.gameStateKey),
     self._bridge.get(self.pendingWinKey),
+    // Caught on its own: Promise.all rejects as a unit, and a dead marker read
+    // must not discard the best score and saved game that read back fine. A
+    // missing marker costs one server-deduped resubmit.
+    self._bridge.get(self.submittedBestKey).catch(function () { return null; }),
   ]).then(function (values) {
     var bestRaw = values[0];
     var stateRaw = values[1];
     var pendingWinRaw = values[2];
+    var submittedRaw = values[3];
+    if (submittedRaw != null) {
+      var submitted = parseInt(submittedRaw, 10);
+      if (!isNaN(submitted)) self._submittedBest = submitted;
+    }
     if (bestRaw != null) {
       var parsed = parseInt(bestRaw, 10);
       if (!isNaN(parsed)) self._best = parsed;
@@ -79,6 +93,18 @@ StorageManager.prototype.setBestScore = function (score) {
   this._best = score;
   if (this._bridge) {
     this._bridge.set(this.bestScoreKey, String(score)).catch(function () {});
+  }
+};
+
+StorageManager.prototype.getSubmittedBest = function () {
+  return this._submittedBest || 0;
+};
+
+StorageManager.prototype.markBestSubmitted = function (score) {
+  if (score <= this._submittedBest) return;
+  this._submittedBest = score;
+  if (this._bridge) {
+    this._bridge.set(this.submittedBestKey, String(score)).catch(function () {});
   }
 };
 

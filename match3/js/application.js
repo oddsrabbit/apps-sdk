@@ -638,18 +638,25 @@
         soundToggleEl.textContent = muted ? "🔇" : "🔊";
         soundToggleEl.setAttribute("aria-pressed", muted ? "true" : "false");
         soundToggleEl.setAttribute("aria-label", muted ? "Unmute sound" : "Mute sound");
+        // Revealed on the first paint (styles.css hides it until `.ready`):
+        // the markup's 🔊 is only a placeholder, and showing it before the
+        // stored preference is read flips it to 🔇 under a muted player's eyes.
+        soundToggleEl.classList.add("ready");
       }
       // Hydrate the saved preference, then paint. Defaults to unmuted on any
       // read failure (the safer default for a brand-new player who hasn't
-      // expressed a choice yet).
-      if (OR.storage && OR.storage.get) {
-        OR.storage.get(MUTED_KEY)
-          .then(function (raw) { sound.setMuted(raw === "1"); })
-          .catch(noop)
-          .then(paintSoundToggle);
-      } else {
-        paintSoundToggle();
-      }
+      // expressed a choice yet). Every path ends in paintSoundToggle, which is
+      // also what reveals the toggle — so the read is started inside a .then,
+      // where even a synchronous throw from the bridge lands in the .catch
+      // rather than leaving the control hidden for good.
+      Promise.resolve()
+        .then(function () {
+          if (OR.storage && OR.storage.get) return OR.storage.get(MUTED_KEY);
+          return null;
+        })
+        .then(function (raw) { sound.setMuted(raw === "1"); })
+        .catch(noop)
+        .then(paintSoundToggle);
       if (soundToggleEl) {
         soundToggleEl.addEventListener("click", function () {
           // A click is a gesture — make sure the context is live so the

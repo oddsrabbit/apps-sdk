@@ -492,7 +492,8 @@ header h1 {
   color: var(--gray);
 }
 
-.share-btn {
+.share-btn,
+.retry-btn {
   margin-top: 4px;
   padding: 12px 16px;
   background: var(--green);
@@ -503,7 +504,9 @@ header h1 {
   cursor: pointer;
 }
 
-.share-btn:hover { filter: brightness(1.05); }
+.share-btn:hover,
+.retry-btn:not(:disabled):hover { filter: brightness(1.05); }
+.retry-btn:disabled { opacity: 0.45; cursor: default; }
 
 /* Toast */
 .toast {
@@ -560,6 +563,12 @@ header h1 {
   flex-direction: column;
   gap: 12px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+  /* The backdrop is `position: fixed` and padded, so the page behind it can't
+     scroll and the modal has to bound itself to the padded area — a percentage
+     of the backdrop's content box, so it clears the status bar, back-button row
+     and home indicator (unlike a vh cap). */
+  max-height: 100%;
+  overflow-y: auto;
 }
 
 .modal h2 {
@@ -633,7 +642,7 @@ header h1 {
 .leaderboard-modal {
   max-width: 420px;
   position: relative;
-  max-height: 90vh;
+  /* Height cap comes from .modal; the body below scrolls instead of the modal. */
   overflow: hidden;
 }
 
@@ -709,8 +718,6 @@ header h1 {
 .share-modal {
   max-width: 420px;
   position: relative;
-  max-height: 90vh;
-  overflow-y: auto;
 }
 
 .modal-x {

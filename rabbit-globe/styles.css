@@ -54,6 +54,20 @@
   }
 }
 
+/* What the status bar sits on while an overlay is up: the modal scrim
+   (rgba(0,0,0,0.5)) or the photo lightbox (rgba(0,0,0,0.92)) over --bg. Only a
+   hint, for the app's status-bar and back-button tone — the overlays themselves
+   run under the status bar. main.ts sets data-overlay to which one is showing
+   (docs/game-header-guidelines.md). */
+:root[data-overlay='modal'] { --oddsrabbit-edge-top: #7c7c7c; }
+:root[data-overlay='lightbox'] { --oddsrabbit-edge-top: #141414; }
+:root[data-color-scheme='dark'][data-overlay='modal'] { --oddsrabbit-edge-top: #0b0b0d; }
+:root[data-color-scheme='dark'][data-overlay='lightbox'] { --oddsrabbit-edge-top: #020202; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-color-scheme])[data-overlay='modal'] { --oddsrabbit-edge-top: #0b0b0d; }
+  :root:not([data-color-scheme])[data-overlay='lightbox'] { --oddsrabbit-edge-top: #020202; }
+}
+
 /* OpenStreetMap only serves a light style; in dark mode, invert the tiles and
    rotate the hue back so water stays blue — a standard trick that avoids a
    second tile provider. Only the tile pane: markers and lines keep their
@@ -169,6 +183,9 @@ header h1 {
    can cut off the sign or plate that gives it away. Tap for full screen. */
 .clue-photo {
   width: 100%; height: auto; max-height: 56vh; object-fit: contain;
+  /* `auto` first: once the photo loads its own ratio wins; until then (and if
+     it fails) 4:3 holds the frame's space so the map below doesn't jump. */
+  aspect-ratio: auto 4 / 3;
   border-radius: 12px; display: block; background: var(--border); cursor: zoom-in;
 }
 .clue-photo-failed .clue-photo { min-height: 200px; cursor: default; }
@@ -187,7 +204,9 @@ header h1 {
 .clue-thumb-active { border-color: var(--accent); opacity: 1; }
 .clue-attribution { color: var(--muted); font-size: 0.72rem; margin: 4px 2px 0; }
 
-.geo-map-wrap { position: relative; }
+/* Isolated so the crosshair's z-index (800, a sibling of .geo-map rather than
+   inside it) stays inside the map too instead of drawing over our modals. */
+.geo-map-wrap { position: relative; isolation: isolate; }
 .geo-map {
   width: 100%; height: 56vh; min-height: 300px;
   border-radius: 12px; overflow: hidden; border: 1px solid var(--border);

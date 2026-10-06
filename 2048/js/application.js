@@ -174,20 +174,51 @@
 
   // Submit the player's all-time best to the global "highscore" leaderboard.
   // Uses keepBest so the server keeps the max under this constant roundKey — a
-  // rising best can't be frozen by the one-submission 409. Signed-in only (the
-  // endpoint requires a user, and there'd be no one to rank). Skips redundant
-  // resubmits within a load; the server dedups the rest.
-  var lastSubmittedBest = 0;
+  // rising best can't be frozen by the one-submission 409.
+  //
+  // Storage records what the platform CONFIRMED (markBestSubmitted, on a
+  // resolved submit only), so a request that never lands is retried rather than
+  // lost: this runs on boot, on game over, and on background AND foreground,
+  // and any gap between the marker and the stored best goes on the next of
+  // those. It used to mark the best as sent before the request did, so a
+  // dropped submit left the player off the board until they beat their own
+  // best again. Same shape as match3's submitBests().
+  //
+  // One in-flight flag rather than a queue: keepBest upserts are idempotent, so
+  // a best beaten mid-flight is picked up by the re-entrant call each success
+  // makes, which stops as soon as the marker matches. Only successes recurse; a
+  // failure waits for the next real trigger, or a host that always rejects
+  // would spin.
+  var bestSubmitInFlight = false;
   function submitHighScore() {
-    if (!OR.user || !OR.scores || typeof OR.scores.submit !== "function") return;
+    if (bestSubmitInFlight || !canSubmitScores()) return;
     var best = storage.getBestScore();
-    if (!best || best <= 0 || best === lastSubmittedBest) return;
-    lastSubmittedBest = best;
+    if (!best || best <= storage.getSubmittedBest()) return;
+    bestSubmitInFlight = true;
     try {
       OR.scores
         .submit({ roundKey: "highscore", score: best, keepBest: true, metadata: { best: true } })
-        .catch(noop);
-    } catch (_) {}
+        .then(function () {
+          bestSubmitInFlight = false;
+          storage.markBestSubmitted(best);
+          submitHighScore();
+        })
+        .catch(function (err) {
+          bestSubmitInFlight = false;
+          warnSubmitFailed(err);
+        });
+    } catch (err) {
+      bestSubmitInFlight = false;
+      warnSubmitFailed(err);
+    }
+  }
+
+  // The marker keeps a failed submit recoverable, which is exactly why it needs
+  // a log: a host that rejects EVERY submit otherwise looks, from outside, like
+  // one where everything landed. Nothing user-facing — there's nothing for the
+  // player to do, and the retry is already scheduled.
+  function warnSubmitFailed(err) {
+    try { console.warn("2048: highscore submit failed", err); } catch (_) {}
   }
 
   // Surface fatal errors to the user instead of leaving them on a half-painted
@@ -223,11 +254,23 @@
           // covers players who set a new best and leave without a game-over.
           submitHighScore();
         });
+        // And again on the way back in: `pause` is the attempt most likely to
+        // fail (the player often backgrounds because they lost signal), and
+        // `resume` is when the connection has typically returned. No-op when
+        // the marker is current.
+        OR.lifecycle.on("resume", function () {
+          submitHighScore();
+        });
       } catch (_) {}
 
       window.requestAnimationFrame(function () {
         var game = new GameManager(4, KeyboardInputManager, HTMLActuator, StorageManagerFactory);
         attachBridgeEffects(game);
+
+        // Boot-time retry for a best that never landed on a previous load.
+        // Also backfills a best set before the confirmed marker existed: it
+        // has no marker, so it submits once and is marked.
+        submitHighScore();
 
         // Retry any win the platform hasn't confirmed. This is the only path
         // that can credit a restored won game: the constructor's setup()

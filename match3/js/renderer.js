@@ -52,15 +52,23 @@
   Renderer.prototype.resize = function (cols, rows) {
     if (cols) this.cols = cols;
     if (rows) this.rows = rows;
+    // Width only, and nothing written back to the element's style. The canvas
+    // is `width: 100%; aspect-ratio: 1 / 1` (styles.css), so its width IS the
+    // container's and its height follows. This used to take min(width, height)
+    // and then pin style.height to the result — so every later resize read back
+    // its own pinned height, and the board could shrink but never grow again
+    // (rotating to landscape and back, or enlarging the window, left it small
+    // and stretched). The square backing store below also gives the element a
+    // 1:1 intrinsic ratio, which keeps it square on a browser too old for
+    // `aspect-ratio`.
     var rect = this.canvas.getBoundingClientRect();
-    var cssSize = Math.min(rect.width, rect.height);
+    var cssSize = rect.width;
     if (cssSize <= 0) return;
     var dpr = window.devicePixelRatio || 1;
     this.cssSize = cssSize;
     this.dpr = dpr;
     this.canvas.width = Math.round(cssSize * dpr);
     this.canvas.height = Math.round(cssSize * dpr);
-    this.canvas.style.height = cssSize + "px";
     if (this._lastState) this.draw(this._lastState);
   };
 

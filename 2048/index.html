@@ -22,6 +22,9 @@
          back-button lane is measured from the screen edge. -->
     <div class="heading">
       <h1 class="title">2048</h1>
+      <!-- The "0"s hold the chips' layout; .scores-container stays invisible
+           until js/html_actuator.js writes the restored values and adds
+           `.ready`. See styles.css. -->
       <div class="scores-container">
         <div class="score-container">0</div>
         <div class="best-container">0</div>
@@ -30,7 +33,10 @@
 
     <div class="container">
       <div class="above-game">
-        <button type="button" class="leaderboard-button">Leaderboard</button>
+        <!-- Starts `hidden`; js/leaderboard.js reveals it only once the host has
+             said it can serve a global board. Shown-then-hidden would make New
+             Game, which shares this row on a phone, jump in width on load. -->
+        <button type="button" class="leaderboard-button" hidden>Leaderboard</button>
         <button type="button" class="restart-button">New Game</button>
       </div>
 

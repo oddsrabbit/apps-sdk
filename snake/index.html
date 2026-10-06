@@ -8,6 +8,10 @@
          docs/game-header-guidelines.md. -->
     <meta name="oddsrabbit-chrome" content="edge" />
     <title>Snake</title>
+    <!-- Fetch the pixel font alongside the stylesheet rather than after it
+         parses. The href must match styles.css's @font-face url exactly (no
+         ?v= — the CSS is copied verbatim) or the font downloads twice. -->
+    <link rel="preload" as="font" type="font/woff2" crossorigin href="./fonts/press-start-2p-latin.woff2" />
     <link rel="stylesheet" href="./styles.css?v=__BUILD_ID__" />
     <script src="../sdk-v1.js?v=__SDK_VERSION__"></script>
   </head>

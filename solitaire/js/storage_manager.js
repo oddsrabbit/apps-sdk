@@ -28,6 +28,16 @@
 //                      site data or switching devices doesn't reset it. One
 //                      key for the latest deal only — older counts have no
 //                      further use once that deal's score is in.
+//   soundMuted       — "1" when the player muted the sound.
+//   hapticsOff       — "1" when the player switched vibration off.
+//
+// The two settings are read here, in the same parallel hydrate as the game
+// keys, rather than by their own OR.storage.get calls in application.js as
+// they used to be. Those resolved on their own schedule — after OR.ready(),
+// so after the host had dropped its cover — and a muted player watched the
+// speaker icon flip from on to off a beat after load. Hydrated here, the HUD
+// is painted from the saved state before it is revealed (see the `.ready`
+// class on .hud-controls).
 
 (function () {
   var KEY_BEST_TIME = "bestTimeMs"; // legacy, migrate-only
@@ -38,6 +48,18 @@
   var KEY_LAST_DAILY_WON = "lastDailyWon";
   var KEY_SAVED_GAME = "savedGame";
   var KEY_DAILY_ATTEMPTS = "dailyAttempts";
+  var KEY_MUTED = "soundMuted";
+  // Vibration on/off, persisted separately from the mute setting. They are two
+  // different senses and players silence them for different reasons — sound
+  // because they are somewhere quiet, vibration because the buzzing is
+  // distracting or drains the battery — so one switch for both would force a
+  // player who wants neither one of them to give up the other.
+  //
+  // Stored inverted ("1" means OFF) so that the absence of the key, a failed
+  // read, and an explicit "on" all mean the same thing. Haptics are on by
+  // default, and a storage failure must not silently disable a feature the
+  // player never asked to turn off.
+  var KEY_HAPTICS_OFF = "hapticsOff";
 
   function StorageManager() {
     this._bestDaily = 0;
@@ -48,6 +70,10 @@
     this._savedGame = null;
     this._attemptsId = -1;
     this._attempts = 0;
+    // Both default to the "never expressed a choice" value — sound on,
+    // vibration on — which is also what a failed read leaves behind.
+    this._muted = false;
+    this._hapticsOff = false;
     this._bridge = null;
   }
 
@@ -58,8 +84,9 @@
     }
     self._bridge = window.OddsRabbit.storage;
     // Parallel fetch — none of these depend on each other, so a single
-    // round-trip-equivalent for all five. Failures degrade silently to the
-    // defaults set in the constructor (best=0, streak=0, no saved game).
+    // round-trip-equivalent for all of them. Each read carries its own catch,
+    // so failures degrade one key at a time to the defaults set in the
+    // constructor (best=0, streak=0, no saved game, sound and vibration on).
     var legacyBest = 0;
     return Promise.all([
       self._bridge.get(KEY_BEST_DAILY).then(function (raw) {
@@ -106,6 +133,12 @@
           self._savedGame = null;
         }
       }).catch(noop),
+      self._bridge.get(KEY_MUTED).then(function (raw) {
+        self._muted = raw === "1";
+      }).catch(noop),
+      self._bridge.get(KEY_HAPTICS_OFF).then(function (raw) {
+        self._hapticsOff = raw === "1";
+      }).catch(noop),
     ]).then(function () {
       // One-time migration: a pre-split best (recorded before daily/random
       // were tracked separately) seeds the daily slot if it's still empty.
@@ -137,6 +170,8 @@
   StorageManager.prototype.getDailyAttempts = function (id) {
     return this._attemptsId === id ? this._attempts : 0;
   };
+  StorageManager.prototype.getMuted = function () { return this._muted; };
+  StorageManager.prototype.getHapticsEnabled = function () { return !this._hapticsOff; };
 
   StorageManager.prototype.setBestFor = function (mode, ms) {
     if (mode === "daily") {
@@ -186,6 +221,14 @@
       }
       self._write(KEY_DAILY_ATTEMPTS, id + ":" + self._attempts);
     });
+  };
+  StorageManager.prototype.setMuted = function (muted) {
+    this._muted = !!muted;
+    this._write(KEY_MUTED, muted ? "1" : "0");
+  };
+  StorageManager.prototype.setHapticsEnabled = function (enabled) {
+    this._hapticsOff = !enabled;
+    this._write(KEY_HAPTICS_OFF, enabled ? "0" : "1");
   };
   StorageManager.prototype.clearSavedGame = function () {
     this.setSavedGame(null);

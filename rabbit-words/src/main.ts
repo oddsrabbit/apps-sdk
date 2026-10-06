@@ -32,6 +32,10 @@ interface State {
   answer: string;
   guesses: string[];
   status: 'in_progress' | 'won' | 'lost';
+  // Set once the server has this day's score (accepted, or already held it), so
+  // reopening a finished day doesn't resubmit. Absent for guests, which is what
+  // lets a guest who signs in later still have the day counted.
+  submitted?: boolean;
 }
 
 interface Stats {
@@ -66,7 +70,8 @@ type CommunityData = {
 
 // ---------- Module-level UI state ----------
 
-let currentState: State;
+// null = no playable game today (the unavailable screen is showing).
+let currentState: State | null = null;
 let currentStats: Stats = DEFAULT_STATS;
 let currentStreak: Streak = DEFAULT_STREAK;
 let currentFriends: FriendScore[] | undefined;
@@ -268,15 +273,20 @@ function escapeHtml(s: string): string {
 const root = document.getElementById('root')!;
 
 function render(): void {
+  const state = currentState;
+  if (!state) {
+    renderUnavailable();
+    return;
+  }
   root.innerHTML = '';
-  root.appendChild(renderPuzzleHeader(currentState));
-  root.appendChild(renderBoard(currentState));
-  if (currentState.status === 'in_progress') {
-    root.appendChild(renderKeyboard(currentState));
+  root.appendChild(renderPuzzleHeader(state));
+  root.appendChild(renderBoard(state));
+  if (state.status === 'in_progress') {
+    root.appendChild(renderKeyboard(state));
   } else {
     root.appendChild(
       renderEndGame(
-        currentState,
+        state,
         currentStats,
         currentStreak,
         currentFriends,
@@ -1038,6 +1048,7 @@ function renderResetTime(): HTMLElement {
   const el = document.createElement('p');
   el.className = 'reset-time';
   el.textContent = formatTimeUntilReset();
+  const renderedDay = todayPuzzleIndex();
 
   if (resetTimeInterval !== undefined) window.clearInterval(resetTimeInterval);
   resetTimeInterval = window.setInterval(() => {
@@ -1047,6 +1058,9 @@ function renderResetTime(): HTMLElement {
       return;
     }
     el.textContent = formatTimeUntilReset();
+    // Midnight UTC passed with the game open: pick up the new day (the
+    // countdown alone would just start again from 24h on a stale screen).
+    if (todayPuzzleIndex() !== renderedDay) void refreshIfStale();
   }, 60_000);
 
   return el;
@@ -1073,7 +1087,7 @@ function showToast(message: string): void {
 }
 
 function shakeActiveRow(): void {
-  if (currentState.status !== 'in_progress') return;
+  if (currentState?.status !== 'in_progress') return;
   const rows = root.querySelectorAll<HTMLElement>('.board-row');
   const row = rows[currentState.guesses.length];
   if (!row) return;
@@ -1125,7 +1139,7 @@ function showInstructions(onClose?: () => void): void {
 // ---------- Input handling ----------
 
 function pushChar(ch: string): void {
-  if (currentState.status !== 'in_progress') return;
+  if (currentState?.status !== 'in_progress') return;
   if (currentInput.length >= COL_COUNT) return;
   if (!/^[a-zA-Z]$/.test(ch)) return;
   // Mark the column we're about to fill so render() animates only that tile.
@@ -1135,7 +1149,7 @@ function pushChar(ch: string): void {
 }
 
 function popChar(): void {
-  if (currentState.status !== 'in_progress') return;
+  if (currentState?.status !== 'in_progress') return;
   if (currentInput.length === 0) return;
   // Backspace doesn't pop — it just removes content.
   lastFilledColumn = null;
@@ -1144,12 +1158,12 @@ function popChar(): void {
 }
 
 function attemptSubmit(): void {
-  if (currentState.status !== 'in_progress') return;
+  if (currentState?.status !== 'in_progress') return;
   void submitGuess(currentState, currentInput);
 }
 
 function onPhysicalKey(e: KeyboardEvent): void {
-  if (currentState.status !== 'in_progress') return;
+  if (currentState?.status !== 'in_progress') return;
   // Don't intercept keys while a modal is open — the modal handles its own ESC.
   if (document.querySelector('.modal-backdrop')) return;
 
@@ -1245,14 +1259,15 @@ async function finalizeStreak(state: State): Promise<Streak> {
  * guess count are broken by submission time server-side.
  *
  * Best-effort:
- *  - 409 (already submitted) is expected on rerenders / replays — silent.
- *  - Network / 5xx errors leave the friends panel empty; the local game
- *    state is unaffected.
+ *  - Accepted, or 409 (already submitted), marks the day `submitted` so
+ *    reopening a finished day doesn't resubmit.
+ *  - Network / 5xx errors leave the friends panel empty and the day
+ *    unflagged, so the next open retries; the local game state is unaffected.
  *  - Skipped entirely for anonymous users (the bridge would 401 anyway).
  */
 async function submitScoreToServer(state: State): Promise<void> {
   if (!window.OddsRabbit.user) return;
-  if (state.status === 'in_progress') return;
+  if (state.status === 'in_progress' || state.submitted) return;
   const won = state.status === 'won';
   const guessCount = state.guesses.length;
   try {
@@ -1261,9 +1276,13 @@ async function submitScoreToServer(state: State): Promise<void> {
       score: scoreForState(state),
       metadata: { won, guessCount },
     });
-  } catch {
-    /* best-effort — see jsdoc above */
+  } catch (error) {
+    // The server already holding this day's score is as good as accepting it.
+    // Anything else (offline, host hiccup) stays unflagged and retries next open.
+    if ((error as { code?: unknown } | null)?.code !== 'scores/already-submitted') return;
   }
+  state.submitted = true;
+  await writeJson('today', state);
 }
 
 /**
@@ -1856,57 +1875,96 @@ function renderUnavailable(): void {
   verdict.textContent = "Today's puzzle isn't available yet.";
   const sub = document.createElement('p');
   sub.textContent = 'Check back in a moment, or make sure you have a connection.';
-  wrap.appendChild(verdict);
-  wrap.appendChild(sub);
-  wrap.appendChild(renderResetTime());
+  const retry = document.createElement('button');
+  retry.type = 'button';
+  retry.className = 'retry-btn';
+  retry.textContent = 'Try again';
+  retry.addEventListener('click', () => {
+    retry.disabled = true;
+    retry.textContent = 'Checking…';
+    void startDay();
+  });
+  wrap.append(verdict, sub, retry, renderResetTime());
   root.appendChild(wrap);
+}
+
+/**
+ * Load (or reload) today's game and render it. Runs at boot, from the
+ * unavailable screen's retry, and when the day rolls over with the game open.
+ * Concurrent calls share one run.
+ */
+let startingDay: Promise<void> | null = null;
+function startDay(): Promise<void> {
+  startingDay ??= (async () => {
+    const [state, stats, streak] = await Promise.all([
+      loadState(),
+      readJson<Stats>('stats', DEFAULT_STATS),
+      readJson<Streak>('streak', DEFAULT_STREAK),
+    ]);
+    currentStats = stats;
+    currentStreak = streak;
+    currentState = state;
+    currentInput = '';
+    currentFriends = undefined;
+    currentCommunity = null;
+
+    if (state && state.status !== 'in_progress') {
+      // Retry score submission in case the original game-over submit failed
+      // silently (network blip, 5xx). A no-op once the day is flagged
+      // `submitted`.
+      await submitScoreToServer(state);
+      const [friends, community] = await Promise.all([
+        loadFriends(state.puzzleIndex),
+        loadCommunityData(state.puzzleIndex),
+      ]);
+      currentFriends = friends;
+      currentCommunity = community;
+    }
+    // Null state (unsupported host, unseeded round, offline) renders the
+    // holding screen — the answer is server-only, there's no local fallback.
+    render();
+  })().finally(() => {
+    startingDay = null;
+  });
+  return startingDay;
+}
+
+/**
+ * Reload when what's on screen is out of date: the holding screen (today's
+ * answer may have landed), or a finished game from a previous day. A game
+ * still in progress is left alone even across midnight — the player finishes
+ * the day they started rather than losing it mid-round.
+ */
+async function refreshIfStale(): Promise<void> {
+  const state = currentState;
+  const rolledOver = state !== null && state.status !== 'in_progress' &&
+    state.puzzleIndex !== todayPuzzleIndex();
+  if (!state || rolledOver) await startDay();
 }
 
 async function bootstrap(): Promise<void> {
   await window.OddsRabbit.whenReady();
 
-  const [state, stats, streak, seenIntro] = await Promise.all([
-    loadState(),
-    readJson<Stats>('stats', DEFAULT_STATS),
-    readJson<Streak>('streak', DEFAULT_STREAK),
+  const [, seenIntro] = await Promise.all([
+    startDay(),
     readJson<boolean>('seen_intro', false),
   ]);
 
-  currentStats = stats;
-  currentStreak = streak;
-
-  // No playable game: the answer is server-only and today's isn't available
-  // (unsupported host, unseeded round, or offline). Show a holding screen rather
-  // than a spoiler-readable local fallback.
-  if (!state) {
-    renderUnavailable();
-    window.OddsRabbit.ready();
-    return;
-  }
-
-  currentState = state;
-
-  if (state.status !== 'in_progress') {
-    // Retry score submission in case the original game-over submit failed
-    // silently (network blip, 5xx). 409s for already-submitted rounds are
-    // expected here and ignored inside submitScoreToServer.
-    await submitScoreToServer(state);
-
-    const [friends, community] = await Promise.all([
-      loadFriends(state.puzzleIndex),
-      loadCommunityData(state.puzzleIndex),
-    ]);
-    currentFriends = friends;
-    currentCommunity = community;
-  }
-
+  // Save whatever game is current at pause time, not the one from boot — a
+  // day rollover may have swapped it since.
   window.OddsRabbit.lifecycle.on('pause', () => {
-    void writeJson('today', state);
+    if (currentState) void writeJson('today', currentState);
   });
+  window.OddsRabbit.lifecycle.on('resume', () => void refreshIfStale());
 
   document.addEventListener('keydown', onPhysicalKey);
 
-  render();
+  // No playable game: nothing to introduce or overlay yet.
+  const state = currentState;
+  if (!state) {
+    window.OddsRabbit.ready();
+    return;
+  }
 
   // Deep-link from a push-notification tap: if the launcher passed a
   // leaderboard intent, overlay the past-round results modal on top of

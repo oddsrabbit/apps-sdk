@@ -27,7 +27,7 @@
   // once a call has been rejected as unsupported, which covers hosts too old to
   // declare capabilities at all.
   if (!OR || !OR.scores || !OR.capabilities || !OR.whenReady || !UI) {
-    if (button) button.style.display = "none";
+    if (button) button.hidden = true;
     return;
   }
   if (!button) return;
@@ -43,8 +43,11 @@
   // rather than rows they can't.
   var LIMIT = 100;
 
+  // The `hidden` attribute rather than style.display, matching the markup: the
+  // button ships hidden, so the reveal below is the only change it sees on load
+  // rather than a show, hide, show that shifts New Game beside it on a phone.
   function hideButton() {
-    button.style.display = "none";
+    button.hidden = true;
   }
 
   function hostSupportsGlobalBoard() {
@@ -54,14 +57,14 @@
   // The capability answer rides in on `init`, which is a postMessage — and this
   // file is a plain <script>, so at this point in the parse no host has spoken
   // yet and `has()` would just echo the SDK's pre-handshake guess. Start hidden
-  // and decide in the whenReady continuation, once the host's real answer is in.
+  // (index.html already does; this is a no-op unless the markup drifts) and decide in the whenReady continuation, once the host's real answer is in.
   // (If whenReady never resolves, no init ever arrived — application.js is
   // blocked on the same promise and the board itself never renders, so a
   // leaderboard button is moot. Staying hidden is the right resting state.)
   hideButton();
   OR.whenReady().then(function () {
     if (!hostSupportsGlobalBoard()) return;
-    button.style.display = "";
+    button.hidden = false;
     button.addEventListener("click", openLeaderboard);
   });
 

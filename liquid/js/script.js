@@ -66,10 +66,13 @@ let config = {
 
 // Expose a paused setter so bootstrap.js can suspend the simulation on the
 // host's `pause` lifecycle event and restore it on `resume`. requestAnimationFrame
-// keeps ticking but step() short-circuits when PAUSED, so the GPU stays idle —
+// keeps ticking but step() short-circuits while paused, so the GPU stays idle —
 // material battery saving when the user backgrounds the app or switches tabs.
+// A flag of its own rather than config.PAUSED (the GUI's "paused" box and the P
+// key): a resume must not unpause a sim the user paused themselves.
+let lifecyclePaused = false;
 window.__liquidSetPaused = function (paused) {
-    config.PAUSED = !!paused;
+    lifecyclePaused = !!paused;
 };
 
 function pointerPrototype () {
@@ -110,6 +113,13 @@ function getWebGLContext (canvas) {
     const isWebGL2 = !!gl;
     if (!isWebGL2)
         gl = canvas.getContext('webgl', params) || canvas.getContext('experimental-webgl', params);
+    // No WebGL at all (disabled, blocklisted GPU, or too many contexts):
+    // everything below would throw on a null gl. Leave a message for
+    // bootstrap.js's error banner and stop here.
+    if (!gl) {
+        window.__liquidError = "This simulation needs WebGL, which isn't available on this device or browser.";
+        throw new Error('Liquid: WebGL unavailable');
+    }
 
     let halfFloat;
     let supportLinearFiltering;
@@ -1124,6 +1134,9 @@ multipleSplats(parseInt(Math.random() * 20) + 5);
 let lastUpdateTime = Date.now();
 let colorUpdateTimer = 0.0;
 update();
+// Reached only if nothing above threw; bootstrap.js shows its error banner
+// when this is missing.
+window.__liquidStarted = true;
 
 function update () {
     const dt = calcDeltaTime();
@@ -1131,7 +1144,7 @@ function update () {
         initFramebuffers();
     updateColors(dt);
     applyInputs();
-    if (!config.PAUSED)
+    if (!config.PAUSED && !lifecyclePaused)
         step(dt);
     render(null);
     requestAnimationFrame(update);

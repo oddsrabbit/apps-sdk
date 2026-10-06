@@ -259,7 +259,14 @@ h1.title {
   opacity: 0.7;
   transition: opacity 0.15s ease, transform 0.1s ease;
   -webkit-tap-highlight-color: transparent;
+  /* Hidden until application.js has painted the icon from the stored mute
+     preference — the markup's 🔊 is a placeholder, and showing it first flips
+     it to 🔇 under a muted player's eyes. `visibility` rather than `display`
+     so the timer row keeps its width meanwhile. Same as flappy-rabbits'
+     .hud-controls. */
+  visibility: hidden;
 }
+.sound-toggle.ready { visibility: visible; }
 .sound-toggle:hover { opacity: 1; }
 .sound-toggle:active { transform: translateY(1px); }
 .sound-toggle[aria-pressed="true"] { opacity: 0.45; }
@@ -674,14 +681,29 @@ strong.important {
 /* Short-viewport cap. The canvas is 1:1 aspect filling the container, so
    on a typical Mac laptop browser (~700px tall once browser chrome is
    subtracted) a 520-wide container puts the bottom rows below the fold
-   even when scrolled. The 220 reserves room for header + buttons + timer
-   + board padding + the how-to-play line beneath the board. Placed AFTER
-   the mobile rule so a wide-but-short window (and a narrow-and-short
-   window) both still get a height-constrained container — otherwise the
-   mobile rule's `width: auto` would let the board grow taller than the
-   viewport. */
+   even when scrolled. The 172 reserves room for buttons + timer + board
+   padding + the how-to-play line beneath the board; the header row is
+   subtracted separately, from the host's own numbers, the same way 2048's
+   --board is (docs/game-header-guidelines.md): the chrome row height (56px
+   in the app, 64px on web, 48px standalone) plus the status bar and home
+   indicator in edge mode. A flat 220 used to stand in for all of it, which
+   was right only for a standalone load — in the app, with a 56px row and a
+   notch's worth of safe area, the board ran off the bottom. Never under
+   240px, like 2048: below that the fruit is too small to swipe, and a page
+   that scrolls is the lesser problem.
+
+   Placed AFTER the mobile rule so a wide-but-short window (and a
+   narrow-and-short window) both still get a height-constrained container —
+   otherwise the mobile rule's `width: auto` would let the board grow taller
+   than the viewport. */
 @media screen and (max-height: 820px) {
-  :root { --content-w: min(520px, calc(100vw - 32px), calc(100vh - 220px)); }
+  :root {
+    --content-w: max(240px, min(
+      520px,
+      calc(100vw - 32px - var(--oddsrabbit-safe-left, 0px) - var(--oddsrabbit-safe-right, 0px)),
+      calc(100vh - 172px - var(--oddsrabbit-chrome-height, 48px)
+        - var(--oddsrabbit-safe-top, 0px) - var(--oddsrabbit-safe-bottom, 0px))));
+  }
   .container {
     width: var(--content-w);
     padding: 0;

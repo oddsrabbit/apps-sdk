@@ -118,7 +118,13 @@ h1.title {
 .scores-container {
   flex: 0 0 auto;
   display: flex;
-  gap: 8px; }
+  gap: 8px;
+  /* The inline "0" placeholders keep the layout but stay invisible until the
+     first actuate writes the restored score and best (js/html_actuator.js),
+     which then adds `.ready`. Avoids a returning player's "0 → 12480" flash
+     while the bridge hydrates. Same pattern as snake and match3. */
+  visibility: hidden; }
+.scores-container.ready { visibility: visible; }
 
 /* 32px chips, label then number on one line. The label is the ::after, pulled
    in front of the number (the element's text) with `order`. */
@@ -474,6 +480,10 @@ hr {
   font: inherit;
   font-weight: bold;
   cursor: pointer; }
+/* Explicit rather than trusting the UA's [hidden] rule, which any author
+   `display` on this button would outrank: `hidden` here means this host has no
+   global board (js/leaderboard.js), and nothing should reopen it. */
+.leaderboard-button[hidden] { display: none !important; }
 
 /* The leaderboard modal, rows, avatars and medals are the shared component
    (src/ui/leaderboard.css), themed via the --lb-* variables at the top of this

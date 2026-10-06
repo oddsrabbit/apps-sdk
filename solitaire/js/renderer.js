@@ -11,8 +11,12 @@
 // the lowest-tier Android WebView the redraw is one fillRect + ~30 drawImage
 // calls per frame, exactly as before the atlas landed.
 //
-// The atlas is an image, so it loads async. Renderer.load(url) resolves once
-// it has decoded; application.js constructs the renderer with the result.
+// The atlas is an image, so it loads async. The renderer does NOT wait for
+// it: application.js constructs it with the bare canvas at script load (so the
+// board is sized and the empty table painted on the very first frame), then
+// hands over the decoded image via setAtlas() once Renderer.load(url)
+// resolves. Only card faces and backs come from the atlas; sizing, the slot
+// ghosts and hit geometry are all procedural and work without it.
 
 (function () {
   var Deck = window.SolitaireDeck;
@@ -371,12 +375,16 @@
 
   // --- Renderer ---
 
-  // `atlas` is the decoded image from Renderer.load(). It is only read here,
-  // in the constructor — every sprite is cropped out of it up front, so the
-  // atlas can be garbage-collected afterwards and the draw loop never touches
-  // it.
-  function Renderer(canvas, atlas) {
-    if (!atlas) throw new Error("solitaire: Renderer needs a loaded atlas — use Renderer.load()");
+  // Built with the canvas alone, and as early as the page can manage — before
+  // the bridge handshake, the storage hydrate and the atlas. The renderer is
+  // what sizes the canvas and publishes --stage-w / --stage-h, and the stage
+  // the HUD is positioned against shrink-wraps the canvas. Built after those
+  // waits, as it used to be, the page spent all of them laid out by the CSS
+  // fallback, and the HUD visibly jumped when the real size landed. Nothing
+  // here needs the card art: the empty-slot ghosts are drawn procedurally, so
+  // the constructor can paint the empty table straight away. The card sprites
+  // arrive later through setAtlas().
+  function Renderer(canvas) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d");
     this.ctx.imageSmoothingEnabled = false;
@@ -414,12 +422,11 @@
       }).observe(hud);
     }
 
-    // Sprite cache.
-    this._cardSprites = new Array(Deck.DECK_SIZE);
-    for (var i = 0; i < Deck.DECK_SIZE; i++) {
-      this._cardSprites[i] = buildCardFace(atlas, i);
-    }
-    this._cardBack = buildCardBack(atlas);
+    // Sprite cache. The slot ghosts are procedural and built now; the card
+    // faces and back stay null until setAtlas(), and hasAtlas() is how the
+    // rest of the game asks whether cards can be drawn yet.
+    this._cardSprites = null;
+    this._cardBack = null;
     this._emptyFoundation = buildEmptyFoundation();
     this._emptyStock = buildEmptyStock();
 
@@ -431,7 +438,34 @@
     // run before the first draw: the width/height attributes in index.html
     // are only what the browser lays out with before the scripts run.
     this.resize();
+    // And paint the table, so the very first frame the player sees is felt
+    // with slot ghosts in their final places rather than a bare buffer that
+    // the boot fills in later.
+    this.drawEmptyTable();
   }
+
+  // Crop every card sprite out of the decoded atlas (from Renderer.load()).
+  // The atlas is only read here — the sprites are cached up front, so the
+  // image can be garbage-collected afterwards and the draw loop never touches
+  // it. Repaints whatever board was handed to draw() while the art was still
+  // in flight, so a caller that drew early doesn't have to remember to.
+  Renderer.prototype.setAtlas = function (atlas) {
+    if (!atlas) throw new Error("solitaire: setAtlas needs a loaded atlas — use Renderer.load()");
+    var sprites = new Array(Deck.DECK_SIZE);
+    for (var i = 0; i < Deck.DECK_SIZE; i++) {
+      sprites[i] = buildCardFace(atlas, i);
+    }
+    this._cardSprites = sprites;
+    this._cardBack = buildCardBack(atlas);
+    if (this._lastBoard) this.draw(this._lastBoard, this._lastDrag, null);
+  };
+
+  // True once setAtlas() has run. Gates everything that needs card art or
+  // that only means something once cards are on the table: hit-testing,
+  // drag eligibility and painting a dealt board.
+  Renderer.prototype.hasAtlas = function () {
+    return this._cardBack !== null;
+  };
 
   // Size the buffer and the element to the viewport, and re-spend the height
   // budget on the vertical offsets. Safe to call as often as you like — it is
@@ -523,7 +557,7 @@
   };
 
   // Drop the resize listeners. Nothing in the app tears a renderer down today
-  // — it is constructed once at boot and lives as long as the page — but the
+  // — it is constructed once at script load and lives as long as the page — but the
   // constructor registers on `window`, so the undo is worth having next to it.
   Renderer.prototype.destroy = function () {
     window.removeEventListener("resize", this._onResize);
@@ -531,7 +565,7 @@
   };
 
   // Fetch and decode the card atlas. Resolves with the image; the caller
-  // passes it straight to the constructor. Rejecting here (rather than
+  // passes it straight to setAtlas(). Rejecting here (rather than
   // failing silently to a blank felt) is what lets application.js surface
   // the bootstrap-error banner.
   Renderer.load = loadAtlas;
@@ -546,9 +580,6 @@
   // land on the art grid can size itself: one authored pixel is SCALE
   // internal pixels.
   Renderer.SCALE = SCALE;
-  // Exported so application.js paints the same felt on the pre-deal canvas
-  // (it previously hardcoded a stale dark-wood hex that didn't match).
-  Renderer.COL_FELT = COL_FELT;
 
   // Repaint the entire scene.
   //   dragState (optional): { source, pointer:{x,y}, offset:{x,y},
@@ -561,6 +592,15 @@
     this._lastBoard = board;
     this._lastDrag = dragState || null;
     var ctx = this.ctx;
+
+    // No card art yet. application.js doesn't draw a board before the atlas
+    // is in, but the resize listener redraws _lastBoard on its own, so this
+    // has to be safe regardless: keep the board (setAtlas repaints it) and
+    // show the empty table rather than throwing on a null sprite.
+    if (!this.hasAtlas()) {
+      this._paintEmptyTable();
+      return;
+    }
 
     // Felt background.
     ctx.fillStyle = COL_FELT;
@@ -590,10 +630,19 @@
   // between a card table waiting for a deal and a blank green screen — which
   // is what a flat felt fill became once the board went full-bleed and the
   // page had nothing else on it.
+  //
+  // Needs no atlas: the slot ghosts are procedural. That is what lets the
+  // constructor paint it at script load, before the card art has arrived.
   Renderer.prototype.drawEmptyTable = function () {
-    var ctx = this.ctx;
     this._lastBoard = null;
     this._lastDrag = null;
+    this._paintEmptyTable();
+  };
+
+  // The paint half of drawEmptyTable, without forgetting the last board —
+  // draw() falls back to it while the atlas is still loading.
+  Renderer.prototype._paintEmptyTable = function () {
+    var ctx = this.ctx;
     ctx.fillStyle = COL_FELT;
     ctx.fillRect(0, 0, INTERNAL_W, INTERNAL_H);
     ctx.drawImage(this._emptyStock, STOCK_X, TOP_ROW_Y);
