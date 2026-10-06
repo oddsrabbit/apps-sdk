@@ -155,7 +155,7 @@ export const NOTIFICATION_ERROR_CODES = {
   tooMany: 'notifications/too-many',
   /** The app's manifest does not declare `bridge:notifications`. */
   forbidden: 'notifications/forbidden',
-  /** Too many schedules or cancels in the last minute. */
+  /** Too many schedules, cancels or mute changes in the last minute. */
   rateLimited: 'notifications/rate-limited',
 } as const;
 
@@ -565,6 +565,20 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('notifications.status'),
     correlationId: CorrelationId,
+  }),
+  // The viewer's per-game mute: while on, nothing from this game reaches
+  // their phone (daily results, match turns, friends' gifts and visits,
+  // reminders). The account-wide Games settings still apply on top. Needs no
+  // scope: a game can only read or change its own mute, for the signed-in
+  // user, and the host offers the same switch in its own UI.
+  z.object({
+    type: z.literal('notifications.muted'),
+    correlationId: CorrelationId,
+  }),
+  z.object({
+    type: z.literal('notifications.setMuted'),
+    correlationId: CorrelationId,
+    payload: z.object({ muted: z.boolean() }),
   }),
   // ---- Friends: showcases and gifts (`bridge:social`). All authenticated.
   // "Friends" is the follow graph, either direction, with no block between
@@ -1128,12 +1142,20 @@ export const NotificationCancelResultSchema = z.object({
   cancelled: z.boolean(),
 });
 
-// Result of `notifications.status`.
+// Result of `notifications.status`. `muted` is the per-game mute (absent from
+// servers older than it); `push` is already false while it is on.
 export const NotificationStatusSchema = z.object({
   push: z.boolean(),
+  muted: z.boolean().optional(),
 });
 
 export type NotificationStatus = z.infer<typeof NotificationStatusSchema>;
+
+// Result of `notifications.muted` and `notifications.setMuted`: the mute as
+// it now stands.
+export const NotificationMuteSchema = z.object({
+  muted: z.boolean(),
+});
 
 // Result of `notifications.list`: this app's pending reminders for the viewer,
 // soonest first. Rows are parsed one at a time by the SDK.

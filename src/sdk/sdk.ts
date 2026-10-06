@@ -20,6 +20,7 @@ import {
   NotificationCancelResultSchema,
   NotificationListSchema,
   NotificationStatusSchema,
+  NotificationMuteSchema,
   ShowcaseSchema,
   ShowcasePublishResultSchema,
   GiftSchema,
@@ -690,10 +691,11 @@ export interface OddsRabbitGlobal {
    *
    * Requires the `bridge:notifications` scope and a signed-in user. Gate the
    * UI on `capabilities.has('notifications.schedule')`: the mobile host ships
-   * these behind App Store review.
+   * these behind App Store review. `muted` and `setMuted` need no scope.
    *
-   * `schedule` and `cancel` REJECT with a `notifications/*` code
-   * (`NOTIFICATION_ERROR_CODES`) on failure. `list` degrades to `[]`.
+   * `schedule`, `cancel` and `setMuted` REJECT with a `notifications/*` code
+   * (`NOTIFICATION_ERROR_CODES`) on failure. `list` degrades to `[]`, and
+   * `status` and `muted` to `null`.
    */
   readonly notifications: {
     /**
@@ -710,7 +712,8 @@ export interface OddsRabbitGlobal {
     list(): Promise<ScheduledNotification[]>;
     /**
      * Whether a reminder push would reach the viewer right now: their Games
-     * and Game reminders settings are on and they have a phone to send to.
+     * and Game reminders settings are on, they haven't muted this game, and
+     * they have a phone to send to. `muted` says whether that mute is on.
      * When `push` is false the reminder still lands in the bell, so offer
      * "we'll leave a note in your bell" rather than a nudge on their phone.
      *
@@ -718,6 +721,27 @@ export interface OddsRabbitGlobal {
      * or a failed request. Treat null as unknown, not as off.
      */
     status(): Promise<NotificationStatus | null>;
+    /**
+     * Whether the viewer has muted this game: while muted, nothing from it
+     * reaches their phone (daily results, match turns, friends' gifts and
+     * visits, reminders), though the bell may still show it. The host offers
+     * the same switch in its own settings, so the answer can change between
+     * calls; read it when you open your settings, don't cache it.
+     *
+     * Resolves `null` when it can't say: signed out, a host without the verb,
+     * or a failed request.
+     */
+    muted(): Promise<boolean | null>;
+    /**
+     * Mute or unmute this game for the viewer. Only ever call it from the
+     * viewer's own tap on a switch: unmuting someone who muted you elsewhere
+     * is exactly the noise the mute exists to stop. Gate the switch on
+     * `capabilities.has('notifications.setMuted')`. Resolves with the mute as
+     * it now stands; REJECTS on failure (`notifications/rate-limited`,
+     * `notifications/unauthorized` when signed out, or `bridge/unknown-type`
+     * on a host without the verb).
+     */
+    setMuted(muted: boolean): Promise<boolean>;
   };
 
   /**
@@ -1346,6 +1370,21 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
         })
         .catch(() => null);
     },
+    muted: (): Promise<boolean | null> => {
+      if (!this.user) return Promise.resolve(null);
+      return this.request<unknown>('notifications.muted')
+        .then((result) => {
+          const parsed = NotificationMuteSchema.safeParse(result);
+          return parsed.success ? parsed.data.muted : null;
+        })
+        .catch(() => null);
+    },
+    setMuted: (muted: boolean): Promise<boolean> =>
+      this.request<unknown>('notifications.setMuted', { muted }).then((result) => {
+        const parsed = NotificationMuteSchema.safeParse(result);
+        if (!parsed.success) throw new Error('notifications.setMuted: malformed result');
+        return parsed.data.muted;
+      }),
   };
 
   readonly showcase = {

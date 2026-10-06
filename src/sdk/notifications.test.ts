@@ -260,3 +260,62 @@ test('status is null, never a rejection, when the host lacks it or the answer is
   malformed.init();
   assert.equal(await b.notifications.status(), null);
 });
+
+// ─── per-game mute ───────────────────────────────────────────────────────
+
+test('muted reads the per-game mute', async () => {
+  const t = fakeTransport(() => Promise.resolve({ muted: true }));
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init();
+  assert.equal(await sdk.notifications.muted(), true);
+  assert.deepEqual(t.calls[0], { type: 'notifications.muted', payload: undefined });
+});
+
+test('muted is null when signed out, unsupported or malformed, never a rejection', async () => {
+  const signedOut = fakeTransport(() => Promise.resolve({ muted: true }));
+  const a = new OddsRabbitSDK(signedOut.transport);
+  signedOut.init({ user: null, sessionToken: null });
+  assert.equal(await a.notifications.muted(), null);
+  assert.equal(signedOut.calls.length, 0);
+
+  const unsupported = fakeTransport(() => reject('bridge/unknown-type'));
+  const b = new OddsRabbitSDK(unsupported.transport);
+  unsupported.init();
+  assert.equal(await b.notifications.muted(), null);
+  assert.equal(b.capabilities.has('notifications.muted'), false);
+
+  const malformed = fakeTransport(() => Promise.resolve({ muted: 'yes' }));
+  const c = new OddsRabbitSDK(malformed.transport);
+  malformed.init();
+  assert.equal(await c.notifications.muted(), null);
+});
+
+test('setMuted sends the choice and resolves with the mute as it now stands', async () => {
+  const t = fakeTransport((_type, payload) => Promise.resolve(payload));
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init();
+  assert.equal(await sdk.notifications.setMuted(true), true);
+  assert.deepEqual(t.calls[0], { type: 'notifications.setMuted', payload: { muted: true } });
+  assert.equal(await sdk.notifications.setMuted(false), false);
+});
+
+test('setMuted rejects with the host code', async () => {
+  const t = fakeTransport(() => reject(NOTIFICATION_ERROR_CODES.rateLimited));
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init();
+  await assert.rejects(sdk.notifications.setMuted(true), { code: NOTIFICATION_ERROR_CODES.rateLimited });
+});
+
+test('setMuted rejects on a malformed result rather than guessing', async () => {
+  const t = fakeTransport(() => Promise.resolve({ muted: 'yes' }));
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init();
+  await assert.rejects(sdk.notifications.setMuted(true), /malformed result/);
+});
+
+test('status carries the mute when the server sends it', async () => {
+  const t = fakeTransport(() => Promise.resolve({ push: false, muted: true }));
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init();
+  assert.deepEqual(await sdk.notifications.status(), { push: false, muted: true });
+});
