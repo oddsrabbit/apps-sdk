@@ -31,8 +31,9 @@ export type {
   Visit,
   VisitRecordResult,
   VisitSeenResult,
+  ContentReveal,
 } from './sdk';
-export { MATCH_ERROR_CODES, SOCIAL_ERROR_CODES, GIFT_ERROR_CODES, VISIT_ERROR_CODES } from './sdk';
+export { CONTENT_ERROR_CODES, MATCH_ERROR_CODES, SOCIAL_ERROR_CODES, GIFT_ERROR_CODES, VISIT_ERROR_CODES } from './sdk';
 export type {
   BridgeUser,
   AppColorScheme,

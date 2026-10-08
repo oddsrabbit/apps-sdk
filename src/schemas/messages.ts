@@ -39,6 +39,9 @@ const StorageValue = z.string().max(STORAGE_VALUE_MAX_BYTES);
 const CorrelationId = z.string().min(1).max(128);
 const RoundKey = z.string().min(1).max(128);
 
+/** Highest item index `content.reveal` accepts: a bound, not a game's round count. */
+export const CONTENT_REVEAL_MAX_INDEX = 63;
+
 export const SCORE_METADATA_MAX_BYTES = 2 * 1024;
 
 // ---- Matches (async turn-based multiplayer) ----
@@ -359,6 +362,24 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
     correlationId: CorrelationId,
     payload: z.object({
       roundKey: RoundKey,
+    }),
+  }),
+  // Lock in a guess at one item of a round's content and get its answer back,
+  // for games whose answer can't ship in `content.daily` without being
+  // readable from devtools (rabbit-globe's coordinates). For a signed-in
+  // viewer the server records the FIRST guess per (round, index) and answers
+  // with that one ever after, so the answer can't be fetched and then
+  // "guessed"; the game's score is then computed from the recorded guesses.
+  // Public like content.daily: a guest gets the answer, but nothing is
+  // recorded and no score can come of it. `guess` and `reveal` are
+  // app-specific, as `content` is.
+  z.object({
+    type: z.literal('content.reveal'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      roundKey: RoundKey,
+      index: z.number().int().min(0).max(CONTENT_REVEAL_MAX_INDEX),
+      guess: z.record(z.unknown()),
     }),
   }),
   // ---- Matches. All authenticated: a guest cannot be in a match. Every read
@@ -950,6 +971,29 @@ export const DailyContentSchema = z.object({
 });
 
 export type DailyContent = z.infer<typeof DailyContentSchema>;
+
+// Result of `content.reveal`. `guess` is the guess the server holds for this
+// item, which for a signed-in viewer is the first one they locked in and may
+// differ from the one just sent (a replay after clearing storage, a second
+// device). Games must score and draw this one, not their own.
+export const ContentRevealSchema = z.object({
+  roundKey: z.string().min(1),
+  index: z.number().int().nonnegative(),
+  guess: z.record(z.unknown()),
+  reveal: z.record(z.unknown()),
+});
+
+export type ContentReveal = z.infer<typeof ContentRevealSchema>;
+
+/** Error codes `content.reveal` rejects with, beyond transport failures. */
+export const CONTENT_ERROR_CODES = {
+  /** The round isn't published (or isn't open yet). */
+  notAvailable: 'content/not-available',
+  /** The guess isn't a shape this game accepts, or the index is out of range. */
+  invalidGuess: 'content/invalid-guess',
+  /** This game's content has nothing to reveal. */
+  noReveal: 'content/no-reveal',
+} as const;
 
 // One seat in a match. The `uuid`/`username`/`avatar`/`isSelf` quartet is the
 // same as a score row on purpose, so the shared leaderboard renderer can draw

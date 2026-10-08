@@ -3,6 +3,7 @@ import {
   TopScoreEntrySchema,
   ScoreDistributionEntrySchema,
   DailyContentSchema,
+  ContentRevealSchema,
   SeasonBoardEnvelopeSchema,
   SeasonEntrySchema,
   RoundRankSchema,
@@ -62,6 +63,7 @@ import {
   type TopScoreEntry,
   type ScoreDistributionEntry,
   type DailyContent,
+  type ContentReveal,
 } from '../schemas/messages';
 import { BridgeTransport, type LifecycleHandler } from './transport';
 
@@ -70,6 +72,7 @@ export type {
   TopScoreEntry,
   ScoreDistributionEntry,
   DailyContent,
+  ContentReveal,
   SeasonBoard,
   SeasonEntry,
   SeasonMetric,
@@ -101,6 +104,7 @@ export type {
 } from '../schemas/messages';
 
 export {
+  CONTENT_ERROR_CODES,
   MATCH_ERROR_CODES,
   NOTIFICATION_ERROR_CODES,
   SOCIAL_ERROR_CODES,
@@ -509,6 +513,20 @@ export interface OddsRabbitGlobal {
      * before use.
      */
     daily(payload: { roundKey: string }): Promise<DailyContent | null>;
+    /**
+     * Lock in a guess at item `index` of a round and get that item's answer,
+     * for a game whose answers `content.daily` withholds. For a signed-in
+     * viewer the server records the FIRST guess per item and answers with it
+     * from then on, so score and draw the returned `guess`, not your own: it
+     * differs when the item was already guessed (another device, cleared
+     * storage). A guest gets the answer with nothing recorded.
+     *
+     * REJECTS on failure, because a game can't score without it: a
+     * `content/*` code (`CONTENT_ERROR_CODES`), a transport error, or
+     * `bridge/unknown-*` on a host without the verb. Gate on
+     * `capabilities.has('content.reveal')`.
+     */
+    reveal(payload: { roundKey: string; index: number; guess: Record<string, unknown> }): Promise<ContentReveal>;
   };
 
   /**
@@ -1083,6 +1101,16 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
       });
       return Promise.race([fetched, timeout]);
     },
+    reveal: (payload: {
+      roundKey: string;
+      index: number;
+      guess: Record<string, unknown>;
+    }): Promise<ContentReveal> =>
+      this.request<unknown>('content.reveal', payload).then((result) => {
+        const parsed = ContentRevealSchema.safeParse(result);
+        if (!parsed.success) throw new Error('content.reveal: malformed result');
+        return parsed.data;
+      }),
   };
 
   /**

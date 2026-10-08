@@ -19,13 +19,22 @@ declare global {
   }
 }
 
+/** Where a round's photo was taken. */
+interface Answer {
+  lat: number;
+  lng: number;
+  place: string;
+}
+
 /**
- * One round's location. Served only by the platform via `content.daily` — the
- * coordinates ARE the answer, so there is no bundled set (an unavailable round
- * shows a holding screen rather than a spoiler-readable local answer). Always
- * render `attribution` with the photo.
+ * One round's location. Served only by the platform via `content.daily`, with
+ * no bundled set. The answer fields are absent from the server's copy: it
+ * withholds them so they can't be read from devtools, and each arrives from
+ * `content.reveal` once the round's guess is locked in, to be stored here.
+ * Rounds published before that change still carry them and are scored
+ * locally. Always render `attribution` with the photo.
  */
-export interface GeoLocation {
+export interface GeoLocation extends Partial<Answer> {
   image: string;
   /**
    * Optional extra frames of the same spot (e.g. neighbouring shots from the
@@ -33,9 +42,6 @@ export interface GeoLocation {
    * older payloads without it still play.
    */
   images?: string[];
-  lat: number;
-  lng: number;
-  place: string;
   attribution: string;
 }
 
@@ -117,6 +123,9 @@ const DEFAULT_STREAK: Streak = { current: 0, max: 0, lastPlayedPuzzleIndex: null
 
 // Null while today's game is unavailable (no stored game, no server content).
 let currentState: State | null = null;
+// Why it's unavailable: no content yet, or content this host can't play (its
+// answers are withheld and the host has no `content.reveal`).
+let unavailableReason: 'missing' | 'update' = 'missing';
 let currentStats: Stats = DEFAULT_STATS;
 let currentStreak: Streak = DEFAULT_STREAK;
 let currentFriends: FriendScore[] | undefined;
@@ -224,16 +233,36 @@ function escapeHtml(s: string): string {
 
 // ---------- Daily content + persistence ----------
 
-/** True when `loc` is a structurally valid GeoLocation. */
+/** `v` as an Answer, or null when it isn't one. */
+function parseAnswer(v: unknown): Answer | null {
+  if (!v || typeof v !== 'object') return null;
+  const o = v as Partial<Answer>;
+  return typeof o.lat === 'number' &&
+    Number.isFinite(o.lat) &&
+    typeof o.lng === 'number' &&
+    Number.isFinite(o.lng) &&
+    typeof o.place === 'string'
+    ? { lat: o.lat, lng: o.lng, place: o.place }
+    : null;
+}
+
+/** The location's answer, or null while it's still withheld. */
+function answerOf(location: GeoLocation): Answer | null {
+  return parseAnswer(location);
+}
+
+/**
+ * True when `loc` is a structurally valid GeoLocation: the clue fields, and
+ * either a whole answer or none of it.
+ */
 function isLocation(v: unknown): v is GeoLocation {
   if (!v || typeof v !== 'object') return false;
   const o = v as Partial<GeoLocation>;
+  const answerless = o.lat === undefined && o.lng === undefined && o.place === undefined;
   return (
     typeof o.image === 'string' &&
-    typeof o.lat === 'number' &&
-    typeof o.lng === 'number' &&
-    typeof o.place === 'string' &&
     typeof o.attribution === 'string' &&
+    (answerless || parseAnswer(o) !== null) &&
     (o.images === undefined ||
       (Array.isArray(o.images) && o.images.every((u) => typeof u === 'string')))
   );
@@ -277,6 +306,8 @@ function isValidState(s: unknown): s is State {
     v.locations.every(isLocation) &&
     Array.isArray(v.guesses) &&
     v.guesses.length === ROUNDS_PER_DAY &&
+    // A guessed round has its answer: every reveal and recap draws it.
+    v.guesses.every((g, i) => !g || answerOf(v.locations![i]!) !== null) &&
     typeof v.current === 'number' &&
     (v.status === 'in_progress' || v.status === 'complete')
   );
@@ -347,6 +378,11 @@ function applyResultToStreak(streak: Streak, puzzleIndex: number): Streak {
 
 // ---------- Scores bridge ----------
 
+/** A coordinate to 5 decimal places (~1 m), as the server receives them. */
+function round5(n: number): number {
+  return Math.round(n * 1e5) / 1e5;
+}
+
 /** Longitude folded into −180…180. */
 function wrapLng(lng: number): number {
   return ((((lng + 180) % 360) + 360) % 360) - 180;
@@ -360,7 +396,6 @@ function wrapLng(lng: number): number {
  * server refuses an unwrapped longitude as not sent by the game.
  */
 function guessesForServer(state: State): ([number, number] | null)[] {
-  const round5 = (n: number): number => Math.round(n * 1e5) / 1e5;
   return state.guesses.map((g) => (g ? [round5(g.lat), round5(wrapLng(g.lng))] : null));
 }
 
@@ -619,7 +654,7 @@ function renderRound(state: State, guess: GuessResult | null): HTMLElement {
     const perfect = guess.km <= PERFECT_KM ? ' <span class="round-perfect">Perfect!</span>' : '';
     result.innerHTML = `
       <p class="round-distance"><strong>${escapeHtml(formatKm(guess.km))}</strong> away · ${guess.score.toLocaleString()} / ${MAX_ROUND_SCORE.toLocaleString()}${perfect}</p>
-      <p class="round-place">${escapeHtml(location.place)}</p>
+      <p class="round-place">${escapeHtml(answerOf(location)?.place ?? '')}</p>
     `;
     mapPane.appendChild(result);
 
@@ -839,14 +874,16 @@ function showPhotoLightbox(src: string, attribution: string): void {
 /** Create the Leaflet map for the current round and wire interactions. */
 function mountRoundMap(state: State, guess: GuessResult | null): void {
   const location = state.locations[state.current]!;
+  // Always present once guessed (isValidState and submitGuess see to it).
+  const answer = guess ? answerOf(location) : null;
 
-  if (guess) {
+  if (guess && answer) {
     const map = createMap('geo-map');
     // Revealed: guess + truth + the line between them, framed to both. The map
     // stays draggable and zoomable — seeing where the place really is, and
     // what's around it, is half the fun of the reveal.
-    const truthLatLng: L.LatLngExpression = [location.lat, location.lng];
-    const guessLatLng: L.LatLngExpression = [guess.lat, nearLng(guess.lng, location.lng)];
+    const truthLatLng: L.LatLngExpression = [answer.lat, answer.lng];
+    const guessLatLng: L.LatLngExpression = [guess.lat, nearLng(guess.lng, answer.lng)];
     guessLine(guessLatLng, truthLatLng).addTo(map);
     guessDot(guessLatLng).addTo(map);
     truthDot(truthLatLng).addTo(map);
@@ -887,18 +924,20 @@ function mountSummaryMap(state: State): void {
   const map = createMap('summary-map');
   const points: L.LatLngExpression[] = [];
   state.locations.forEach((loc, i) => {
-    const truth: L.LatLngExpression = [loc.lat, loc.lng];
+    const answer = answerOf(loc);
+    if (!answer) return;
+    const truth: L.LatLngExpression = [answer.lat, answer.lng];
     points.push(truth);
     const g = state.guesses[i];
     if (g) {
-      const guessLatLng: L.LatLngExpression = [g.lat, nearLng(g.lng, loc.lng)];
+      const guessLatLng: L.LatLngExpression = [g.lat, nearLng(g.lng, answer.lng)];
       points.push(guessLatLng);
       guessLine(guessLatLng, truth).addTo(map);
       guessDot(guessLatLng).addTo(map);
     }
     L.marker(truth, {
       icon: L.divIcon({ className: 'map-num', html: String(i + 1), iconSize: [22, 22], iconAnchor: [11, 11] }),
-      title: loc.place,
+      title: answer.place,
     }).addTo(map);
   });
   if (points.length > 0) map.fitBounds(L.latLngBounds(points).pad(0.2), { maxZoom: 6, animate: false });
@@ -933,7 +972,7 @@ function renderEndGame(
     const row = document.createElement('div');
     row.className = 'recap-row';
     row.innerHTML = `
-      <span class="recap-place">${escapeHtml(loc.place)}</span>
+      <span class="recap-place">${escapeHtml(answerOf(loc)?.place ?? '—')}</span>
       <span class="recap-score">${g ? `${formatKm(g.km)} · ${g.score.toLocaleString()}` : '—'}</span>
     `;
     recap.appendChild(row);
@@ -1422,19 +1461,70 @@ function showInstructions(onClose?: () => void): void {
 
 // ---------- Game flow ----------
 
+// Set while a guess is with the server, so a second tap can't send another.
+let revealing = false;
+
+/**
+ * Lock in the pin for the current round. A round whose answer was withheld
+ * (every round from the cutover on) sends the pin to `content.reveal` and gets
+ * the answer back; the server keeps a signed-in player's first pin for each
+ * round and scores the day from those, so the pin used here is the one it
+ * returns. A round that shipped with its answer (older content) is scored
+ * locally as before.
+ */
 async function submitGuess(): Promise<void> {
   const state = currentState;
-  if (!state || state.status !== 'in_progress' || !pinArmed || !mapInstance) return;
+  if (!state || state.status !== 'in_progress' || !pinArmed || !mapInstance || revealing) return;
+  const index = state.current;
   // Already guessed (a double tap landing before the re-render).
-  if (state.guesses[state.current]) return;
-  const location = state.locations[state.current]!;
+  if (state.guesses[index]) return;
+  const location = state.locations[index]!;
   // wrap(): a pin on a repeated world copy reads as e.g. lng 200; store it
   // normalised to −180…180.
   const pin = (aimTarget ?? mapInstance.getCenter()).wrap();
-  const km = haversineKm(pin.lat, pin.lng, location.lat, location.lng);
-  state.guesses[state.current] = {
-    lat: pin.lat,
-    lng: pin.lng,
+  let guess = { lat: pin.lat, lng: pin.lng };
+  let answer = answerOf(location);
+
+  if (!answer) {
+    const button = document.getElementById('guess-btn') as HTMLButtonElement | null;
+    if (button) {
+      button.disabled = true;
+      button.textContent = 'Checking…';
+    }
+    revealing = true;
+    try {
+      const result = await window.OddsRabbit.content.reveal({
+        roundKey: `puzzle-${state.puzzleIndex}`,
+        index,
+        guess: { lat: round5(guess.lat), lng: round5(guess.lng) },
+      });
+      answer = parseAnswer(result.reveal);
+      const held = result.guess as { lat?: unknown; lng?: unknown };
+      if (typeof held.lat === 'number' && typeof held.lng === 'number') {
+        guess = { lat: held.lat, lng: wrapLng(held.lng) };
+      }
+    } catch {
+      answer = null;
+    } finally {
+      revealing = false;
+    }
+    // The day may have been reloaded under us (midnight, resume).
+    if (currentState !== state || state.guesses[index]) return;
+    if (!answer) {
+      if (button) {
+        button.disabled = false;
+        button.textContent = 'Guess';
+      }
+      showToast("Couldn't check your guess. Try again.");
+      return;
+    }
+    Object.assign(location, answer);
+  }
+
+  const km = haversineKm(guess.lat, guess.lng, answer.lat, answer.lng);
+  state.guesses[index] = {
+    lat: guess.lat,
+    lng: guess.lng,
     km,
     score: scoreForKm(km),
   };
@@ -1950,9 +2040,14 @@ function renderUnavailable(): void {
   wrap.setAttribute('role', 'status');
   const verdict = document.createElement('p');
   verdict.className = 'verdict';
-  verdict.textContent = "Today's puzzle isn't available yet.";
   const sub = document.createElement('p');
-  sub.textContent = 'Check back in a moment, or make sure you have a connection.';
+  if (unavailableReason === 'update') {
+    verdict.textContent = 'Update to play today\'s puzzle.';
+    sub.textContent = 'This version of the app can\'t check guesses. Update it or restart it, or play on the web.';
+  } else {
+    verdict.textContent = "Today's puzzle isn't available yet.";
+    sub.textContent = 'Check back in a moment, or make sure you have a connection.';
+  }
   const retry = document.createElement('button');
   retry.type = 'button';
   retry.className = 'control-btn control-btn-primary';
@@ -1981,7 +2076,14 @@ function startDay(): Promise<void> {
     ]);
     currentStats = stats;
     currentStreak = streak;
-    currentState = state;
+    // A round still to guess whose answer was withheld needs content.reveal;
+    // without it the round could be shown but never scored.
+    const unplayable =
+      state?.status === 'in_progress' &&
+      state.locations.some((loc, i) => !state.guesses[i] && !answerOf(loc)) &&
+      !window.OddsRabbit.capabilities.has('content.reveal');
+    currentState = unplayable ? null : state;
+    unavailableReason = unplayable ? 'update' : 'missing';
     currentFriends = undefined;
     currentCommunity = null;
 
