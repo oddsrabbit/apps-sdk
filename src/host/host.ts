@@ -543,6 +543,29 @@ function setupBridge(iframe: HTMLIFrameElement, appSlug: string): void {
   const gameWindow = iframe.contentWindow;
   if (!gameWindow) return;
 
+  // The last `init` relayed to the game. Outer hosts send `init` once per
+  // `host-ready`, and `host-ready` goes out on the first load only, so a game
+  // that reloads its own document (a day rollover, a "reload" button) would
+  // otherwise wait for `init` forever. Replayed on every later load, minus
+  // `initialState`: a push tap's deep link was already handled by the first
+  // document and shouldn't fire again.
+  let lastInit: BridgeOutbound | null = null;
+  let firstLoadSeen = false;
+  const forwardInit = (message: BridgeOutbound): void => {
+    lastInit = message;
+    forwardInbound(gameWindow, message);
+  };
+  iframe.addEventListener('load', () => {
+    if (!firstLoadSeen) {
+      firstLoadSeen = true;
+      return;
+    }
+    if (!lastInit || lastInit.type !== 'init') return;
+    const { initialState: _handled, ...replay } = lastInit;
+    log('game reloaded: replaying init');
+    forwardInbound(gameWindow, replay);
+  });
+
   // Guest mode: when the outer host's `init` carries `user: null`, storage
   // requests are short-circuited to localStorage on this (apps.oddsrabbit.com)
   // origin instead of being forwarded to the WP REST API. Lets games run
@@ -652,7 +675,7 @@ function setupBridge(iframe: HTMLIFrameElement, appSlug: string): void {
             declared
           );
           const { capabilities: _unrelayable, ...withoutCapabilities } = parsed;
-          forwardInbound(gameWindow, withoutCapabilities);
+          forwardInit(withoutCapabilities);
           return;
         }
 
@@ -676,9 +699,11 @@ function setupBridge(iframe: HTMLIFrameElement, appSlug: string): void {
         if (forwarded.length !== relayable.length) {
           log('init capabilities extended with guest-served verbs', forwarded);
         }
-        forwardInbound(gameWindow, { ...parsed, capabilities: forwarded });
+        forwardInit({ ...parsed, capabilities: forwarded });
         return;
       }
+      forwardInit(parsed);
+      return;
     }
     forwardInbound(gameWindow, parsed);
   };
