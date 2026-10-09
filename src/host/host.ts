@@ -1,0 +1,807 @@
+import {
+  BridgeOutboundSchema,
+  BridgeRequestSchema,
+  AppColorSchemeSchema,
+  isBridgeRequestType,
+  type BridgeOutbound,
+  type BridgeRequest,
+  type BridgeRequestType,
+  type BridgeUser,
+  type AppColorScheme,
+} from '../schemas/messages';
+
+const GUEST_STORAGE_PREFIX = 'oddsrabbit:apps';
+
+// Verbs this host answers itself when there's no signed-in user, without ever
+// forwarding them to the outer host (see handleGuestStorageRequest). They are
+// therefore supported for a guest regardless of what the outer host declares.
+const GUEST_SERVED_VERBS: readonly BridgeRequestType[] = [
+  'storage.get',
+  'storage.set',
+  'storage.delete',
+];
+
+type StorageRequest = Extract<
+  BridgeRequest,
+  { type: 'storage.get' | 'storage.set' | 'storage.delete' }
+>;
+
+function isStorageRequest(req: BridgeRequest): req is StorageRequest {
+  return (
+    req.type === 'storage.get' ||
+    req.type === 'storage.set' ||
+    req.type === 'storage.delete'
+  );
+}
+
+interface ReactNativeWebViewBridge {
+  postMessage(payload: string): void;
+}
+
+declare global {
+  interface Window {
+    ReactNativeWebView?: ReactNativeWebViewBridge;
+  }
+}
+
+const params = new URLSearchParams(window.location.search);
+const slug = params.get('app');
+const devGameUrl = params.get('gameUrl');
+
+// Parsed once at boot. The outer (WP page on web, RN host on mobile) appends
+// `?colorScheme=` to the host URL so the host can style its own chrome AND
+// forward the value to the inner game iframe URL — letting CSS-only games
+// react via `[data-color-scheme="dark"]` selectors without loading the SDK.
+// SDK consumers receive the same value via the `init` message's colorScheme
+// field; both paths should always agree.
+const colorSchemeParse = AppColorSchemeSchema.safeParse(params.get('colorScheme'));
+const colorScheme: AppColorScheme = colorSchemeParse.success ? colorSchemeParse.data : 'light';
+document.documentElement.dataset.colorScheme = colorScheme;
+
+const isMobile = typeof window.ReactNativeWebView !== 'undefined';
+const root = document.getElementById('root');
+const status = document.getElementById('status');
+
+function log(...args: unknown[]): void {
+  // Filter in DevTools with: console = "apps:host"
+  // eslint-disable-next-line no-console
+  console.log('[apps:host]', ...args);
+}
+
+log('boot', { slug, isMobile, location: window.location.href });
+
+bootstrap().catch((error) => {
+  log('bootstrap rejected', formatError(error));
+  showError(`Failed to start: ${formatError(error)}`);
+});
+
+async function bootstrap(): Promise<void> {
+  if (!slug) {
+    showError('Missing ?app= parameter.');
+    return;
+  }
+
+  const gameUrl = await resolveGameUrl(slug, devGameUrl);
+  if (!gameUrl) return;
+
+  const iframe = createGameIframe(gameUrl);
+  if (!root) return;
+
+  root.removeAttribute('aria-busy');
+  if (status) status.remove();
+
+  // Assume an inline-header game until its document says otherwise: most
+  // first-party games are one, so none of them paints its first frame a band
+  // too low and then jumps up. An edge game corrects this from its <head> (via
+  // the SDK) before it paints; a game that doesn't opt in, or can't be read,
+  // is moved down to the reserved band on load.
+  document.documentElement.dataset.gameChrome = 'inline';
+
+  // The bridge listener can be attached before load — but `host-ready` must
+  // not fire until the inner iframe has finished loading, otherwise the
+  // parent's `init` message races the SDK setup and gets dropped (no
+  // listener yet means the message vanishes; postMessage doesn't queue).
+  iframe.addEventListener('load', () => {
+    log('inner iframe load fired');
+    announceHostReady();
+  }, { once: true });
+
+  // Not `once`: a game that reloads its own document gets re-sampled.
+  iframe.addEventListener('load', () => watchGameBackground(iframe));
+  iframe.addEventListener('load', () => {
+    let doc: Document | null = null;
+    try {
+      doc = iframe.contentDocument;
+    } catch {
+      // Cross-origin game — can't see its meta.
+    }
+    if (doc) attachGame(doc);
+    else {
+      attachedGameDoc = null;
+      chromeObserver?.disconnect();
+      delete document.documentElement.dataset.gameChrome;
+      log('game chrome', 'reserved (unreadable)');
+    }
+  });
+
+  root.appendChild(iframe);
+  setupBridge(iframe, slug);
+  log('inner iframe mounted', { src: iframe.src });
+}
+
+function announceHostReady(): void {
+  const ready = { type: 'host-ready' };
+  if (isMobile) {
+    log('post host-ready -> RN');
+    window.ReactNativeWebView!.postMessage(JSON.stringify(ready));
+  } else if (window.parent !== window) {
+    log('post host-ready -> parent');
+    window.parent.postMessage(ready, '*');
+  } else {
+    log('host-ready: no parent (standalone load)');
+  }
+}
+
+/**
+ * How the game shares the screen with the host's chrome, from its
+ * `<meta name="oddsrabbit-chrome" content="…">`. See
+ * docs/game-header-guidelines.md.
+ *
+ * - `edge`: the game draws edge to edge, under the status bar, the back
+ *   button's row and the home indicator. This page pads nothing; the game is
+ *   told the insets (--oddsrabbit-safe-*) and pads its own content by them, so
+ *   its backgrounds and overlays reach the screen edges by themselves.
+ * - `inline`: this page pads the safe areas and paints them in the game's
+ *   colour; the game lays its header out in the back button's row.
+ * - `reserved` (no meta, or a cross-origin game): this page pads the safe
+ *   areas and the back button's row.
+ */
+type GameChrome = 'edge' | 'inline' | 'reserved';
+
+const CHROME_HEIGHT = '--oddsrabbit-chrome-height';
+const CHROME_START = '--oddsrabbit-chrome-start';
+const SAFE_PROPERTIES = {
+  top: '--oddsrabbit-safe-top',
+  right: '--oddsrabbit-safe-right',
+  bottom: '--oddsrabbit-safe-bottom',
+  left: '--oddsrabbit-safe-left',
+} as const;
+const GAME_PROPERTIES = [CHROME_HEIGHT, CHROME_START, ...Object.values(SAFE_PROPERTIES)];
+
+/**
+ * Header-row height on web, where nothing floats over the game. Taller than a
+ * bare toolbar so a header row doesn't sit hard against the top of the page's
+ * game card. The one place web header spacing is tuned for every game.
+ */
+const WEB_CHROME_HEIGHT = '64px';
+
+function readGameChrome(doc: Document): GameChrome {
+  const content = doc
+    .querySelector('meta[name="oddsrabbit-chrome"]')
+    ?.getAttribute('content');
+  return content === 'edge' || content === 'inline' ? content : 'reserved';
+}
+
+let attachedGameDoc: Document | null = null;
+let chromeObserver: MutationObserver | null = null;
+
+/**
+ * Apply the game's chrome mode to this page and hand the game the variables it
+ * lays its header out by, and keep them current while the mobile app changes
+ * its insets (rotation).
+ *
+ * Called twice per document: by the SDK from the game's <head>, before the
+ * game's first paint (so an edge game never paints a frame inset and then
+ * jumps), and again on the iframe's load for a game that doesn't load the SDK.
+ * The second call for the same document does nothing.
+ */
+function attachGame(doc: Document): void {
+  if (doc === attachedGameDoc) return;
+  attachedGameDoc = doc;
+  chromeObserver?.disconnect();
+  window.removeEventListener('resize', syncGameProperties);
+
+  // Which host the game is in, for styling that has nothing to do with the
+  // insets: web has room the app's back-button row doesn't (a larger header on
+  // a desktop card, say). Set whatever the mode.
+  doc.documentElement.dataset.oddsrabbitSurface = isMobile ? 'app' : 'web';
+
+  const mode = readGameChrome(doc);
+  if (mode === 'reserved') {
+    delete document.documentElement.dataset.gameChrome;
+    chromeObserver = null;
+    log('game chrome', mode);
+    return;
+  }
+  document.documentElement.dataset.gameChrome = mode;
+  syncGameProperties();
+  log('game chrome', mode, doc.documentElement.style.cssText);
+
+  // The app re-injects its properties as inline style on <html>. Only this
+  // page's own <html> is watched, and syncGameProperties writes to the game's,
+  // so it can't retrigger itself.
+  chromeObserver = new MutationObserver(syncGameProperties);
+  chromeObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ['style'],
+  });
+  // env(safe-area-inset-*) changes on rotation without any style mutation.
+  window.addEventListener('resize', syncGameProperties);
+}
+
+function syncGameProperties(): void {
+  const doc = attachedGameDoc;
+  if (!doc) return;
+  const mode = readGameChrome(doc);
+  const values = gameProperties(mode);
+  const gameStyle = doc.documentElement.style;
+  for (const name of GAME_PROPERTIES) {
+    const value = values[name];
+    if (value) gameStyle.setProperty(name, value);
+    else gameStyle.removeProperty(name);
+  }
+}
+
+/**
+ * The variables the game gets. Anything left out is removed from the game, so
+ * its own var() fallback applies: an unset property beats a set `0px` there.
+ */
+function gameProperties(mode: GameChrome): Record<string, string> {
+  const hostStyle = document.documentElement.style;
+  const appChromeHeight = hostStyle.getPropertyValue(CHROME_HEIGHT).trim();
+  const appChromeStart = hostStyle.getPropertyValue(CHROME_START).trim();
+  const values: Record<string, string> = {};
+
+  if (appChromeHeight) {
+    values[CHROME_HEIGHT] = appChromeHeight;
+    if (appChromeStart) values[CHROME_START] = appChromeStart;
+  } else if (!isMobile) {
+    values[CHROME_HEIGHT] = WEB_CHROME_HEIGHT;
+  }
+  // An app build that predates the chrome row sends neither: the game's
+  // fallbacks apply, and for an edge game the button's row stays inside
+  // --oddsrabbit-safe-top below, so its header lands under the button.
+
+  if (mode === 'edge') {
+    // The app's top inset is the status bar PLUS the back button's row; the
+    // game lays its header out in that row itself, so only the status bar is
+    // "safe area" to it.
+    const insets = measureHostInsets();
+    const chromePx = parseFloat(appChromeHeight) || 0;
+    values[SAFE_PROPERTIES.top] = `${Math.max(0, insets.top - chromePx)}px`;
+    values[SAFE_PROPERTIES.right] = `${insets.right}px`;
+    values[SAFE_PROPERTIES.bottom] = `${insets.bottom}px`;
+    values[SAFE_PROPERTIES.left] = `${insets.left}px`;
+  }
+  return values;
+}
+
+/**
+ * The insets this page would pad by in reserved mode, in px: the app's
+ * --oddsrabbit-inset-*, else env(safe-area-inset-*), else 0. Resolved by
+ * letting the browser compute them on a probe (see .inset-probe in host.css),
+ * which is the only way to evaluate env() from script.
+ */
+let insetProbe: HTMLElement | null = null;
+
+function measureHostInsets(): { top: number; right: number; bottom: number; left: number } {
+  if (!insetProbe) {
+    insetProbe = document.createElement('div');
+    insetProbe.className = 'inset-probe';
+    insetProbe.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(insetProbe);
+  }
+  const style = getComputedStyle(insetProbe);
+  const px = (value: string): number => Math.round(parseFloat(value) || 0);
+  return {
+    top: px(style.paddingTop),
+    right: px(style.paddingRight),
+    bottom: px(style.paddingBottom),
+    left: px(style.paddingLeft),
+  };
+}
+
+/**
+ * What the SDK calls from the game's <head>. Only reachable from a game on
+ * this origin; a cross-origin game can't see it and gets the load-time path
+ * (which, unable to read its document either, gives it the reserved band).
+ */
+interface OddsRabbitHostGlobal {
+  attachGame(doc: Document): void;
+}
+
+declare global {
+  interface Window {
+    OddsRabbitHost?: OddsRabbitHostGlobal;
+  }
+}
+
+window.OddsRabbitHost = { attachGame };
+
+/**
+ * Repaint this page in the game's own background colour, and keep doing so
+ * while the game changes it.
+ *
+ * Whatever of this page shows around the game iframe — the safe-area / back
+ * button padding on #root (see host.css), and the rubber-band area on iOS —
+ * should read as part of the game, not as a band of host white. The mobile app
+ * also gets the colour (`host-background`) so it can pick a status bar style
+ * that stays legible over it.
+ *
+ * Only possible for a game served from this origin, which the first-party
+ * games are (the iframe is sandboxed with allow-same-origin). A cross-origin
+ * game throws on `contentDocument` and keeps the host's own colours — the
+ * same result as before this existed.
+ */
+let gameBackgroundObserver: MutationObserver | null = null;
+let reportedGameBackground: string | null = null;
+
+function watchGameBackground(iframe: HTMLIFrameElement): void {
+  gameBackgroundObserver?.disconnect();
+  gameBackgroundObserver = null;
+
+  let doc: Document | null = null;
+  try {
+    doc = iframe.contentDocument;
+  } catch {
+    // Cross-origin game — nothing to read.
+  }
+  if (!doc) return;
+  const gameDoc = doc;
+
+  const sync = (): void => {
+    const color = readGameBackground(gameDoc);
+    if (!color) return;
+    document.documentElement.style.setProperty('--bg', color);
+    // A game whose bottom edge differs from its top (sky above, ground below)
+    // names it, so the home-indicator inset matches too. See host.css.
+    const bottom = readGameEdge(gameDoc, '--oddsrabbit-edge-bottom');
+    if (bottom) document.documentElement.style.setProperty('--bg-bottom', bottom);
+    else document.documentElement.style.removeProperty('--bg-bottom');
+    if (color === reportedGameBackground) return;
+    reportedGameBackground = color;
+    log('game background', color);
+    // Only the mobile app acts on this. It is not a bridge message (no
+    // correlationId), so app builds that predate it ignore it.
+    if (isMobile) {
+      window.ReactNativeWebView!.postMessage(
+        JSON.stringify({ type: 'host-background', color })
+      );
+    }
+  };
+
+  sync();
+
+  // Games switch palette by toggling a class / data attribute or inline style
+  // on <html> or <body> (e.g. [data-color-scheme]); watch just those two.
+  gameBackgroundObserver = new MutationObserver(sync);
+  const options: MutationObserverInit = { attributes: true };
+  gameBackgroundObserver.observe(gameDoc.documentElement, options);
+  if (gameDoc.body) gameBackgroundObserver.observe(gameDoc.body, options);
+}
+
+/**
+ * The game's top-edge colour as `#rrggbb`: `--oddsrabbit-edge-top` if the game
+ * sets it, else <body>'s background, then <html>'s.
+ */
+function readGameBackground(doc: Document): string | null {
+  const view = doc.defaultView;
+  if (!view) return null;
+  const top = readGameEdge(doc, '--oddsrabbit-edge-top');
+  if (top) return top;
+  for (const el of [doc.body, doc.documentElement]) {
+    if (!el) continue;
+    const hex = opaqueCssColorToHex(view.getComputedStyle(el).backgroundColor);
+    if (hex) return hex;
+  }
+  return null;
+}
+
+/**
+ * An edge colour a game declares as a custom property on <html> or <body>
+ * (e.g. `--oddsrabbit-edge-bottom: #5a3d2b`), as `#rrggbb`. Custom properties
+ * compute to their token text, so it is resolved to rgb() by painting it on a
+ * probe element here first.
+ */
+let edgeProbe: HTMLElement | null = null;
+
+function readGameEdge(doc: Document, name: string): string | null {
+  const view = doc.defaultView;
+  if (!view) return null;
+  let value = '';
+  for (const el of [doc.body, doc.documentElement]) {
+    if (!el) continue;
+    value = view.getComputedStyle(el).getPropertyValue(name).trim();
+    if (value) break;
+  }
+  if (!value) return null;
+  if (!edgeProbe) {
+    edgeProbe = document.createElement('span');
+    edgeProbe.hidden = true;
+    document.body.appendChild(edgeProbe);
+  }
+  edgeProbe.style.backgroundColor = '';
+  edgeProbe.style.backgroundColor = value;
+  if (!edgeProbe.style.backgroundColor) return null; // not a colour
+  return opaqueCssColorToHex(getComputedStyle(edgeProbe).backgroundColor);
+}
+
+/**
+ * `rgb(r, g, b)` / `rgba(r, g, b, a)` — what getComputedStyle returns for a
+ * background colour — as `#rrggbb`. Null for anything not fully opaque
+ * (a transparent body means "look at <html>", and a translucent colour would
+ * paint differently on this page than inside the game) or not in that form.
+ */
+function opaqueCssColorToHex(value: string): string | null {
+  const match = /^rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)(?:\s*[,/]\s*([\d.]+%?))?\s*\)$/.exec(
+    value.trim()
+  );
+  if (!match) return null;
+  const alpha = match[4];
+  if (alpha !== undefined) {
+    const a = alpha.endsWith('%') ? parseFloat(alpha) / 100 : parseFloat(alpha);
+    if (a < 1) return null;
+  }
+  return (
+    '#' +
+    [match[1], match[2], match[3]]
+      .map((c) => Math.min(255, Number(c)).toString(16).padStart(2, '0'))
+      .join('')
+  );
+}
+
+async function resolveGameUrl(
+  appSlug: string,
+  override: string | null
+): Promise<string | null> {
+  if (override) {
+    if (!isAllowedDevOverride(override)) {
+      showError('Dev gameUrl override is only permitted in dev builds.');
+      return null;
+    }
+    return override;
+  }
+
+  try {
+    log('fetching manifest', appSlug);
+    const response = await fetch(
+      `https://www.oddsrabbit.com/api/oddsrabbit/v1/apps/${encodeURIComponent(appSlug)}`,
+      { credentials: 'omit' }
+    );
+    if (!response.ok) {
+      log('manifest not ok', response.status);
+      showError(`App "${appSlug}" not found.`);
+      return null;
+    }
+    const data = (await response.json()) as {
+      manifest?: { appUrl?: string; updatedAt?: string };
+    };
+    const appUrl = data?.manifest?.appUrl;
+    if (!appUrl) {
+      log('manifest missing appUrl', data);
+      showError('Manifest is missing appUrl.');
+      return null;
+    }
+    // Append `updatedAt` to the inner iframe URL as a cache-bust value: when
+    // the dev (or our setup tool) bumps the manifest, this changes, the
+    // browser sees a new URL, and stale-cached app HTML stops being served.
+    // Mirror of the outer-iframe bust applied by the WP page (games.js).
+    const updatedAt = data?.manifest?.updatedAt;
+    // Forward `colorScheme` to the inner game iframe so CSS-only games can
+    // theme via `[data-color-scheme="dark"]` selectors with a one-line inline
+    // script — no SDK dependency needed for static styling. SDK consumers get
+    // the same value via init.colorScheme; both should always agree.
+    const finalUrl = appendQueryParams(appUrl, {
+      ...(updatedAt ? { v: updatedAt } : {}),
+      colorScheme,
+    });
+    log('manifest ok', finalUrl);
+    return finalUrl;
+  } catch (error) {
+    log('manifest fetch threw', formatError(error));
+    showError(`Could not load manifest: ${formatError(error)}`);
+    return null;
+  }
+}
+
+function appendQueryParams(baseUrl: string, params: Record<string, string>): string {
+  const entries = Object.entries(params).filter(([, v]) => v !== undefined && v !== '');
+  if (entries.length === 0) return baseUrl;
+  const separator = baseUrl.includes('?') ? '&' : '?';
+  const query = entries
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+    .join('&');
+  return `${baseUrl}${separator}${query}`;
+}
+
+function isAllowedDevOverride(_url: string): boolean {
+  // Phase 1 scaffolding: allow dev override on localhost / dev origins only.
+  // Production builds replace this with a constant `false`.
+  const host = window.location.hostname;
+  return (
+    host === 'localhost' ||
+    host === '127.0.0.1' ||
+    host.endsWith('.local') ||
+    host.endsWith('.dev')
+  );
+}
+
+function createGameIframe(gameUrl: string): HTMLIFrameElement {
+  const iframe = document.createElement('iframe');
+  iframe.src = gameUrl;
+  iframe.title = 'App';
+  iframe.allow = 'fullscreen; clipboard-write';
+  iframe.referrerPolicy = 'no-referrer';
+  iframe.setAttribute(
+    'sandbox',
+    'allow-scripts allow-same-origin allow-forms allow-popups'
+  );
+  return iframe;
+}
+
+function setupBridge(iframe: HTMLIFrameElement, appSlug: string): void {
+  const gameWindow = iframe.contentWindow;
+  if (!gameWindow) return;
+
+  // The last `init` relayed to the game. Outer hosts send `init` once per
+  // `host-ready`, and `host-ready` goes out on the first load only, so a game
+  // that reloads its own document (a day rollover, a "reload" button) would
+  // otherwise wait for `init` forever. Replayed on every later load, minus
+  // `initialState`: a push tap's deep link was already handled by the first
+  // document and shouldn't fire again.
+  let lastInit: BridgeOutbound | null = null;
+  let firstLoadSeen = false;
+  const forwardInit = (message: BridgeOutbound): void => {
+    lastInit = message;
+    forwardInbound(gameWindow, message);
+  };
+  iframe.addEventListener('load', () => {
+    if (!firstLoadSeen) {
+      firstLoadSeen = true;
+      return;
+    }
+    if (!lastInit || lastInit.type !== 'init') return;
+    const { initialState: _handled, ...replay } = lastInit;
+    log('game reloaded: replaying init');
+    forwardInbound(gameWindow, replay);
+  });
+
+  // Guest mode: when the outer host's `init` carries `user: null`, storage
+  // requests are short-circuited to localStorage on this (apps.oddsrabbit.com)
+  // origin instead of being forwarded to the WP REST API. Lets games run
+  // end-to-end for unauthenticated visitors so they can play first and convert
+  // later, instead of gating signup before play. Aggregate, share, haptic, and
+  // lifecycle keep flowing through the outer host — none of those need a
+  // persistent user identity for the guest path to work.
+  let currentUser: BridgeUser | null = null;
+
+  // Game (child iframe) → host
+  window.addEventListener('message', (event) => {
+    if (event.source !== gameWindow) return;
+    const parsed = BridgeRequestSchema.safeParse(event.data);
+    if (!parsed.success) {
+      log('msg from game: rejected by schema', event.data);
+      // Answer instead of dropping: the SDK transport has no global request
+      // timeout, so a silent drop leaves the game's promise pending forever.
+      // This is what a game running against a host older than the verb it calls
+      // used to hit. A message with no usable correlationId can only be dropped
+      // — there's nothing to answer.
+      //
+      // Which error matters: `bridge/unsupported-request` is one of the codes
+      // the SDK reads as "this host can't do that" (see UNSUPPORTED_CODES), and
+      // it CACHES that verdict — the verb is retired for the rest of the
+      // session and `capabilities.has()` reports false. That's right for an
+      // unknown verb and badly wrong for a known verb whose payload just failed
+      // validation, which is a per-call bug in the caller: one non-integer
+      // score would permanently retire `scores.submit`, and the game would stop
+      // recording scores for the rest of the session. So split on the
+      // discriminant and let a malformed payload reject with a code the SDK
+      // does not cache.
+      const correlationId = correlationIdOf(event.data);
+      if (correlationId) {
+        const known = isBridgeRequestType(typeOf(event.data));
+        gameWindow.postMessage(
+          {
+            type: 'response',
+            correlationId,
+            ok: false,
+            error: known
+              ? {
+                  code: 'bridge/invalid-request',
+                  message: 'Request payload failed validation for this verb.',
+                }
+              : {
+                  code: 'bridge/unsupported-request',
+                  message: 'This host does not implement the requested verb.',
+                },
+          },
+          '*'
+        );
+      }
+      return;
+    }
+    log('msg from game ok', parsed.data.type);
+
+    if (currentUser === null && isStorageRequest(parsed.data)) {
+      const response = handleGuestStorageRequest(parsed.data, appSlug);
+      gameWindow.postMessage(response, '*');
+      return;
+    }
+
+    forwardOutbound(parsed.data);
+  });
+
+  // Outer host → game: capture user state from `init`, then forward.
+  const handleOuter = (source: string, data: unknown): void => {
+    const parsed = parseFromOuter(data);
+    if (!parsed) {
+      log(`msg from ${source} rejected by schema`, data);
+      return;
+    }
+    log(`msg from ${source} ok`, parsed.type);
+    if (parsed.type === 'init') {
+      currentUser = parsed.user;
+      log('init received', currentUser ? `user:${currentUser.username}` : 'guest');
+      // Forward the INTERSECTION of what the outer host declares and what this
+      // host can actually relay. We sit in the middle and reject anything our
+      // own BridgeRequestSchema doesn't model, so passing a verb straight
+      // through would promise the game something it will then be denied. The
+      // game would recover (the denial narrows capabilities at runtime) but
+      // only after showing UI it had to take back.
+      if (parsed.capabilities) {
+        const declared = parsed.capabilities;
+        const relayable = declared.filter(isBridgeRequestType);
+
+        if (relayable.length === 0 && declared.length > 0) {
+          // Never a legitimate outcome: an outer host that declares verbs and
+          // shares none with our schema is almost certainly spelling them
+          // differently (`getTopScores`, `scores:top`, a prefix) rather than
+          // genuinely implementing nothing. Outer hosts should build their list
+          // from BRIDGE_REQUEST_TYPES (exported by
+          // @oddsrabbit/apps-sdk/schemas) instead of literals.
+          //
+          // Relay the init with the field REMOVED rather than as an empty list.
+          // The SDK reads `capabilities: []` as "this host implements nothing"
+          // and hides every capability-gated feature in every game, with no way
+          // back — its runtime detection only ever removes verbs, never adds
+          // them, so no failed call can correct the verdict. That is strictly
+          // worse than no handshake at all. Dropping the field puts the SDK on
+          // the pre-handshake baseline plus runtime detection, which
+          // self-corrects on the first rejected call.
+          log(
+            'init capabilities: NONE of the declared verbs are relayable — ' +
+              'outer host verb names likely do not match BRIDGE_REQUEST_TYPES; ' +
+              'relaying init WITHOUT capabilities so the SDK falls back',
+            declared
+          );
+          const { capabilities: _unrelayable, ...withoutCapabilities } = parsed;
+          forwardInit(withoutCapabilities);
+          return;
+        }
+
+        // We are not a pure relay. With no signed-in user this host answers
+        // `storage.*` from localStorage itself and never forwards it, so those
+        // verbs work for a guest whatever the outer host declares — and an
+        // outer host that scopes its list to what it can actually serve for a
+        // guest (the WP storage routes need an authenticated user) would
+        // reasonably omit them. Add back what we serve ourselves, or games hide
+        // save/resume UI that works.
+        const forwarded =
+          currentUser === null
+            ? relayable.concat(
+                GUEST_SERVED_VERBS.filter((verb) => !relayable.includes(verb))
+              )
+            : relayable;
+
+        if (relayable.length !== declared.length) {
+          log('init capabilities narrowed to relayable verbs', relayable);
+        }
+        if (forwarded.length !== relayable.length) {
+          log('init capabilities extended with guest-served verbs', forwarded);
+        }
+        forwardInit({ ...parsed, capabilities: forwarded });
+        return;
+      }
+      forwardInit(parsed);
+      return;
+    }
+    forwardInbound(gameWindow, parsed);
+  };
+
+  if (isMobile) {
+    window.addEventListener(
+      'oddsrabbit:bridge',
+      (event) => handleOuter('RN', (event as MessageEvent).data),
+      false
+    );
+  } else {
+    window.addEventListener('message', (event) => {
+      if (event.source !== window.parent) return;
+      handleOuter('parent', event.data);
+    });
+  }
+}
+
+function handleGuestStorageRequest(
+  req: StorageRequest,
+  appSlug: string
+): BridgeOutbound {
+  const correlationId = req.correlationId;
+  const namespacedKey = `${GUEST_STORAGE_PREFIX}:${appSlug}:${req.payload.key}`;
+
+  try {
+    if (req.type === 'storage.get') {
+      const value = window.localStorage.getItem(namespacedKey);
+      return { type: 'response', correlationId, ok: true, result: value };
+    }
+    if (req.type === 'storage.set') {
+      window.localStorage.setItem(namespacedKey, req.payload.value);
+      return { type: 'response', correlationId, ok: true };
+    }
+    window.localStorage.removeItem(namespacedKey);
+    return { type: 'response', correlationId, ok: true };
+  } catch (error) {
+    return {
+      type: 'response',
+      correlationId,
+      ok: false,
+      error: { code: 'storage/local-failed', message: formatError(error) },
+    };
+  }
+}
+
+/**
+ * Best-effort `correlationId` from a message that failed schema validation, so
+ * the caller can be told its request was rejected. Returns null when the field
+ * isn't a usable string.
+ */
+function correlationIdOf(data: unknown): string | null {
+  if (!data || typeof data !== 'object') return null;
+  const id = (data as { correlationId?: unknown }).correlationId;
+  return typeof id === 'string' && id !== '' ? id : null;
+}
+
+/** Best-effort discriminant from a message that failed schema validation. */
+function typeOf(data: unknown): unknown {
+  if (!data || typeof data !== 'object') return undefined;
+  return (data as { type?: unknown }).type;
+}
+
+function parseFromOuter(data: unknown): BridgeOutbound | null {
+  const raw = typeof data === 'string' ? safeParseJson(data) : data;
+  const parsed = BridgeOutboundSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+
+function forwardOutbound(message: BridgeRequest): void {
+  if (isMobile) {
+    window.ReactNativeWebView!.postMessage(JSON.stringify(message));
+  } else {
+    window.parent.postMessage(message, '*');
+  }
+}
+
+function forwardInbound(target: Window, message: BridgeOutbound): void {
+  target.postMessage(message, '*');
+}
+
+function safeParseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+function showError(message: string): void {
+  if (status) {
+    status.textContent = message;
+    status.dataset.state = 'error';
+  }
+  if (root) root.removeAttribute('aria-busy');
+}
+
+function formatError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}

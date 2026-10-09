@@ -1,0 +1,9 @@
+// Declaration build only (`build.config.mjs` → `tsc --emitDeclarationOnly`).
+//
+// Identical to `tsconfig.json` except that tests are excluded: they are part of
+// the type-check surface but not of the shipped package, and `files: ["dist"]`
+// in package.json would otherwise publish a `.d.ts` for every one of them.
+{
+  "extends": "./tsconfig.json",
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts"]
+}

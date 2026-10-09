@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="referrer" content="strict-origin" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-AzqLw86TeQMCnW4+8CKbLLk1mp4V2THtBVY+xV11LXw='; frame-src https:; style-src 'self' 'unsafe-inline'; img-src 'self' https: data:; connect-src 'self' https://www.oddsrabbit.com" />
+    <title>OddsRabbit App Host</title>
+    <script>
+      // Apply the host-passed colorScheme before the stylesheet loads so the
+      // first paint is already in the correct theme — no flash of the wrong
+      // colors. Falls back to prefers-color-scheme via CSS when this param is
+      // absent (e.g., standalone load during development). Mirrors the
+      // bootstrap pattern in rabbit-words/index.html. If you change a single
+      // byte of this block (including comments/whitespace), recompute the
+      // sha256 hash in the CSP meta below — otherwise the browser will block
+      // this script and the page will flash the default theme.
+      (function () {
+        var v = new URLSearchParams(location.search).get('colorScheme');
+        if (v === 'light' || v === 'dark') {
+          document.documentElement.dataset.colorScheme = v;
+        }
+      })();
+    </script>
+    <link rel="stylesheet" href="./host.css?v=__BUILD_ID__" />
+  </head>
+  <body>
+    <main id="root" aria-busy="true">
+      <p class="status" id="status">Loading…</p>
+    </main>
+    <script type="module" src="./host.js?v=__BUILD_ID__"></script>
+  </body>
+</html>

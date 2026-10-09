@@ -1,0 +1,224 @@
+<!doctype html>
+<!--
+  Starter game for the OddsRabbit Apps SDK.
+
+  Tap as many times as you can in ten seconds. Small on purpose: it shows the
+  handshake, per-user storage, an all-time leaderboard, a sign-in prompt at the
+  end of a round, haptics, sharing and lifecycle pauses, and nothing else.
+  Copy it, delete the tapping, keep the wiring.
+
+  Run it locally:
+    npx serve examples/starter -l 3000
+    https://apps.oddsrabbit.com/host/?app=<your-slug>&gameUrl=http://localhost:3000/
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Tap Sprint</title>
+    <script src="https://apps.oddsrabbit.com/sdk-v1.js"></script>
+    <style>
+      :root {
+        --bg: #f7f7f9;
+        --fg: #16161d;
+        --muted: #6b6b78;
+        --accent: #2f6fed;
+        --card: #ffffff;
+      }
+      :root[data-theme='dark'] {
+        --bg: #121217;
+        --fg: #f2f2f5;
+        --muted: #9a9aa8;
+        --accent: #6c9bff;
+        --card: #1d1d25;
+      }
+      * { box-sizing: border-box; }
+      /* Required on Android for any custom touch handling: without these the
+         WebView claims the gesture for scrolling before your JS sees it. */
+      html, body { touch-action: none; overscroll-behavior: none; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 16px;
+        padding: 24px 16px;
+        background: var(--bg);
+        color: var(--fg);
+        font: 16px/1.4 system-ui, sans-serif;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      h1 { margin: 0; font-size: 20px; }
+      .muted { color: var(--muted); }
+      #pad {
+        width: min(280px, 80vw);
+        aspect-ratio: 1;
+        border: 0;
+        border-radius: 50%;
+        background: var(--accent);
+        color: #fff;
+        font-size: 48px;
+        font-weight: 700;
+      }
+      #pad:disabled { opacity: 0.5; }
+      .row { display: flex; gap: 8px; }
+      .row button {
+        padding: 8px 16px;
+        border: 1px solid var(--muted);
+        border-radius: 8px;
+        background: var(--card);
+        color: var(--fg);
+        font: inherit;
+      }
+      #board { width: min(320px, 100%); padding: 0; margin: 0; list-style: none; }
+      #board li {
+        display: flex;
+        justify-content: space-between;
+        padding: 8px 12px;
+        border-radius: 8px;
+        background: var(--card);
+        margin-bottom: 4px;
+      }
+      #board li.self { outline: 2px solid var(--accent); }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <h1 id="greeting">Tap Sprint</h1>
+    <p class="muted" id="status">Tap the circle to start. You have 10 seconds.</p>
+    <button id="pad" type="button">0</button>
+    <p class="muted">Best: <span id="best">–</span></p>
+    <div class="row">
+      <button id="share" type="button" hidden>Share</button>
+      <button id="sign-in" type="button" hidden>Sign in to save</button>
+    </div>
+    <ol id="board" hidden></ol>
+
+    <script>
+      const OR = window.OddsRabbit;
+      const ROUND_MS = 10_000;
+      // One constant round key + `keepBest` makes an all-time board. A daily
+      // game would use the date (e.g. '2026-10-08') and submit once per round.
+      const ROUND_KEY = 'all-time';
+
+      const pad = document.getElementById('pad');
+      const statusEl = document.getElementById('status');
+      const bestEl = document.getElementById('best');
+      const shareBtn = document.getElementById('share');
+      const signInBtn = document.getElementById('sign-in');
+      const board = document.getElementById('board');
+
+      let taps = 0;
+      let best = 0;
+      let endsAt = 0;
+      let timer = null;
+
+      OR.whenReady().then(async () => {
+        document.documentElement.dataset.theme = OR.colorScheme === 'dark' ? 'dark' : 'light';
+        if (OR.user) document.getElementById('greeting').textContent = `Ready, ${OR.user.username}?`;
+
+        // Synced across the player's devices when signed in; local to this
+        // browser for guests. Values are strings.
+        best = Number(await OR.storage.get('best')) || 0;
+        bestEl.textContent = best || '–';
+
+        // Hide the host's loading skeleton once the first real frame is up.
+        OR.ready();
+        loadBoard();
+      });
+
+      // `pointerdown` rather than `click`: fast taps on mobile otherwise get
+      // swallowed as double-tap gestures.
+      pad.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
+        if (pad.disabled) return;
+        if (!timer) start();
+        taps += 1;
+        pad.textContent = taps;
+        OR.actions.haptic('light');
+      });
+
+      function start() {
+        taps = 0;
+        endsAt = Date.now() + ROUND_MS;
+        shareBtn.hidden = true;
+        signInBtn.hidden = true;
+        timer = setInterval(tick, 100);
+      }
+
+      function tick() {
+        const left = Math.max(0, endsAt - Date.now());
+        statusEl.textContent = `${(left / 1000).toFixed(1)}s left`;
+        if (left === 0) finish();
+      }
+
+      async function finish() {
+        clearInterval(timer);
+        timer = null;
+        pad.disabled = true;
+        OR.actions.haptic('success');
+        statusEl.textContent = `${taps} taps! Tap to play again.`;
+
+        if (taps > best) {
+          best = taps;
+          bestEl.textContent = best;
+          await OR.storage.set('best', String(best));
+        }
+
+        if (OR.user) {
+          // Scores are signed-in only. With keepBest, a lower score is a
+          // no-op rather than an error.
+          try {
+            await OR.scores.submit({ roundKey: ROUND_KEY, score: taps, keepBest: true });
+          } catch (error) {
+            console.warn('Score not saved', error);
+          }
+          loadBoard();
+        } else if (OR.capabilities.has('actions.requestSignIn')) {
+          // End of a round is the natural moment to ask a guest to sign in.
+          signInBtn.hidden = false;
+        }
+
+        shareBtn.hidden = false;
+        // A short cooldown so the last frantic taps don't start a new round.
+        setTimeout(() => { pad.disabled = false; }, 800);
+      }
+
+      async function loadBoard() {
+        // Gate optional features on what this host supports, not on whether
+        // the method exists: every SDK bundle has every method.
+        if (!OR.capabilities.has('scores.top')) return;
+        const rows = await OR.scores.top({ roundKey: ROUND_KEY, limit: 5 });
+        board.replaceChildren(
+          ...rows.map((row, i) => {
+            const li = document.createElement('li');
+            if (OR.user && row.uuid === OR.user.uuid) li.className = 'self';
+            li.append(`${i + 1}. ${row.username}`);
+            const score = document.createElement('strong');
+            score.textContent = row.score;
+            li.append(score);
+            return li;
+          })
+        );
+        board.hidden = rows.length === 0;
+      }
+
+      shareBtn.addEventListener('click', () => {
+        OR.actions.share({ title: 'Tap Sprint', text: `I tapped ${taps} times in 10 seconds. Beat that.` });
+      });
+
+      signInBtn.addEventListener('click', () => {
+        // On success the host reloads the game with OR.user set.
+        OR.actions.requestSignIn('Sign in to keep your best score and join the leaderboard.');
+      });
+
+      // The app was backgrounded mid-round: end the round rather than let the
+      // timer run out unseen.
+      OR.lifecycle.on('pause', () => {
+        if (timer) finish();
+      });
+    </script>
+  </body>
+</html>
