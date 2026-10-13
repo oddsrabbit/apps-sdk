@@ -1,7 +1,16 @@
 import { z } from 'zod';
 
 export const STORAGE_KEY_MAX_LENGTH = 256;
+/** The most one `storage.set` value may be. Checked here, before it's sent. */
 export const STORAGE_VALUE_MAX_BYTES = 16 * 1024;
+/**
+ * The most all of one user's keys for one game may hold together, in bytes
+ * (UTF-8, as the server counts them). Only the server checks it: a write that
+ * would take the total past it is refused with `storage/tuple-size-exceeded`.
+ * Size a game's saves for both limits, not just the per-value one. Must match
+ * AppStorageService::TUPLE_MAX_BYTES on the server.
+ */
+export const STORAGE_TOTAL_MAX_BYTES = 64 * 1024;
 
 export const HAPTIC_TYPES = ['light', 'medium', 'success', 'error'] as const;
 export const AppHapticTypeSchema = z.enum(HAPTIC_TYPES);

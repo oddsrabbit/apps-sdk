@@ -47,7 +47,8 @@ result shape every feature above it. Everything else can change after launch.
 
 - **`OR.storage`** for the pet. It syncs across mobile and web and is
   server-backed for signed-in users. Values are capped at **16 KB per key**
-  (`STORAGE_VALUE_MAX_BYTES`), so state is split across keys (§3).
+  (`STORAGE_VALUE_MAX_BYTES`) and **64 KB across all keys**
+  (`STORAGE_TOTAL_MAX_BYTES`), so state is split across keys (§3).
 - **`OR.content.daily`** for the daily visitor [C6]. It is server-authored and
   date-gated, so tomorrow's visitor isn't readable in the bundle.
 - **`OR.actions.share`** for the pet card [F3]. It is **text only** (`title`,
@@ -130,7 +131,8 @@ a laptop from overwriting each other:
 ## 3. State and storage keys
 
 Stored as JSON strings in `OR.storage` with a `v1:` prefix so a future schema
-change can migrate by key. Each value is well under the 16 KB cap.
+change can migrate by key. Each value is well under the 16 KB cap, and all of
+them together under the 64 KB total (the journal is cut to fit what's left).
 
 | Key | Holds | Written when |
 | --- | --- | --- |
