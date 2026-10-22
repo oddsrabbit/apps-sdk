@@ -2,6 +2,8 @@ import { OddsRabbitSDK, type OddsRabbitGlobal } from './sdk';
 
 export type {
   OddsRabbitGlobal,
+  ScoreLikePayload,
+  ScoreLikeResult,
   MatchCreatePayload,
   MatchJoinPayload,
   MatchListPayload,
@@ -32,8 +34,12 @@ export type {
   VisitRecordResult,
   VisitSeenResult,
   ContentReveal,
+  ContentSubmitPayload,
+  ContentSubmitResult,
+  ChatSharePicturePayload,
+  ChatShareResult,
 } from './sdk';
-export { CONTENT_ERROR_CODES, MATCH_ERROR_CODES, SOCIAL_ERROR_CODES, GIFT_ERROR_CODES, VISIT_ERROR_CODES } from './sdk';
+export { CONTENT_ERROR_CODES, CHAT_ERROR_CODES, PICTURE_MAX_BYTES, MATCH_ERROR_CODES, SOCIAL_ERROR_CODES, GIFT_ERROR_CODES, VISIT_ERROR_CODES } from './sdk';
 export type {
   BridgeUser,
   AppColorScheme,

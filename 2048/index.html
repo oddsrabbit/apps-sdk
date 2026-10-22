@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <!-- Edge to edge, with the header row laid out in the app's back-button
+         row. Must come before the SDK script. See
+         docs/game-header-guidelines.md. -->
+    <meta name="oddsrabbit-chrome" content="edge" />
+    <title>2048</title>
+    <!-- Shared leaderboard component. Stylesheet first so our own styles.css
+         keeps the last word; the script installs window.OddsRabbitUI, which
+         js/leaderboard.js reads. This game has no bundler, so both arrive as
+         plain tags rather than an import. -->
+    <link rel="stylesheet" href="../leaderboard-v1.css?v=__UI_VERSION__" />
+    <link rel="stylesheet" href="./styles.css?v=__BUILD_ID__" />
+    <script src="../sdk-v1.js?v=__SDK_VERSION__"></script>
+    <script src="../leaderboard-v1.js?v=__UI_VERSION__"></script>
+  </head>
+  <body>
+    <!-- Header row: first in the document and full width, so the app's
+         back-button lane is measured from the screen edge. -->
+    <div class="heading">
+      <h1 class="title">2048</h1>
+      <!-- The "0"s hold the chips' layout; .scores-container stays invisible
+           until js/html_actuator.js writes the restored values and adds
+           `.ready`. See styles.css. -->
+      <div class="scores-container">
+        <div class="score-container">0</div>
+        <div class="best-container">0</div>
+      </div>
+    </div>
+
+    <div class="container">
+      <div class="above-game">
+        <!-- Starts `hidden`; js/leaderboard.js reveals it only once the host has
+             said it can serve a global board. Shown-then-hidden would make New
+             Game, which shares this row on a phone, jump in width on load. -->
+        <button type="button" class="leaderboard-button" hidden>Leaderboard</button>
+        <button type="button" class="restart-button">New Game</button>
+      </div>
+
+      <div class="game-container">
+        <div class="game-message">
+          <p></p>
+          <div class="lower">
+            <button type="button" class="keep-playing-button">Keep going</button>
+            <button type="button" class="retry-button">Try again</button>
+          </div>
+        </div>
+
+        <div class="grid-container">
+          <div class="grid-row">
+            <div class="grid-cell"></div><div class="grid-cell"></div><div class="grid-cell"></div><div class="grid-cell"></div>
+          </div>
+          <div class="grid-row">
+            <div class="grid-cell"></div><div class="grid-cell"></div><div class="grid-cell"></div><div class="grid-cell"></div>
+          </div>
+          <div class="grid-row">
+            <div class="grid-cell"></div><div class="grid-cell"></div><div class="grid-cell"></div><div class="grid-cell"></div>
+          </div>
+          <div class="grid-row">
+            <div class="grid-cell"></div><div class="grid-cell"></div><div class="grid-cell"></div><div class="grid-cell"></div>
+          </div>
+        </div>
+
+        <div class="tile-container"></div>
+      </div>
+
+      <p class="game-explanation">
+        <strong class="important">How to play:</strong> Swipe or use your arrow keys to move the tiles. When two tiles with the same number touch, they merge into one.
+      </p>
+    </div>
+
+    <script src="./js/keyboard_input_manager.js?v=__BUILD_ID__"></script>
+    <script src="./js/html_actuator.js?v=__BUILD_ID__"></script>
+    <script src="./js/grid.js?v=__BUILD_ID__"></script>
+    <script src="./js/tile.js?v=__BUILD_ID__"></script>
+    <script src="./js/storage_manager.js?v=__BUILD_ID__"></script>
+    <script src="./js/game_manager.js?v=__BUILD_ID__"></script>
+    <script src="./js/application.js?v=__BUILD_ID__"></script>
+    <script src="./js/leaderboard.js?v=__BUILD_ID__"></script>
+  </body>
+</html>

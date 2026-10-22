@@ -263,6 +263,36 @@ test('invitable resolves [] without a round trip when signed out', async () => {
   assert.equal(t.calls.length, 0);
 });
 
+test('searchPlayers sends a trimmed query and parses rows, dropping a bad one', async () => {
+  const t = fakeTransport(() =>
+    Promise.resolve([
+      { uuid: OTHER, username: 'rabbit', avatar: null, relation: 'none' },
+      { uuid: 'not-a-uuid', username: 'broken' },
+    ])
+  );
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init({ capabilities: ['matches.get', 'matches.searchPlayers'] });
+  const rows = await sdk.matches.searchPlayers({ query: '  rab ', limit: 10 });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.relation, 'none');
+  assert.deepEqual(t.calls, [{ type: 'matches.searchPlayers', payload: { query: 'rab', limit: 10 } }]);
+});
+
+test('searchPlayers resolves [] without a round trip for a short query or when signed out', async () => {
+  const t = fakeTransport(() => Promise.resolve([]));
+  const sdk = new OddsRabbitSDK(t.transport);
+  t.init();
+  assert.deepEqual(await sdk.matches.searchPlayers({ query: 'r' }), []);
+  assert.deepEqual(await sdk.matches.searchPlayers({ query: '   ' }), []);
+  assert.equal(t.calls.length, 0);
+
+  const signedOut = fakeTransport(() => Promise.resolve([]));
+  const sdk2 = new OddsRabbitSDK(signedOut.transport);
+  signedOut.init({ user: null, sessionToken: null });
+  assert.deepEqual(await sdk2.matches.searchPlayers({ query: 'rabbit' }), []);
+  assert.equal(signedOut.calls.length, 0);
+});
+
 test('nudge sends the uuid and resolves the parsed timestamp', async () => {
   const t = fakeTransport(() => Promise.resolve({ nudgedAt: '2026-09-26T10:00:00Z' }));
   const sdk = new OddsRabbitSDK(t.transport);

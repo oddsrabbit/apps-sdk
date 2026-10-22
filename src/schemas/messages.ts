@@ -1,7 +1,16 @@
 import { z } from 'zod';
 
 export const STORAGE_KEY_MAX_LENGTH = 256;
+/** The most one `storage.set` value may be. Checked here, before it's sent. */
 export const STORAGE_VALUE_MAX_BYTES = 16 * 1024;
+/**
+ * The most all of one user's keys for one game may hold together, in bytes
+ * (UTF-8, as the server counts them). Only the server checks it: a write that
+ * would take the total past it is refused with `storage/tuple-size-exceeded`.
+ * Size a game's saves for both limits, not just the per-value one. Must match
+ * AppStorageService::TUPLE_MAX_BYTES on the server.
+ */
+export const STORAGE_TOTAL_MAX_BYTES = 64 * 1024;
 
 export const HAPTIC_TYPES = ['light', 'medium', 'success', 'error'] as const;
 export const AppHapticTypeSchema = z.enum(HAPTIC_TYPES);
@@ -84,8 +93,18 @@ export const MATCH_ERROR_CODES = {
   notFound: 'match/not-found',
   /** The join code's table is already full or the lobby has closed. */
   full: 'match/full',
-  /** An invitee is not connected to the creator on the follow graph. */
+  /**
+   * An invitee cannot be challenged by this creator: a block between them, or
+   * their "Game challenges from" setting is "people I follow". One code for
+   * both, so a refusal never reveals a block.
+   */
   notConnected: 'match/not-connected',
+  /**
+   * The creator already has `MATCH_MAX_PENDING_STRANGER_INVITES` unanswered
+   * challenges out to people they are not connected to. Accepted, declined
+   * and expired invites free the slot; `message` says so in plain words.
+   */
+  inviteLimit: 'match/invite-limit',
   /**
    * `matches.nudge` or `matches.claim` came before it is allowed: the turn is
    * too young, or this player already nudged in the last day. `message` says
@@ -104,6 +123,13 @@ export const MATCH_ERROR_CODES = {
    */
   chatRefused: 'match/chat-refused',
 } as const;
+
+/** Unanswered `matches.create` invites one creator may have out to people with no follow either way. */
+export const MATCH_MAX_PENDING_STRANGER_INVITES = 10;
+/** Shortest `matches.searchPlayers` query the host answers; shorter resolves `[]`. */
+export const MATCH_SEARCH_MIN_CHARS = 2;
+/** Most rows one `matches.searchPlayers` answers. */
+export const MATCH_SEARCH_MAX = 50;
 
 /** How long the seat on turn must have been idle before `matches.nudge`, and the gap between one sender's nudges. */
 export const MATCH_NUDGE_AFTER_SECONDS = 24 * 3600;
@@ -206,6 +232,39 @@ export const GIFT_ERROR_CODES = {
   rateLimited: 'gifts/rate-limited',
 } as const;
 
+/**
+ * A picture crossing the bridge: a `data:image/png` or `data:image/jpeg` base64
+ * URL, at most `PICTURE_MAX_BYTES` once decoded. Games send what the player
+ * made or gave them, scaled so the long side is at most 1600 px.
+ */
+export const PICTURE_MAX_BYTES = 2 * 1024 * 1024;
+const PICTURE_PREFIX = /^data:image\/(png|jpeg);base64,/;
+const PictureDataUrl = z
+  .string()
+  .max('data:image/jpeg;base64,'.length + Math.ceil(PICTURE_MAX_BYTES / 3) * 4)
+  .refine((url) => PICTURE_PREFIX.test(url) && /^[A-Za-z0-9+/]*={0,2}$/.test(url.replace(PICTURE_PREFIX, '')), {
+    message: 'a data:image/png or data:image/jpeg base64 URL',
+  });
+
+/** What a `content.submit` is, in the game's words, e.g. `coloring-page`. */
+export const CONTENT_KIND_PATTERN = /^[a-z0-9-]{1,32}$/;
+export const CONTENT_TITLE_MAX = 40;
+/** Longest caption `chat.sharePicture` carries. */
+export const CHAT_CAPTION_MAX = 200;
+
+/**
+ * Per-call outcomes of `chat.sharePicture`. None of them retire the verb. A
+ * player closing the picker is not an error: it resolves `{ sent: false }`.
+ */
+export const CHAT_ERROR_CODES = {
+  /** Signed out: there is no chat to send to. */
+  unauthorized: 'chat/unauthorized',
+  /** Not a PNG or JPEG, over `PICTURE_MAX_BYTES`, or undecodable. */
+  invalidImage: 'chat/invalid-image',
+  /** Too many pictures sent in the last little while. */
+  rateLimited: 'chat/rate-limited',
+} as const;
+
 /** Most uuids one `visits.seen` call may name. */
 export const VISITS_SEEN_MAX = 50;
 
@@ -287,15 +346,40 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
   }),
   // Global top-N leaderboard for a round — all players, not follow-graph
   // restricted. Public read (guests see the board). `order`: 'top' (default, by
-  // score) or 'first' (earliest submitters / hall-of-fame). `limit` clamped
-  // server-side to 1..100.
+  // score), 'first' (earliest submitters / hall-of-fame), 'latest' (newest
+  // first) or 'likes' (most liked first, for galleries; see `scores.like`).
+  // `limit` clamped server-side to 1..100.
   z.object({
     type: z.literal('scores.top'),
     correlationId: CorrelationId,
     payload: z.object({
       roundKey: RoundKey,
       limit: z.number().int().min(1).max(100).optional(),
-      order: z.enum(['top', 'first']).optional(),
+      order: z.enum(['top', 'first', 'latest', 'likes']).optional(),
+    }),
+  }),
+  // Like or unlike another player's row in a round, e.g. a painting in a daily
+  // gallery. Idempotent both ways. Counts come back as `likes` on `scores.top`
+  // and `scores.friends` rows, and `order: 'likes'` sorts by them. Your own
+  // row rejects with `scores/own-entry`; a player with no row in the round
+  // with `scores/not-found`.
+  z.object({
+    type: z.literal('scores.like'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      roundKey: RoundKey,
+      uuid: z.string().uuid(),
+      liked: z.boolean(),
+    }),
+  }),
+  // The uuids of the rows the viewer has liked in a round, to fill a gallery's
+  // hearts. Authenticated and separate from `scores.top` for the same reason
+  // as `scores.rank`: the board stays public and viewer-free.
+  z.object({
+    type: z.literal('scores.myLikes'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      roundKey: RoundKey,
     }),
   }),
   // Monthly season board for the app — every player's daily rows across one
@@ -380,6 +464,21 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
       roundKey: RoundKey,
       index: z.number().int().min(0).max(CONTENT_REVEAL_MAX_INDEX),
       guess: z.record(z.unknown()),
+    }),
+  }),
+  // Send something the player made to the platform's review queue, to be
+  // added for everyone if a person approves it (Rabbit Paint: a player's
+  // picture becoming a coloring page). Nothing is published by this call.
+  // Authenticated; needs the `bridge:submit` scope; a few per player per day.
+  z.object({
+    type: z.literal('content.submit'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      kind: z.string().regex(CONTENT_KIND_PATTERN),
+      title: z.string().trim().min(1).max(CONTENT_TITLE_MAX),
+      image: PictureDataUrl,
+      // The player confirmed they made it or may share it.
+      rights: z.literal(true),
     }),
   }),
   // ---- Matches. All authenticated: a guest cannot be in a match. Every read
@@ -541,6 +640,19 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
       offset: z.number().int().min(0).max(10000).optional(),
     }),
   }),
+  // Anyone the viewer could challenge, by username prefix: invites are open
+  // to everyone (the invitee accepts or declines), so the picker searches the
+  // platform rather than only the follow graph. Same row shape as
+  // `matches.invitable`, connected people first, `relation: 'none'` for the
+  // rest. Never someone `matches.create` would refuse.
+  z.object({
+    type: z.literal('matches.searchPlayers'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      query: z.string().max(60),
+      limit: z.number().int().min(1).max(MATCH_SEARCH_MAX).optional(),
+    }),
+  }),
   // The server's clock, for games that measure real elapsed time. Public: it
   // reveals nothing, and a game asks before it knows who the user is. The SDK
   // corrects for round-trip time and caches the offset, so hosts see a few
@@ -677,6 +789,17 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
       text: z.string().max(2000).optional(),
     }),
   }),
+  // Send a picture to one of the player's chats. The host opens its own
+  // chat/friend picker, so the game never sees who it went to; `{ sent: false }`
+  // when the player closes the picker. Authenticated; `bridge:share` scope.
+  z.object({
+    type: z.literal('chat.sharePicture'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      image: PictureDataUrl,
+      caption: z.string().max(CHAT_CAPTION_MAX).optional(),
+    }),
+  }),
   z.object({
     type: z.literal('actions.haptic'),
     correlationId: CorrelationId,
@@ -790,6 +913,9 @@ export const FriendScoreSchema = z.object({
   // this field; `.default(false)` keeps SDK consumers' types simple while
   // still parsing pre-isSelf responses.
   isSelf: z.boolean().default(false),
+  // How many players have liked this row (`scores.like`). 0 from hosts that
+  // predate likes.
+  likes: z.number().int().nonnegative().default(0),
 });
 
 export type FriendScore = z.infer<typeof FriendScoreSchema>;
@@ -800,6 +926,14 @@ export type FriendScore = z.infer<typeof FriendScoreSchema>;
 export const TopScoreEntrySchema = FriendScoreSchema.omit({ isSelf: true });
 
 export type TopScoreEntry = z.infer<typeof TopScoreEntrySchema>;
+
+// The answer to `scores.like`: the state now and the row's new like count.
+export const ScoreLikeResultSchema = z.object({
+  liked: z.boolean(),
+  likes: z.number().int().nonnegative(),
+});
+
+export type ScoreLikeResult = z.infer<typeof ScoreLikeResultSchema>;
 
 // One bucket of a round's community score distribution. `score` is the raw
 // integer the app submitted; the app maps it back to its own buckets (e.g.
@@ -985,7 +1119,20 @@ export const ContentRevealSchema = z.object({
 
 export type ContentReveal = z.infer<typeof ContentRevealSchema>;
 
-/** Error codes `content.reveal` rejects with, beyond transport failures. */
+// The answer to `content.submit`: the submission's id, for a later status check.
+export const ContentSubmitResultSchema = z.object({ id: z.string().min(1) });
+
+export type ContentSubmitResult = z.infer<typeof ContentSubmitResultSchema>;
+
+// The answer to `chat.sharePicture`: false when the player closed the picker.
+export const ChatShareResultSchema = z.object({ sent: z.boolean() });
+
+export type ChatShareResult = z.infer<typeof ChatShareResultSchema>;
+
+/**
+ * Error codes `content.reveal` and `content.submit` reject with, beyond
+ * transport failures. None of them retire a verb.
+ */
 export const CONTENT_ERROR_CODES = {
   /** The round isn't published (or isn't open yet). */
   notAvailable: 'content/not-available',
@@ -993,6 +1140,14 @@ export const CONTENT_ERROR_CODES = {
   invalidGuess: 'content/invalid-guess',
   /** This game's content has nothing to reveal. */
   noReveal: 'content/no-reveal',
+  /** `content.submit` signed out. */
+  unauthorized: 'content/unauthorized',
+  /** `content.submit`: not a PNG or JPEG, over `PICTURE_MAX_BYTES`, or undecodable. */
+  invalidImage: 'content/invalid-image',
+  /** `content.submit`: over the player's daily cap for this app. */
+  tooMany: 'content/too-many',
+  /** `content.submit`: the app's manifest does not declare `bridge:submit`. */
+  forbidden: 'content/forbidden',
 } as const;
 
 // One seat in a match. The `uuid`/`username`/`avatar`/`isSelf` quartet is the
@@ -1016,9 +1171,10 @@ export const InvitablePlayerSchema = z.object({
   uuid: z.string().uuid(),
   username: z.string().min(1).max(64),
   avatar: z.string().url().nullable().default(null),
-  // Whether the viewer follows them, is followed by them, or both. Purely
-  // for the picker's ordering and badge; the server accepts any of the three.
-  relation: z.enum(['following', 'follower', 'mutual']).default('following'),
+  // Whether the viewer follows them, is followed by them, both, or neither
+  // ('none', only from `matches.searchPlayers`). For the picker's ordering
+  // and badge; the server accepts an invite to any of them.
+  relation: z.enum(['following', 'follower', 'mutual', 'none']).default('following'),
 });
 
 export type InvitablePlayer = z.infer<typeof InvitablePlayerSchema>;
@@ -1065,6 +1221,11 @@ export const MatchSummarySchema = z.object({
   // Set when `finished`. Null with `finished` means a draw.
   winnerSeat: MatchSeat.nullable().default(null),
   mySeat: MatchSeat,
+  // The viewer's own seat status. `invited` means a challenge waiting on
+  // them: accept with `matches.join({ matchUuid })`, decline with
+  // `matches.resign({ matchUuid })`. Null for a viewer with no seat, and
+  // from a host that predates invites (read `players` there).
+  mySeatStatus: MatchPlayerStatusSchema.nullable().default(null),
   isMyTurn: z.boolean().default(false),
   updatedAt: z.string(),
   // The last move, filtered for this viewer exactly as on a view, so a list

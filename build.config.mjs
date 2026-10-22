@@ -7,6 +7,7 @@
 //   - dist/leaderboard-v1.js   IIFE bundle for CDN script tag (installs window.OddsRabbitUI)
 //   - dist/leaderboard-v1.esm.js + .css   Shared leaderboard UI for bundler consumers
 //   - dist/host/           Sandbox host page (index.html, host.js, host.css)
+//   - dist/2048/           Example game, servable next to the SDK bundles it loads
 //   - dist/**/*.d.ts       TypeScript declarations (via tsc) + thin wrappers for stable entry paths
 
 import * as esbuild from 'esbuild';
@@ -18,8 +19,22 @@ const watch = process.argv.includes('--watch');
 // Cache-bust ID stamped into the host page's references to its own JS/CSS.
 const BUILD_ID = process.env.BUILD_ID || String(Date.now());
 
+// 2048 example game. Its JS is copied verbatim; only index.html carries
+// cache-bust placeholders.
+const GAME_2048_JS = [
+  'keyboard_input_manager.js',
+  'html_actuator.js',
+  'grid.js',
+  'tile.js',
+  'storage_manager.js',
+  'game_manager.js',
+  'application.js',
+  'leaderboard.js',
+];
+
 await rm('dist', { recursive: true, force: true });
 await mkdir('dist/host', { recursive: true });
+await mkdir('dist/2048/js', { recursive: true });
 
 const baseOpts = {
   bundle: true,
@@ -116,6 +131,16 @@ async function copyStaticAssets() {
     writeFile('dist/host/index.html', html.replaceAll('__BUILD_ID__', BUILD_ID)),
     copyFile('src/host/host.css', 'dist/host/host.css'),
     copyFile('src/ui/leaderboard.css', 'dist/leaderboard-v1.css'),
+    // The private repo stamps the SDK and UI references with content hashes
+    // for the CDN; locally the build ID is enough.
+    readFile('2048/index.html', 'utf8').then((game) =>
+      writeFile(
+        'dist/2048/index.html',
+        game.replace(/__(BUILD_ID|SDK_VERSION|UI_VERSION)__/g, BUILD_ID)
+      )
+    ),
+    copyFile('2048/styles.css', 'dist/2048/styles.css'),
+    ...GAME_2048_JS.map((name) => copyFile(`2048/js/${name}`, `dist/2048/js/${name}`)),
   ]);
 }
 

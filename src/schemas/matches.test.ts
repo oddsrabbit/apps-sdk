@@ -11,6 +11,7 @@ import {
   MatchChatPageSchema,
   MATCH_CHAT_MAX_CHARS,
   MatchNudgeResultSchema,
+  InvitablePlayerSchema,
   MatchSummarySchema,
   MatchViewSchema,
 } from './messages';
@@ -36,6 +37,8 @@ test('every match verb is a bridge request type', () => {
     'matches.quick',
     'matches.chat',
     'matches.chatSend',
+    'matches.invitable',
+    'matches.searchPlayers',
   ]) {
     assert.ok(BRIDGE_REQUEST_TYPES.includes(verb as never), verb);
   }
@@ -100,6 +103,44 @@ test('a match view parses with wire defaults filled in', () => {
   assert.equal(view.players[1]!.score, 0);
   assert.equal(view.players[1]!.isSelf, false);
   assert.equal(view.turnStartedAt, null, 'an older host without turnStartedAt still parses');
+  assert.equal(view.mySeatStatus, null, 'an older host without mySeatStatus still parses');
+});
+
+test('an invited viewer reads mySeatStatus', () => {
+  const parsed = MatchSummarySchema.safeParse({
+    matchUuid: UUID,
+    game: 'tiles',
+    status: 'lobby',
+    version: 1,
+    maxPlayers: 2,
+    players: [
+      { seat: 0, uuid: OTHER, username: 'host', status: 'joined' },
+      { seat: 1, uuid: UUID, username: 'me', status: 'invited', isSelf: true },
+    ],
+    mySeat: 1,
+    mySeatStatus: 'invited',
+    updatedAt: '2026-10-08T10:00:00Z',
+  });
+  assert.ok(parsed.success);
+  assert.equal(parsed.data.mySeatStatus, 'invited');
+});
+
+test('matches.searchPlayers takes a query of up to 60 characters and a limit up to 50', () => {
+  assert.ok(request('matches.searchPlayers', { query: 'ra' }).success);
+  assert.ok(request('matches.searchPlayers', { query: 'ra', limit: 50 }).success);
+  assert.ok(!request('matches.searchPlayers', { query: 'ra', limit: 51 }).success);
+  assert.ok(!request('matches.searchPlayers', { query: 'x'.repeat(61) }).success);
+  assert.ok(!request('matches.searchPlayers', {}).success);
+});
+
+test("a search row may be someone with no follow either way ('none')", () => {
+  const parsed = InvitablePlayerSchema.safeParse({ uuid: UUID, username: 'stranger', relation: 'none' });
+  assert.ok(parsed.success);
+  assert.equal(parsed.data.relation, 'none');
+});
+
+test('invite-limit is a per-call match error code', () => {
+  assert.equal(MATCH_ERROR_CODES.inviteLimit, 'match/invite-limit');
 });
 
 test('turnStartedAt passes through when the host sends it', () => {

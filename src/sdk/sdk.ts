@@ -1,13 +1,17 @@
 import {
+  MATCH_SEARCH_MIN_CHARS,
   FriendScoreSchema,
   TopScoreEntrySchema,
   ScoreDistributionEntrySchema,
   DailyContentSchema,
   ContentRevealSchema,
+  ContentSubmitResultSchema,
+  ChatShareResultSchema,
   SeasonBoardEnvelopeSchema,
   SeasonEntrySchema,
   RoundRankSchema,
   SeasonRankSchema,
+  ScoreLikeResultSchema,
   MatchViewSchema,
   MatchSummarySchema,
   MatchNudgeResultSchema,
@@ -61,18 +65,24 @@ import {
   type AppLifecycleEvent,
   type FriendScore,
   type TopScoreEntry,
+  type ScoreLikeResult,
   type ScoreDistributionEntry,
   type DailyContent,
   type ContentReveal,
+  type ContentSubmitResult,
+  type ChatShareResult,
 } from '../schemas/messages';
 import { BridgeTransport, type LifecycleHandler } from './transport';
 
 export type {
   FriendScore,
   TopScoreEntry,
+  ScoreLikeResult,
   ScoreDistributionEntry,
   DailyContent,
   ContentReveal,
+  ContentSubmitResult,
+  ChatShareResult,
   SeasonBoard,
   SeasonEntry,
   SeasonMetric,
@@ -105,12 +115,34 @@ export type {
 
 export {
   CONTENT_ERROR_CODES,
+  CHAT_ERROR_CODES,
+  PICTURE_MAX_BYTES,
   MATCH_ERROR_CODES,
+  MATCH_MAX_PENDING_STRANGER_INVITES,
+  MATCH_SEARCH_MIN_CHARS,
   NOTIFICATION_ERROR_CODES,
   SOCIAL_ERROR_CODES,
   GIFT_ERROR_CODES,
   VISIT_ERROR_CODES,
 } from '../schemas/messages';
+
+export interface ContentSubmitPayload {
+  /** What it is, in the game's words, `[a-z0-9-]{1,32}`, e.g. `'coloring-page'`. */
+  kind: string;
+  /** 1–40 characters after trimming. */
+  title: string;
+  /** `data:image/png` or `data:image/jpeg` base64, at most `PICTURE_MAX_BYTES` decoded. */
+  image: string;
+  /** The player confirmed they made it or may share it. */
+  rights: true;
+}
+
+export interface ChatSharePicturePayload {
+  /** `data:image/png` or `data:image/jpeg` base64, at most `PICTURE_MAX_BYTES` decoded. */
+  image: string;
+  /** Sent with the picture, at most `CHAT_CAPTION_MAX` characters. */
+  caption?: string;
+}
 
 export interface GiftSendPayload {
   /** Who gets it. Must follow the viewer or be followed by them. */
@@ -246,8 +278,19 @@ export interface TopScoresPayload {
   roundKey: string;
   /** Max rows to return, clamped server-side to 1..100 (default 20). */
   limit?: number;
-  /** 'top' (default) ranks by score; 'first' ranks by earliest submission. */
-  order?: 'top' | 'first';
+  /**
+   * 'top' (default) ranks by score; 'first' by earliest submission; 'latest'
+   * newest first; 'likes' most liked first (see `scores.like`).
+   */
+  order?: 'top' | 'first' | 'latest' | 'likes';
+}
+
+export interface ScoreLikePayload {
+  roundKey: string;
+  /** The uuid of the player whose row is being liked. */
+  uuid: string;
+  /** true to like, false to take the like back. */
+  liked: boolean;
 }
 
 /**
@@ -444,9 +487,28 @@ export interface OddsRabbitGlobal {
      * (default) ranks by score DESC; `order: 'first'` ranks by earliest
      * submission (a "who did it first" hall-of-fame). Returns an empty array when
      * nobody has played or on a malformed response. Rows carry no `isSelf`; match
-     * `uuid` against `OddsRabbit.user` to highlight the viewer.
+     * `uuid` against `OddsRabbit.user` to highlight the viewer. `order: 'latest'`
+     * is newest first and `order: 'likes'` most liked first; every row carries
+     * its `likes` count. Pass those two only when
+     * `capabilities.has('scores.like')`: an older host drops an order it
+     * doesn't know and quietly ranks by score instead.
      */
     top(payload: TopScoresPayload): Promise<TopScoreEntry[]>;
+    /**
+     * Like or unlike another player's row in a round, e.g. a painting in a
+     * daily gallery. Idempotent both ways. Resolves the state now and the row's
+     * new count. Rejects `scores/own-entry` for your own row,
+     * `scores/not-found` when that player has no row in the round, and
+     * `scores/unauthorized` signed out. Gate the UI on
+     * `capabilities.has('scores.like')`.
+     */
+    like(payload: ScoreLikePayload): Promise<ScoreLikeResult>;
+    /**
+     * The uuids of the rows the viewer has liked in a round, to fill hearts.
+     * Resolves `[]` signed out or on a host without the verb; rejects on any
+     * other failure.
+     */
+    myLikes(payload: { roundKey: string }): Promise<string[]>;
     /**
      * Fetch the season board — every player's daily rows across one calendar
      * month, aggregated into a single ranked number. Public (works signed-out).
@@ -527,6 +589,30 @@ export interface OddsRabbitGlobal {
      * `capabilities.has('content.reveal')`.
      */
     reveal(payload: { roundKey: string; index: number; guess: Record<string, unknown> }): Promise<ContentReveal>;
+    /**
+     * Send something the player made to the platform's review queue, to be
+     * added for everyone if a person approves it. Nothing is published by
+     * the call itself. Resolves `{ id }`.
+     *
+     * REJECTS on failure: `content/unauthorized` signed out,
+     * `content/invalid-image`, `content/too-many` over the daily cap,
+     * `content/forbidden` without the `bridge:submit` scope
+     * (`CONTENT_ERROR_CODES`). Gate on `capabilities.has('content.submit')`.
+     */
+    submit(payload: ContentSubmitPayload): Promise<ContentSubmitResult>;
+  };
+
+  readonly chat: {
+    /**
+     * Send a picture to one of the player's chats. The host shows its own
+     * chat picker, so the game never learns who it went to. Resolves
+     * `{ sent: false }` when the player closes the picker.
+     *
+     * REJECTS on failure: `chat/unauthorized` signed out,
+     * `chat/invalid-image`, `chat/rate-limited` (`CHAT_ERROR_CODES`). Gate on
+     * `capabilities.has('chat.sharePicture')`.
+     */
+    sharePicture(payload: ChatSharePicturePayload): Promise<ChatShareResult>;
   };
 
   /**
@@ -549,12 +635,21 @@ export interface OddsRabbitGlobal {
    */
   readonly matches: {
     /**
-     * Start a match. Resolves the new match's view: `lobby` while seats are
-     * empty, or straight to `active` when invitees fill the table and the game
-     * needs no accept step. The creator always holds seat 0.
+     * Start a match. Resolves the new match's view, which is a `lobby` while
+     * any seat is empty or invited. The creator always holds seat 0.
+     *
+     * Invitees can be anyone (see `searchPlayers`): each is seated as
+     * `invited` and pushed a challenge, and the match starts only once every
+     * seat has accepted. Rejects `match/not-connected` for someone who can't
+     * be challenged by this creator, and `match/invite-limit` when they
+     * already have too many unanswered challenges out to strangers.
      */
     create(payload: MatchCreatePayload): Promise<MatchView>;
-    /** Take a seat, by invitation (`matchUuid`) or by join code. */
+    /**
+     * Take a seat, by invitation (`matchUuid`) or by join code. For a viewer
+     * whose `mySeatStatus` is `invited` this is ACCEPT: the seat becomes
+     * `joined`, and the match starts if it was the last one.
+     */
     join(payload: MatchJoinPayload): Promise<MatchView>;
     /**
      * The viewer's matches, newest activity first. `[]` when signed out (no
@@ -571,7 +666,11 @@ export interface OddsRabbitGlobal {
      * Resolves the post-move view, already advanced to the next seat.
      */
     move(payload: MatchMovePayload): Promise<MatchView>;
-    /** Leave the match. Ends a 2-player match; a larger table plays on without you. */
+    /**
+     * Leave the match. Ends a 2-player match; a larger table plays on without
+     * you. For a viewer whose `mySeatStatus` is `invited` this is DECLINE: an
+     * invite-only lobby closes (`abandoned`), an open one frees the seat.
+     */
     resign(payload: { matchUuid: string }): Promise<MatchView>;
     /**
      * Push the seat on turn a reminder that it is their move. Only from a
@@ -657,6 +756,17 @@ export interface OddsRabbitGlobal {
      * returns no unseen uuids, never on a fixed count.
      */
     invitable(payload?: { limit?: number; offset?: number }): Promise<InvitablePlayer[]>;
+    /**
+     * Anyone the viewer could challenge whose username starts with `query`:
+     * connected people first, then everyone else (`relation: 'none'`). Never
+     * someone `create` would refuse. `[]` when signed out, for a query under
+     * `MATCH_SEARCH_MIN_CHARS` (no round trip), or on a host without the verb.
+     * `limit` defaults to 20, max 50.
+     *
+     * Gate the search on `capabilities.has('matches.searchPlayers')`, and fall
+     * back to filtering `invitable` without it.
+     */
+    searchPlayers(payload: { query: string; limit?: number }): Promise<InvitablePlayer[]>;
     /**
      * Poll one match while the page is visible and the match is unfinished,
      * calling `onChange` with each view whose `version` moved (the first poll
@@ -1010,6 +1120,28 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
       ),
     top: (payload: TopScoresPayload): Promise<TopScoreEntry[]> =>
       this.requestRows<TopScoreEntry>('scores.top', payload, TopScoreEntrySchema),
+    // A write, so it rejects on failure like submit; the caller rolls back its
+    // optimistic heart.
+    like: (payload: ScoreLikePayload): Promise<ScoreLikeResult> =>
+      this.request<unknown>('scores.like', payload).then((result) => {
+        const parsed = ScoreLikeResultSchema.safeParse(result);
+        if (!parsed.success) throw new Error('scores.like: malformed result');
+        return parsed.data;
+      }),
+    // Signed out and unsupported hosts resolve empty hearts, the same
+    // reasoning as rank's null; any other failure rejects so the caller
+    // decides.
+    myLikes: (payload: { roundKey: string }): Promise<string[]> => {
+      if (!this.user) return Promise.resolve([]);
+      return this.request<unknown>('scores.myLikes', payload)
+        .then((result) =>
+          Array.isArray(result) ? result.filter((u): u is string => typeof u === 'string') : []
+        )
+        .catch((error: unknown) => {
+          if (isUnsupportedError(error)) return [];
+          throw error;
+        });
+    },
     // Returns an envelope rather than a row list, so it can't use requestRows.
     // Same two principles though: an unsupported host degrades instead of
     // rejecting, and one bad row drops itself rather than the whole board.
@@ -1111,6 +1243,21 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
         if (!parsed.success) throw new Error('content.reveal: malformed result');
         return parsed.data;
       }),
+    submit: (payload: ContentSubmitPayload): Promise<ContentSubmitResult> =>
+      this.request<unknown>('content.submit', payload).then((result) => {
+        const parsed = ContentSubmitResultSchema.safeParse(result);
+        if (!parsed.success) throw new Error('content.submit: malformed result');
+        return parsed.data;
+      }),
+  };
+
+  readonly chat = {
+    sharePicture: (payload: ChatSharePicturePayload): Promise<ChatShareResult> =>
+      this.request<unknown>('chat.sharePicture', payload).then((result) => {
+        const parsed = ChatShareResultSchema.safeParse(result);
+        if (!parsed.success) throw new Error('chat.sharePicture: malformed result');
+        return parsed.data;
+      }),
   };
 
   /**
@@ -1185,6 +1332,15 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
     invitable: (payload: { limit?: number; offset?: number } = {}): Promise<InvitablePlayer[]> => {
       if (!this.user) return Promise.resolve([]);
       return this.requestRows<InvitablePlayer>('matches.invitable', payload, InvitablePlayerSchema);
+    },
+    searchPlayers: (payload: { query: string; limit?: number }): Promise<InvitablePlayer[]> => {
+      const query = typeof payload?.query === 'string' ? payload.query.trim() : '';
+      if (!this.user || query.length < MATCH_SEARCH_MIN_CHARS) return Promise.resolve([]);
+      return this.requestRows<InvitablePlayer>(
+        'matches.searchPlayers',
+        payload.limit !== undefined ? { query, limit: payload.limit } : { query },
+        InvitablePlayerSchema
+      );
     },
     watch: (
       matchUuid: string,
