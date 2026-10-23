@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="strict-origin" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-src 'self'; connect-src 'none'; base-uri 'none'" />
+    <title>OddsRabbit Games Playground</title>
+    <link rel="stylesheet" href="./playground.css?v=__BUILD_ID__" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <strong>Playground</strong>
+        <span class="muted">OddsRabbit Games</span>
+      </div>
+      <form class="load-form" id="load-form">
+        <label class="field grow">
+          <span>Game URL</span>
+          <input id="game-url" type="url" placeholder="http://localhost:3000/" required spellcheck="false" />
+        </label>
+        <label class="field">
+          <span>App slug</span>
+          <input id="app-slug" type="text" placeholder="my-game" pattern="[a-z0-9-]{1,64}" required spellcheck="false" />
+        </label>
+        <label class="field">
+          <span>Device</span>
+          <select id="device">
+            <option value="web">Web</option>
+            <option value="iphone">iPhone</option>
+            <option value="android">Android</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Theme</span>
+          <select id="scheme">
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </label>
+        <button class="btn primary" type="submit">Load</button>
+      </form>
+    </header>
+
+    <div class="layout">
+      <main class="stage" id="stage">
+        <div class="empty" id="empty">
+          <h1>Test your game without registering it</h1>
+          <p>
+            Serve your game locally, paste its URL above and press Load. It runs in
+            the real OddsRabbit host, and everything the SDK asks for is answered
+            here with test data: saves, leaderboards, reminders, gifts and more.
+          </p>
+          <pre>npx serve . -l 3000</pre>
+          <p class="muted">
+            Nothing here reaches OddsRabbit. Session tokens are unsigned, so your
+            own backend should reject them.
+          </p>
+        </div>
+        <div class="device" id="device-frame" hidden>
+          <iframe id="host-frame" title="Game" allow="fullscreen; clipboard-write"></iframe>
+          <div class="chrome" id="chrome" aria-hidden="true">
+            <div class="statusbar"><span>9:41</span><span class="battery"></span></div>
+            <button class="back" id="back-button" type="button" tabindex="-1" aria-label="Back"></button>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+        <div class="toasts" id="toasts" aria-live="polite"></div>
+      </main>
+
+      <aside class="panel">
+        <nav class="tabs" role="tablist">
+          <button class="tab" role="tab" data-tab="player" aria-selected="true">Player</button>
+          <button class="tab" role="tab" data-tab="data">Data</button>
+          <button class="tab" role="tab" data-tab="errors">Errors</button>
+          <button class="tab" role="tab" data-tab="log">Log <span class="count" id="log-count">0</span></button>
+        </nav>
+
+        <section class="tab-panel" data-panel="player">
+          <fieldset>
+            <legend>Player</legend>
+            <div class="segmented" role="radiogroup">
+              <label><input type="radio" name="signed-in" value="yes" checked /> Signed in</label>
+              <label><input type="radio" name="signed-in" value="no" /> Guest</label>
+            </div>
+            <label class="field">
+              <span>Username</span>
+              <input id="username" type="text" maxlength="64" value="player" spellcheck="false" />
+            </label>
+            <label class="check"><input id="supporter" type="checkbox" /> Supporter</label>
+          </fieldset>
+
+          <fieldset>
+            <legend>Host</legend>
+            <div class="segmented" role="radiogroup">
+              <label><input type="radio" name="host" value="web" checked /> Web</label>
+              <label><input type="radio" name="host" value="app" /> Mobile app</label>
+            </div>
+            <p class="hint">Decides <code>OR.capabilities</code>. The app has no <code>actions.requestSignIn</code>. Multiplayer isn't simulated.</p>
+          </fieldset>
+
+          <fieldset>
+            <legend>Manifest scopes</legend>
+            <label class="check"><input type="checkbox" name="scope" value="bridge:notifications" checked /> bridge:notifications</label>
+            <label class="check"><input type="checkbox" name="scope" value="bridge:social" checked /> bridge:social</label>
+            <label class="check"><input type="checkbox" name="scope" value="bridge:submit" checked /> bridge:submit</label>
+            <p class="hint">Untick one to see the <code>*/forbidden</code> error. The server doesn't check <code>bridge:storage</code> or <code>bridge:share</code>.</p>
+          </fieldset>
+
+          <fieldset>
+            <legend>Test data</legend>
+            <label class="check"><input id="fill-boards" type="checkbox" checked /> Fill leaderboards with made-up players</label>
+            <label class="check"><input id="push-reachable" type="checkbox" checked /> Reminder pushes reach this player</label>
+            <label class="field">
+              <span>Network delay</span>
+              <select id="delay">
+                <option value="0">None</option>
+                <option value="300">300 ms</option>
+                <option value="1500">1.5 s</option>
+                <option value="5000">5 s</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>initialState (JSON, for the next load)</span>
+              <input id="initial-state" type="text" placeholder='{"target":"play"}' spellcheck="false" />
+            </label>
+          </fieldset>
+
+          <fieldset>
+            <legend>Lifecycle</legend>
+            <div class="row">
+              <button class="btn" type="button" data-lifecycle="pause">Pause</button>
+              <button class="btn" type="button" data-lifecycle="resume">Resume</button>
+              <button class="btn" type="button" data-lifecycle="terminating">Terminating</button>
+            </div>
+          </fieldset>
+
+          <div class="row">
+            <button class="btn primary" type="button" id="reload">Apply and reload game</button>
+          </div>
+        </section>
+
+        <section class="tab-panel" data-panel="data" hidden>
+          <details open>
+            <summary>Saves <span class="muted" id="saves-size"></span></summary>
+            <ul class="rows" id="saves"></ul>
+            <button class="btn small" type="button" id="clear-saves">Clear saves</button>
+          </details>
+
+          <details>
+            <summary>Daily content</summary>
+            <p class="hint">Round key to content, served by <code>OR.content.daily</code>. <code>*</code> answers any other round. Add <code>reveals</code> for <code>OR.content.reveal</code>.</p>
+            <textarea id="daily-content" rows="8" spellcheck="false"></textarea>
+            <div class="row">
+              <button class="btn small" type="button" id="apply-content">Apply</button>
+              <span class="error-text" id="content-error"></span>
+            </div>
+          </details>
+
+          <details>
+            <summary>Reminders</summary>
+            <ul class="rows" id="reminders"></ul>
+          </details>
+
+          <details>
+            <summary>Friends</summary>
+            <p class="hint">The player follows these four. Their showcases are copies of the player's own.</p>
+            <div class="form-grid">
+              <label class="field"><span>From</span><select id="friend-from"></select></label>
+              <label class="field"><span>Kind</span><input id="friend-kind" type="text" value="clover" pattern="[a-z0-9-]{1,32}" spellcheck="false" /></label>
+              <label class="field span"><span>Gift message</span><input id="friend-message" type="text" maxlength="80" /></label>
+              <label class="check span"><input id="friend-counts" type="checkbox" checked /> Sender's email is verified (<code>counts</code>)</label>
+            </div>
+            <div class="row">
+              <button class="btn small" type="button" id="receive-gift">Receive a gift</button>
+              <button class="btn small" type="button" id="receive-visit">Receive a visit</button>
+            </div>
+            <label class="field">
+              <span>Manifest <code>social.visitLines</code> (JSON)</span>
+              <textarea id="visit-lines" rows="3" spellcheck="false" placeholder='{"snack": "{username} came by and left a snack."}'></textarea>
+            </label>
+            <ul class="rows" id="social"></ul>
+          </details>
+
+          <details>
+            <summary>Submissions</summary>
+            <ul class="rows thumbs" id="submissions"></ul>
+          </details>
+
+          <div class="row">
+            <button class="btn danger small" type="button" id="reset">Reset all test data</button>
+          </div>
+        </section>
+
+        <section class="tab-panel" data-panel="errors" hidden>
+          <p class="hint">Make a verb fail, to check your error handling. <code>bridge/unknown-type</code> tells the SDK the host doesn't have the verb at all.</p>
+          <div class="form-grid">
+            <label class="field span"><span>Verb</span><select id="error-verb"></select></label>
+            <label class="field span"><span>Error code</span><input id="error-code" type="text" list="error-codes" spellcheck="false" /></label>
+            <datalist id="error-codes"></datalist>
+            <label class="field"><span>When</span>
+              <select id="error-mode">
+                <option value="once">Next call only</option>
+                <option value="always">Every call</option>
+              </select>
+            </label>
+          </div>
+          <div class="row"><button class="btn small" type="button" id="add-error">Add</button></div>
+          <ul class="rows" id="error-rules"></ul>
+        </section>
+
+        <section class="tab-panel" data-panel="log" hidden>
+          <div class="row">
+            <input id="log-filter" type="search" placeholder="Filter by verb" spellcheck="false" />
+            <button class="btn small" type="button" id="clear-log">Clear</button>
+          </div>
+          <ol class="log" id="log"></ol>
+        </section>
+      </aside>
+    </div>
+
+    <dialog id="dialog">
+      <div class="dialog-body">
+        <h2 id="dialog-title"></h2>
+        <div id="dialog-content"></div>
+        <div class="row end" id="dialog-actions"></div>
+      </div>
+    </dialog>
+
+    <script src="./playground.js?v=__BUILD_ID__"></script>
+  </body>
+</html>

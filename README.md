@@ -27,21 +27,45 @@ The SDK for building games and apps on [OddsRabbit](https://www.oddsrabbit.com).
 
 ## Install
 
-**CDN** (vanilla HTML — recommended):
+Load the SDK from our CDN. It isn't published to npm, and always loading the hosted file means your game gets bridge fixes without a rebuild.
 
 ```html
 <script src="https://apps.oddsrabbit.com/sdk-v1.js"></script>
 ```
 
-**npm** (TypeScript / build-tool apps):
+The shared leaderboard UI is hosted the same way, at `https://apps.oddsrabbit.com/leaderboard-v1.js` and `leaderboard-v1.css`.
+
+**TypeScript:** the types live in this repo. Clone it, run `npm install && npm run build`, and add `/// <reference path="path/to/apps-sdk/dist/sdk-v1.d.ts" />` to your project. That types the `window.OddsRabbit` global the CDN script creates. It's typed as optional, so start with `const OR = window.OddsRabbit!;`.
+
+## Local development
+
+Test your game without registering it. Serve it from your machine, then open the **playground** with its URL:
 
 ```bash
-npm install @oddsrabbit/apps-sdk
+npx serve . -l 3000
 ```
 
-```ts
-import { OddsRabbit } from '@oddsrabbit/apps-sdk';
 ```
+https://apps.oddsrabbit.com/playground/?gameUrl=http://localhost:3000/&app=my-game
+```
+
+The playground runs your game inside the real OddsRabbit host and stands in for the rest of OddsRabbit around it. Everything the SDK asks for is answered with test data that follows the same rules as the live server: saves and the 64 KB cap, one score per round, made-up players on the leaderboards, reminders, gifts, visits and submissions. From the side panel you can:
+
+- switch between a signed-in player and a guest, light and dark, and the web or mobile-app host (which changes `OR.capabilities`)
+- preview the game in an iPhone or Android frame, with the app's status bar, back button and home indicator
+- untick a manifest scope to see its `*/forbidden` error, or force any verb to fail with the code of your choice
+- receive a gift or a visit, deliver a reminder and open the game from it, and see what your game submitted
+- send `pause` / `resume` / `terminating`, add network delay, and read a log of every call and its result
+
+Nothing reaches OddsRabbit, and the session token is unsigned, so a backend that verifies it as described below rejects it. Multiplayer (`OR.matches`) isn't simulated: it needs rules on our server.
+
+Chrome may ask to let apps.oddsrabbit.com reach devices on your local network; allow it. If your browser blocks a `localhost` game inside an https page, run the playground locally instead:
+
+```bash
+npm install && npm run playground   # then open http://localhost:4400/playground/
+```
+
+To try your game on a real phone, open the playground in the phone's browser and use an https tunnel to your machine (`cloudflared`, `ngrok`) as the game URL.
 
 ## What you get
 
@@ -62,7 +86,7 @@ Everything available on `window.OddsRabbit` once `await OR.whenReady()` resolves
 - **`OR.scores.rank` / `OR.scores.seasonRank`** — where the *viewer* placed, for the pinned `…  #412 @you` row under a board they didn't make. `rank` takes `{ roundKey, order? }` and `seasonRank` takes `{ period, metric? }`; pass the same `order`/`metric` as the board, or the rank describes a different ordering than the rows above it. Both are **authenticated** companions to the public boards rather than flags on them, so `scores.top` and `scores.season` stay guest-readable and server-cached. Both resolve **`null`** when there is nothing to pin — no session, no rank verb on this host, or (for `rank`) the viewer hasn't played that round; a caller does the same thing with all of those. `seasonRank` still resolves an envelope when the viewer played no day this month (`rank`/`entry` null, but `puzzleDays`/`qualifyingDays` populated), because the qualifier is exactly what such a player needs to be told. Prefer wiring these through the shared panel's `loadPinned` / `createSeasonTab({ loadRank })` hooks rather than `Promise.all`-ing them with the board: the panel loads the pinned row in its own chain, so a rank failure costs one row instead of the whole board.
 - **`OR.capabilities.has(verb)` / `OR.capabilities.all()`** — which bridge verbs *this host* implements, e.g. `OR.capabilities.has('scores.top')`. Gate optional UI on this, **not** on `typeof OR.scores.top === 'function'`: every SDK bundle exposes every method, while hosts differ (the mobile app has no `actions.requestSignIn`, and a native host can trail the SDK by an App Store review). **Read it only after `await OR.whenReady()`** — the host's answer arrives with `init`, so a call before that quietly returns the pre-handshake baseline instead of this host's real answer. Hosts that predate the handshake don't declare capabilities; the SDK then assumes that baseline and narrows it as verbs are actually rejected, so a `has()` call after a failed attempt still tells the truth.
 - **`OR.content.daily`** — fetch server-authored, date-gated content for a round (e.g. the day's puzzle or answer), so apps don't bundle every future answer into the client where it's trivially readable. Public (works for guests). The server only serves rounds whose publish time has passed — a future round resolves to `null`. Returns `{ roundKey, content }` where `content` is your app-specific shape; resolves `null` on an unsupported host or unavailable round so you can fall back to bundled content.
-- **`OR.content.submit`** — send something the player made to the platform's review queue, to be added for everyone if a person approves it (Rabbit Paint: a player's picture becoming a coloring page). Nothing is published by the call. `submit({ kind, title, image, rights: true })`: `kind` is your word (`[a-z0-9-]{1,32}`, e.g. `'coloring-page'`), `title` 1–40 characters, `image` a PNG or JPEG data URL as for `chat.sharePicture`, and `rights` must be `true` (the player confirmed they made it or may share it; ask them). Resolves `{ id }`. Needs the `bridge:submit` scope and a signed-in user; a few per player per day. Rejects with a `content/*` code (`CONTENT_ERROR_CODES`: `unauthorized`, `invalid-image`, `too-many`, `forbidden`), which never retires the capability. Gate the UI on `OR.capabilities.has('content.submit')`.
+- **`OR.content.submit`** — send something the player made to the platform's review queue, to be added for everyone if a person approves it (Rabbit Paint: a player's picture becoming a coloring page). Nothing is published by the call. `submit({ kind, title, image, rights: true })`: `kind` is your word (`[a-z0-9-]{1,32}`, e.g. `'coloring-page'`), `title` 1–40 characters, `image` a PNG or JPEG data URL as for `chat.sharePicture`, and `rights` must be `true` (the player confirmed they made it or may share it; ask them). Resolves `{ id }`. Needs the `bridge:submit` scope and a signed-in user; a few per player per day. Rejects with a `content/*` code (`CONTENT_ERROR_CODES`: `unauthorized`, `invalid` for a kind, title or `rights` the server refused, `invalid-image`, `too-many`, `forbidden`), which never retires the capability. Gate the UI on `OR.capabilities.has('content.submit')`.
 - **`OR.matches.create` / `join` / `list` / `get` / `move` / `resign` / `nudge` / `claim` / `watch`** — async turn-based multiplayer for 2–4 players. Each multiplayer game needs a rules class on our server, so get in touch before building one. All authenticated. Every read is **per-viewer**: the server's rules class for the match's `game` filters `view` to what the requesting seat may see, so a client never holds an opponent's hidden information and there is no raw-state verb. A `move` is an *action* (`{ col: 3 }`), never a board — the server applies it to its own state and answers with the new view, or rejects with a `match/*` code (`MATCH_ERROR_CODES`): `version-conflict` when the `version` you sent is behind (refetch and let the player decide again), `not-your-turn`, or `illegal-move` with the reason in `message`. Those codes describe one call, not the host, and never retire a capability. For a stalled turn, a waiting player can `nudge({ matchUuid })` (a push to the seat on turn, resolving `{ nudgedAt }`; allowed once the turn is a day old and once a day per sender) and, after 14 days without a move, `claim({ matchUuid })`, which resolves the resulting view: with two players left the match finishes scored as it stands (a tie is a draw), with three or four the idle seat is forfeited and the rest play on. Either rejects `match/too-soon` earlier, with a `message` saying when; every summary carries `turnStartedAt` so a game can show those buttons only when they'd be accepted. Gate each on `OR.capabilities.has('matches.nudge')` / `('matches.claim')`. `list` resolves `[]` when signed out or on a host without the verb; everything else rejects. `watch(matchUuid, onChange)` polls `get` every 5 s while the page is visible and the match is unfinished, pauses on `lifecycle` pause and hidden tabs, and stops itself after delivering a `finished` view. Gate the whole multiplayer entry point on `OR.capabilities.has('matches.get')` — the mobile host ships these behind App Store review.
 - **`OR.time.now()`** — the server's clock as epoch ms. Use it instead of `Date.now()` for anything that measures real elapsed time, since the device clock is the player's to change. The first call makes one round trip and corrects for its latency; later calls answer from a cached offset, refreshed every 10 minutes and whenever the page returns from the background. Public (works for guests). Never rejects: on a host without the verb or when the request fails it resolves `Date.now()`, so still clamp elapsed times that come out negative or huge.
 - **`OR.notifications.schedule` / `cancel` / `list` / `status`** — reminders delivered later as a push on mobile and a bell notification everywhere, e.g. "Clover is awake" when a nap timer ends. `schedule({ key, fireAt, title, body })` creates or **replaces** the reminder under `key` (a lowercase slug such as `'nap-done'`), so you can move one forward on every visit without piling them up; the SDK adds the device time zone. **The platform decides what goes out, not the game:** pushes only for users with game notifications on, at most 5 pending per app, `fireAt` between a minute and 14 days out. There is **no daily cap** while every game is first-party, so keep reminders rare yourself: every game shares the OddsRabbit app's one notification permission. There are **no quiet hours**: a reminder goes out at `fireAt` whatever the local time, so don't schedule for the small hours unless the player set that time in motion (a timer they started). The result's `deliverAt` is kept for compatibility and always equals `fireAt`. Needs the `bridge:notifications` scope and a signed-in user. `schedule`/`cancel` reject with a `notifications/*` code (`NOTIFICATION_ERROR_CODES`), which never retires a capability; `list` resolves `[]` when signed out or unsupported. `status()` resolves `{ push }`: whether a reminder push would reach the viewer right now (their Games and Game reminders settings are on and they have a phone); when it's false the reminder still lands in the bell, and it resolves `null` when it can't say. Players can mute reminders on their own with the Game reminders setting, separately from daily results. A tapped reminder opens the game with `initialState.target === 'play'` (web also passes `reminderKey`). Gate the UI on `OR.capabilities.has('notifications.schedule')` — the mobile host ships these behind App Store review.
@@ -75,7 +99,7 @@ Everything available on `window.OddsRabbit` once `await OR.whenReady()` resolves
 - **`OR.actions.requestSignIn`** — prompt the user to sign in at a natural friction moment.
 - **`OR.lifecycle.on`** — `'pause' | 'resume' | 'terminating'` hooks for animations and state-flushing.
 
-Full method signatures, manifest schema, scopes, and error codes live in the [developer guide](https://www.oddsrabbit.com/developers/games/).
+Exact types for every method, payload and result, the manifest schema and every error-code map (`*_ERROR_CODES`) are in [`src/schemas/`](./src/schemas/) and [`src/sdk/sdk.ts`](./src/sdk/sdk.ts). Check `OR.user` before calling a verb that needs a signed-in player: the web host rejects a signed-out call with that area's `unauthorized` code (`gifts/unauthorized`, say), but the mobile app doesn't use the same code for every area yet. The [developer guide](https://www.oddsrabbit.com/developers/games/) covers the manifest, scopes, review rules and how to submit a game.
 
 ## Building for mobile
 
@@ -102,7 +126,7 @@ el.addEventListener('touchmove',  handler, { passive: false });
 
 iOS has neither issue, so a swipe game that works on iOS Safari and desktop Chrome can be completely broken on Android. Always test on a real Android device before shipping. [`examples/starter/`](./examples/starter/) and [`2048/`](./2048/) apply all three.
 
-**Header and safe areas.** The mobile app runs games full-screen with a floating back button in the top-left. Games never use `env(safe-area-inset-*)`. Declare `<meta name="oddsrabbit-chrome" content="edge">` (before the SDK script) to draw edge to edge — under the status bar and home indicator, so screens and overlays reach every edge — padding your content by the `--oddsrabbit-safe-*` variables the host hands you, with your header row laid out beside the back button. Without it the host insets the game itself. See [`docs/game-header-guidelines.md`](./docs/game-header-guidelines.md) for the modes, the variables, the row size and the lane to keep clear.
+**Header and safe areas.** The mobile app runs games full-screen with a floating back button in the top-left. Games never use `env(safe-area-inset-*)`. Declare `<meta name="oddsrabbit-chrome" content="edge">` (before the SDK script) to draw edge to edge — under the status bar and home indicator, so screens and overlays reach every edge — padding your content by the `--oddsrabbit-safe-*` variables the host hands you, with your header row laid out beside the back button. Without it the host insets the game itself. The `edge` and `inline` modes need the host to read your page, so they only apply to games served from apps.oddsrabbit.com. A game on its own domain always gets the host's insets, which is what the playground's phone frames show. See [`docs/game-header-guidelines.md`](./docs/game-header-guidelines.md) for the modes, the variables, the row size and the lane to keep clear.
 
 ## Verifying users on your backend
 
@@ -129,10 +153,12 @@ Standard RS256 verification — confirm `iss === 'https://oddsrabbit.com'`, `aud
 src/sdk/           The SDK loaded inside app iframes (sdk-v1.js)
 src/schemas/       Zod schemas — single source of truth for the bridge
 src/ui/            Shared leaderboard + season-board UI (leaderboard-v1.js)
-src/host/          Sandbox host page that loads dev appUrls
+src/host/          Sandbox host page that loads the game
+src/playground/    Local-development playground (npm run playground)
 examples/starter/  Starter game — copy this to begin
 2048/              Example game — the 2048 port running on OddsRabbit
 docs/              Header and safe-area guidelines
+scripts/serve.mjs  Static server for dist/, used by npm run playground
 ```
 
 `npm install && npm run build` produces `dist/`; `npm test` runs the unit tests.

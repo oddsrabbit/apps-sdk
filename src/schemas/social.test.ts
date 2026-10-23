@@ -156,6 +156,7 @@ test('visit error codes live under visits/*', () => {
     'visits/not-connected',
     'visits/rate-limited',
     'visits/too-many',
+    'visits/unauthorized',
   ]);
 });
 

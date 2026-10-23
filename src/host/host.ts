@@ -11,6 +11,11 @@ import {
 } from '../schemas/messages';
 
 const GUEST_STORAGE_PREFIX = 'oddsrabbit:apps';
+// Guest saves for a game loaded through `?gameUrl=` (the playground, local
+// development) go under their own prefix. Anyone can open this page with a
+// gameUrl of their choosing, so without it a stranger's page could read and
+// overwrite a real game's guest saves on this origin by naming its slug.
+const DEV_GUEST_STORAGE_PREFIX = 'oddsrabbit:apps-dev';
 
 // Verbs this host answers itself when there's no signed-in user, without ever
 // forwarding them to the outer host (see handleGuestStorageRequest). They are
@@ -47,6 +52,7 @@ declare global {
 const params = new URLSearchParams(window.location.search);
 const slug = params.get('app');
 const devGameUrl = params.get('gameUrl');
+const guestStoragePrefix = devGameUrl ? DEV_GUEST_STORAGE_PREFIX : GUEST_STORAGE_PREFIX;
 
 // Parsed once at boot. The outer (WP page on web, RN host on mobile) appends
 // `?colorScheme=` to the host URL so the host can style its own chrome AND
@@ -456,10 +462,11 @@ async function resolveGameUrl(
 ): Promise<string | null> {
   if (override) {
     if (!isAllowedDevOverride(override)) {
-      showError('Dev gameUrl override is only permitted in dev builds.');
+      showError('gameUrl must be an https URL, or http on localhost.');
       return null;
     }
-    return override;
+    // Same colorScheme forwarding as a registered game gets below.
+    return appendQueryParams(override, { colorScheme });
   }
 
   try {
@@ -514,15 +521,31 @@ function appendQueryParams(baseUrl: string, params: Record<string, string>): str
   return `${baseUrl}${separator}${query}`;
 }
 
-function isAllowedDevOverride(_url: string): boolean {
-  // Phase 1 scaffolding: allow dev override on localhost / dev origins only.
-  // Production builds replace this with a constant `false`.
-  const host = window.location.hostname;
+/**
+ * Whether a `?gameUrl=` override may be loaded: https anywhere (a staging
+ * deploy, a tunnel to a laptop for phone testing), plain http only on this
+ * machine. Never anything else — a `javascript:` URL in a frame sandboxed with
+ * allow-same-origin would run as this page.
+ *
+ * Safe to honour on the live host because nothing real ever passes it: the
+ * oddsrabbit.com games page and the mobile app build the host URL from the
+ * manifest themselves. A page that frames this one with a gameUrl is the
+ * outer host, so the only player data the game can reach is what that page
+ * chooses to send it, and guest saves are kept apart
+ * (DEV_GUEST_STORAGE_PREFIX). The playground (src/playground/) is the page
+ * this exists for.
+ */
+function isAllowedDevOverride(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol === 'https:') return true;
   return (
-    host === 'localhost' ||
-    host === '127.0.0.1' ||
-    host.endsWith('.local') ||
-    host.endsWith('.dev')
+    parsed.protocol === 'http:' &&
+    (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1')
   );
 }
 
@@ -727,7 +750,7 @@ function handleGuestStorageRequest(
   appSlug: string
 ): BridgeOutbound {
   const correlationId = req.correlationId;
-  const namespacedKey = `${GUEST_STORAGE_PREFIX}:${appSlug}:${req.payload.key}`;
+  const namespacedKey = `${guestStoragePrefix}:${appSlug}:${req.payload.key}`;
 
   try {
     if (req.type === 'storage.get') {

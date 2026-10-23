@@ -7,6 +7,7 @@
 //   - dist/leaderboard-v1.js   IIFE bundle for CDN script tag (installs window.OddsRabbitUI)
 //   - dist/leaderboard-v1.esm.js + .css   Shared leaderboard UI for bundler consumers
 //   - dist/host/           Sandbox host page (index.html, host.js, host.css)
+//   - dist/playground/     Local-development playground around the host (open /playground/)
 //   - dist/2048/           Example game, servable next to the SDK bundles it loads
 //   - dist/**/*.d.ts       TypeScript declarations (via tsc) + thin wrappers for stable entry paths
 
@@ -34,6 +35,7 @@ const GAME_2048_JS = [
 
 await rm('dist', { recursive: true, force: true });
 await mkdir('dist/host', { recursive: true });
+await mkdir('dist/playground', { recursive: true });
 await mkdir('dist/2048/js', { recursive: true });
 
 const baseOpts = {
@@ -106,6 +108,14 @@ const buildTargets = [
     format: 'iife',
     minify: true,
   },
+  // Playground: plays oddsrabbit.com around the host for local development
+  {
+    ...browserOpts,
+    entryPoints: ['src/playground/playground.ts'],
+    outfile: 'dist/playground/playground.js',
+    format: 'iife',
+    minify: true,
+  },
 ];
 
 if (watch) {
@@ -127,9 +137,12 @@ if (watch) {
 
 async function copyStaticAssets() {
   const html = await readFile('src/host/host.html', 'utf8');
+  const playground = await readFile('src/playground/playground.html', 'utf8');
   await Promise.all([
     writeFile('dist/host/index.html', html.replaceAll('__BUILD_ID__', BUILD_ID)),
     copyFile('src/host/host.css', 'dist/host/host.css'),
+    writeFile('dist/playground/index.html', playground.replaceAll('__BUILD_ID__', BUILD_ID)),
+    copyFile('src/playground/playground.css', 'dist/playground/playground.css'),
     copyFile('src/ui/leaderboard.css', 'dist/leaderboard-v1.css'),
     // The private repo stamps the SDK and UI references with content hashes
     // for the CDN; locally the build ID is enough.

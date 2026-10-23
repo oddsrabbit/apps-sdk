@@ -1,6 +1,7 @@
 {
   "name": "@oddsrabbit/apps-sdk",
   "version": "0.1.0-alpha.0",
+  "private": true,
   "description": "OddsRabbit Apps SDK — bridge contract for apps hosted on OddsRabbit (mobile + web).",
   "license": "MIT",
   "homepage": "https://github.com/oddsrabbit/apps-sdk",
@@ -43,6 +44,7 @@
   "scripts": {
     "build": "node build.config.mjs",
     "build:watch": "node build.config.mjs --watch",
+    "playground": "node build.config.mjs && node scripts/serve.mjs",
     "test": "node test.config.mjs",
     "type-check": "tsc --noEmit",
     "clean": "rm -rf dist .test-build *.tsbuildinfo"
@@ -65,8 +67,5 @@
   },
   "engines": {
     "node": ">=18"
-  },
-  "publishConfig": {
-    "access": "public"
   }
 }

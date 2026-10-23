@@ -595,6 +595,7 @@ export interface OddsRabbitGlobal {
      * the call itself. Resolves `{ id }`.
      *
      * REJECTS on failure: `content/unauthorized` signed out,
+     * `content/invalid` for a kind, title or rights the server refused,
      * `content/invalid-image`, `content/too-many` over the daily cap,
      * `content/forbidden` without the `bridge:submit` scope
      * (`CONTENT_ERROR_CODES`). Gate on `capabilities.has('content.submit')`.

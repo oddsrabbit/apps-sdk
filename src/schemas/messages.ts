@@ -122,6 +122,8 @@ export const MATCH_ERROR_CODES = {
    * `message` says which, in words a player can read. Nothing was sent.
    */
   chatRefused: 'match/chat-refused',
+  /** Signed out: every matches verb but `list` needs a signed-in player. */
+  unauthorized: 'match/unauthorized',
 } as const;
 
 /** Unanswered `matches.create` invites one creator may have out to people with no follow either way. */
@@ -186,6 +188,8 @@ export const NOTIFICATION_ERROR_CODES = {
   forbidden: 'notifications/forbidden',
   /** Too many schedules, cancels or mute changes in the last minute. */
   rateLimited: 'notifications/rate-limited',
+  /** Signed out: reminders belong to a signed-in player. */
+  unauthorized: 'notifications/unauthorized',
 } as const;
 
 const NotificationKey = z.string().regex(NOTIFICATION_KEY_PATTERN);
@@ -212,6 +216,8 @@ export const SOCIAL_ERROR_CODES = {
   notConnected: 'social/not-connected',
   /** The app's manifest does not declare `bridge:social`. */
   forbidden: 'social/forbidden',
+  /** `showcase.publish` signed out. */
+  unauthorized: 'social/unauthorized',
 } as const;
 
 /** Per-call outcomes of `gifts.*`. None of them retire the verb. */
@@ -230,6 +236,8 @@ export const GIFT_ERROR_CODES = {
   claimed: 'gifts/claimed',
   /** Too many sends or claims in the last minute. */
   rateLimited: 'gifts/rate-limited',
+  /** `send` or `claim` signed out. */
+  unauthorized: 'gifts/unauthorized',
 } as const;
 
 /**
@@ -280,6 +288,8 @@ export const VISIT_ERROR_CODES = {
   tooMany: 'visits/too-many',
   /** Too many records or seen calls in the last minute. */
   rateLimited: 'visits/rate-limited',
+  /** `record` or `seen` signed out. */
+  unauthorized: 'visits/unauthorized',
 } as const;
 
 const Uuid = z.string().uuid();
@@ -1148,6 +1158,8 @@ export const CONTENT_ERROR_CODES = {
   tooMany: 'content/too-many',
   /** `content.submit`: the app's manifest does not declare `bridge:submit`. */
   forbidden: 'content/forbidden',
+  /** `content.submit`: a `kind`, `title` or `rights` the server refused, e.g. a title that is empty once tags are stripped. */
+  invalid: 'content/invalid',
 } as const;
 
 // One seat in a match. The `uuid`/`username`/`avatar`/`isSelf` quartet is the
