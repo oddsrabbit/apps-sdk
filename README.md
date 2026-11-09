@@ -2,11 +2,10 @@
 
 The SDK for building games and apps on [OddsRabbit](https://www.oddsrabbit.com).
 
-> 🚧 **Alpha.** APIs subject to change.
-
 - **Full developer guide:** [oddsrabbit.com/developers/games](https://www.oddsrabbit.com/developers/games/)
 - **Starter game:** [`examples/starter/`](./examples/starter/) — one HTML file wiring up storage, a leaderboard, sign-in, haptics, sharing and lifecycle.
 - **Example game:** [`2048/`](./2048/) — a complete game on the SDK: synced saves, a best-score leaderboard, sharing and swipe input that works on Android.
+- **Porting an existing game:** [oddsrabbit.com/developers/games/porting](https://www.oddsrabbit.com/developers/games/porting/), with guides for Phaser, PixiJS, Three.js, Godot, Unity, Construct 3, GameMaker and Defold. They use [`examples/adapter/`](./examples/adapter/), one file that lets the same build run on OddsRabbit and anywhere else.
 - **Play the live games:** [oddsrabbit.com/games](https://www.oddsrabbit.com/games/)
 
 ## Hello world
@@ -93,6 +92,8 @@ Everything available on `window.OddsRabbit` once `await OR.whenReady()` resolves
 - **`OR.showcase.publish` / `friends` / `get`** — a small JSON snapshot of the game that the viewer's friends can look at (a pet's name, coat and burrow, say). "Friends" means people the viewer follows or who follow them, with no block between them. `publish(data)` creates or **replaces** the viewer's snapshot: an object of at most 8 KB of JSON, rate-limited to 30 a minute, so publish on meaningful changes. `friends({ limit? })` resolves friends' snapshots, most recently updated first (default 50, max 100); only people who have published appear. `get(userUuid)` resolves one person's snapshot or `null` if they haven't published, and rejects `social/not-connected` for someone the viewer isn't connected to. The platform never reads `data`; validate your own shape. Needs the `bridge:social` scope and a signed-in user. `publish` rejects with a `social/*` code (`SOCIAL_ERROR_CODES`); `friends` resolves `[]` when signed out or unsupported, and `get` resolves `null`. Rows are parsed one at a time, so a bad row drops itself.
 - **`OR.gifts.send` / `inbox` / `claim` / `sentToday`** — small gifts between friends (same follow-graph rule as showcases). The platform only carries them: `kind` is your word (`[a-z0-9-]{1,32}`, e.g. `'clover'`) and you pay out on claim. `send({ toUserUuid, kind, message? })` (message: one line, up to 80 characters) allows **one gift per friend per UTC day and 10 a day in all**; the recipient gets a bell notification (and a push if their game reminders are on) that opens the game with `initialState.target === 'play'`. `inbox()` resolves unclaimed gifts from the last 7 days, newest first (at most 50); older ones vanish. Each row's `counts` says whether the sender's email is verified: the server's say on whether it may earn the recipient anything (`true` from hosts that predate the field). `claim(giftUuid)` resolves `{ giftUuid, kind, claimedAt }` once and rejects `gifts/claimed` after that, so pay out on the resolve. `sentToday()` resolves the uuids the viewer has already gifted today, to grey out the button. Needs the `bridge:social` scope and a signed-in user. `send`/`claim` reject with a `gifts/*` code (`GIFT_ERROR_CODES`), which never retires a capability; `inbox` and `sentToday` resolve `[]` when signed out or unsupported. Gate the UI on `OR.capabilities.has('gifts.send')`.
 - **`OR.visits.record` / `inbox` / `seen` / `sentToday`** — visits to friends' homes (same follow-graph rule as showcases). A sibling of gifts with its **own** slot: **one visit per friend per UTC day and 10 a day in all**, whatever gifts were sent. `record({ toUserUuid, kind })` resolves `{ visitUuid, visitedAt }`; `kind` is your word (`[a-z0-9-]{1,32}`, e.g. `'snack'`). The friend gets a bell notification (and a push if their game reminders are on) whose line comes from your manifest's `social.visitLines`, a map from `kind` to one line with a single `{username}` placeholder (at most 16 kinds, 80 characters each), e.g. `{ "snack": "{username} came by and left a snack." }`; an unknown kind or no map gets "{username} came to visit.". Nothing the game sends at runtime reaches the push. `inbox()` resolves visits from the last 7 days, **seen and unseen**, newest first (at most 50): `{ visitUuid, kind, visitedAt, seenAt, from, showcase, counts }`, where `showcase` is the visitor's current snapshot for your game (or `null`; validate it like any `showcase.get` data) and `counts` is whether the visitor's email is verified. `seen(visitUuids)` (at most 50) resolves `{ seen, seenAt }` where `seen` lists only the uuids **this call** moved from unseen to seen, so pay out for exactly those and two devices can't both pay. An empty list resolves `{ seen: [] }` without a host call. `sentToday()` resolves the uuids the viewer has visited today. Needs the `bridge:social` scope and a signed-in user. `record`/`seen` reject with a `visits/*` code (`VISIT_ERROR_CODES`), which never retires a capability; `inbox` and `sentToday` resolve `[]` when signed out or unsupported. Gate the UI on `OR.capabilities.has('visits.record')`.
+- **`OR.notifications.mutedKinds` / `setKindMuted`** — let a player turn off one *kind* of your game's pushes without muting the whole game (Rabbit Draw: `'friends'` when a friend posts, `'comments'` on their drawing). `mutedKinds()` resolves the muted kinds, or `null` when it can't say; `setKindMuted(kind, muted)` resolves them as they now stand and rejects on failure. Call it only from the player's own tap. The game's own mute (`notifications.setMuted`) still silences everything. Gate the switches on `OR.capabilities.has('notifications.setKindMuted')`.
+- **`OR.gallery.*`** — pictures players make, posted to a round for everyone to see, with comments and reports (Rabbit Draw: a day's drawing). A post is also the player's score row in that round, so `scores.top`, `scores.friends` and `scores.like` list and heart it, with the picture's public URL in `metadata.image`. An entry is named by its round and its owner's uuid. `post({ roundKey, image, data?, metadata? })` takes a PNG or JPEG data URL as for `chat.sharePicture`, your own `data` string behind it (at most 48K characters, e.g. packed strokes for a replay; `GALLERY_DATA_MAX_CHARS`) and up to 1 KB of `metadata`; one post per player per round, then `gallery/already-posted`. It's public at once; moderation is by hand, from reports. `data(roundKey, uuid)` fetches the `data` behind one entry; `remove(roundKey)` deletes the viewer's own, with its likes and comments; `report(roundKey, uuid, reason)` (`'inappropriate' | 'spam' | 'other'`) hides it from the reporter at once. `hidden(roundKey)` resolves the owners whose entries the viewer shouldn't see (blocks either way, their own reports): drop those from the board, which stays public. Comments: `comments(roundKey, uuid, before?)` pages oldest first, 50 at a time (`more` says there are older ones; pass the first id as `before`); `comment({ roundKey, uuid, text, nonce? })` (1–280 characters) resolves the comment or rejects `gallery/comment-refused` with a `message` to show; `deleteComment(id)` for its author or the entry's owner (`canDelete` on each row); `reportComment(id, reason)`; `commentCounts(roundKey)` resolves counts by owner uuid for the cards. Pushes: the platform tells a player's followers when their entry goes up and the owner about comments, folded so nobody gets thirty, and opens the game with `initialState = { target: 'entry', roundKey, entry }` (an older mobile build drops `entry`, so fall back to the round). Needs the `bridge:gallery` scope; writes need a signed-in user and reject with a `gallery/*` code (`GALLERY_ERROR_CODES`) that never retires a capability. Gate each on `OR.capabilities.has(verb)`.
 - **`OR.actions.share`** — system share sheet on mobile, Web Share API on web.
 - **`OR.chat.sharePicture`** — send a picture the player made to one of their chats. `sharePicture({ image, caption? })` takes a `data:image/png` or `data:image/jpeg` base64 URL of at most 2 MB decoded (`PICTURE_MAX_BYTES`; scale to 1600 px on the long side) and an optional caption up to 200 characters. The host shows its own chat picker, so the game never learns who it went to; resolves `{ sent }`, `false` when the player closed the picker. Needs the `bridge:share` scope and a signed-in user. Rejects with a `chat/*` code (`CHAT_ERROR_CODES`: `unauthorized`, `invalid-image`, `rate-limited`), which never retires the capability. Gate the button on `OR.capabilities.has('chat.sharePicture')`.
 - **`OR.actions.haptic`** — `'light' | 'medium' | 'success' | 'error'`. No-op on web.
@@ -134,8 +135,19 @@ If your app has its own server, verify `OR.sessionToken` rather than trusting cl
 
 ```ts
 // In your app:
-fetch('/my-backend/play', {
+fetch('https://api.example.com/play', {
   headers: { Authorization: `Bearer ${OddsRabbit.sessionToken}` },
+});
+```
+
+Use a full URL: a hosted game is served from its own hostname, so a relative URL or `location.host` points there, not at your server. List each server on the submission form, and allow the game's hostname if your server checks `Origin` or sets CORS rules.
+
+Browsers can't set headers on a WebSocket, so send the token as the first message and accept nothing else until it verifies:
+
+```ts
+const socket = new WebSocket('wss://api.example.com');
+socket.addEventListener('open', () => {
+  socket.send(JSON.stringify({ type: 'auth', token: OddsRabbit.sessionToken }));
 });
 ```
 
@@ -147,6 +159,8 @@ https://apps.oddsrabbit.com/.well-known/jwks.json
 
 Standard RS256 verification — confirm `iss === 'https://oddsrabbit.com'`, `aud === your_app_uuid` (assigned at registration; not your manifest `id` slug), and `exp` is in the future. The `sub` claim is the OddsRabbit user UUID.
 
+Guests have no token (`OR.sessionToken` is `null`), and there's no SDK call to renew one yet, so verify when a connection opens and treat a reconnect with an expired token as a guest. You can't test full verification before approval: the playground's token is unsigned and the app UUID comes with approval. Use a test setting on your server until then, and turn on full verification as soon as you have the UUID.
+
 ## What's in this repo
 
 ```
@@ -156,6 +170,7 @@ src/ui/            Shared leaderboard + season-board UI (leaderboard-v1.js)
 src/host/          Sandbox host page that loads the game
 src/playground/    Local-development playground (npm run playground)
 examples/starter/  Starter game — copy this to begin
+examples/adapter/  oddsrabbit-adapter.js — one build for OddsRabbit and everywhere else
 2048/              Example game — the 2048 port running on OddsRabbit
 docs/              Header and safe-area guidelines
 scripts/serve.mjs  Static server for dist/, used by npm run playground
