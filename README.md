@@ -98,6 +98,7 @@ Everything available on `window.OddsRabbit` once `await OR.whenReady()` resolves
 - **`OR.chat.sharePicture`** — send a picture the player made to one of their chats. `sharePicture({ image, caption? })` takes a `data:image/png` or `data:image/jpeg` base64 URL of at most 2 MB decoded (`PICTURE_MAX_BYTES`; scale to 1600 px on the long side) and an optional caption up to 200 characters. The host shows its own chat picker, so the game never learns who it went to; resolves `{ sent }`, `false` when the player closed the picker. Needs the `bridge:share` scope and a signed-in user. Rejects with a `chat/*` code (`CHAT_ERROR_CODES`: `unauthorized`, `invalid-image`, `rate-limited`), which never retires the capability. Gate the button on `OR.capabilities.has('chat.sharePicture')`.
 - **`OR.actions.haptic`** — `'light' | 'medium' | 'success' | 'error'`. No-op on web.
 - **`OR.actions.requestSignIn`** — prompt the user to sign in at a natural friction moment.
+- **`OR.actions.showGameInfo(section?)`** — open the platform's info sheet for your game: description, how to play, ratings and reviews, notification settings and Report. The host draws the sheet, so it is the same in every game; you choose where the button that opens it goes (a header action, a pause or settings menu; see `docs/game-header-guidelines.md`, rule 13). `section` is `'about'` (default) or `'rate'`. Resolves once the sheet is up; in the app the game gets `pause` while it is open and `resume` when it closes. Gate the button on `OR.capabilities.has('actions.showGameInfo')`.
 - **`OR.lifecycle.on`** — `'pause' | 'resume' | 'terminating'` hooks for animations and state-flushing.
 
 Exact types for every method, payload and result, the manifest schema and every error-code map (`*_ERROR_CODES`) are in [`src/schemas/`](./src/schemas/) and [`src/sdk/sdk.ts`](./src/sdk/sdk.ts). Check `OR.user` before calling a verb that needs a signed-in player: the web host rejects a signed-out call with that area's `unauthorized` code (`gifts/unauthorized`, say), but the mobile app doesn't use the same code for every area yet. The [developer guide](https://www.oddsrabbit.com/developers/games/) covers the manifest, scopes, review rules and how to submit a game.
@@ -140,7 +141,7 @@ fetch('https://api.example.com/play', {
 });
 ```
 
-Use a full URL: a hosted game is served from its own hostname, so a relative URL or `location.host` points there, not at your server. List each server on the submission form, and allow the game's hostname if your server checks `Origin` or sets CORS rules.
+Use a full URL: a hosted game is served from its own hostname, so a relative URL or `location.host` points there, not at your server. List each server on the submission form, including image, font and CDN hosts: a hosted game can reach only the servers it lists, and scripts must be in the build. Allow the game's hostname if your server checks `Origin` or sets CORS rules.
 
 Browsers can't set headers on a WebSocket, so send the token as the first message and accept nothing else until it verifies:
 

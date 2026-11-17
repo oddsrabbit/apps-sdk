@@ -38,13 +38,19 @@ export type {
   ContentSubmitResult,
   ChatSharePicturePayload,
   ChatShareResult,
+  GalleryPostPayload,
+  GalleryPostResult,
+  GalleryComment,
+  GalleryCommentsPage,
+  GalleryReportReason,
 } from './sdk';
-export { CONTENT_ERROR_CODES, CHAT_ERROR_CODES, PICTURE_MAX_BYTES, MATCH_ERROR_CODES, SOCIAL_ERROR_CODES, GIFT_ERROR_CODES, VISIT_ERROR_CODES } from './sdk';
+export { CONTENT_ERROR_CODES, CHAT_ERROR_CODES, PICTURE_MAX_BYTES, MATCH_ERROR_CODES, SOCIAL_ERROR_CODES, GIFT_ERROR_CODES, VISIT_ERROR_CODES, GALLERY_ERROR_CODES, GALLERY_DATA_MAX_CHARS, GALLERY_METADATA_MAX_BYTES, GALLERY_COMMENT_MAX_CHARS, GALLERY_REPORT_REASONS } from './sdk';
 export type {
   BridgeUser,
   AppColorScheme,
   AppHapticType,
   AppLifecycleEvent,
+  GameInfoSection,
 } from '../schemas/messages';
 
 const sdk = new OddsRabbitSDK();

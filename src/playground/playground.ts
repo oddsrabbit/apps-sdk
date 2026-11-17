@@ -492,6 +492,9 @@ async function pageOutcome(verb: string, payload: unknown): Promise<Outcome> {
       toast(`Share sheet opened: ${parts.join(' — ') || '(nothing to share)'}`);
       return { ok: true };
     }
+    case 'actions.showGameInfo':
+      toast(`Game info sheet opened on ${typeof p.section === 'string' ? p.section : 'about'}.`);
+      return { ok: true };
     case 'chat.sharePicture': {
       if (!player()) return { ok: false, error: { code: CHAT_ERROR_CODES.unauthorized, message: 'Not authenticated.' } };
       const choice = await pickChat(p.image, typeof p.caption === 'string' ? p.caption : '');

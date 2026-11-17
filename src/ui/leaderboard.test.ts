@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  leaderboardAvatar,
   medalsFor,
   pinnedFromRank,
+  rankLabelsFor,
   ranksFor,
   type LeaderboardRow,
 } from './leaderboard';
@@ -59,6 +61,18 @@ test('a medal needs a place nobody else reached', () => {
   assert.deepEqual(medalsFor([]), []);
 });
 
+test('an unranked row gets a dash and never a medal', () => {
+  // One solver and one player who started but didn't finish: the second row
+  // is the only holder of rank 2, and must not take silver for it.
+  const unsolvedAtZero = { ranked: (row: LeaderboardRow) => row.score > 0 };
+  assert.deepEqual(rankLabelsFor(rows(10, 0), unsolvedAtZero), ['🥇', '–']);
+  assert.deepEqual(rankLabelsFor(rows(10, 9, 8, 7, 0, 0), unsolvedAtZero), [
+    '🥇', '🥈', '🥉', '4', '–', '–',
+  ]);
+  // Without the hook every row places, as before.
+  assert.deepEqual(rankLabelsFor(rows(10, 0), {}), ['🥇', '🥈']);
+});
+
 test('pinnedFromRank maps a rank answer, and null through', () => {
   const entry = rows(4200)[0]!;
   assert.deepEqual(pinnedFromRank({ rank: 412, total: 1203, entry }), {
@@ -69,4 +83,75 @@ test('pinnedFromRank maps a rank answer, and null through', () => {
   // Null is how "no session", "no rank verb" and "hasn't played" all arrive,
   // and all three mean the same thing to the caller: pin nothing.
   assert.equal(pinnedFromRank(null), null);
+});
+
+// Just enough of the DOM for leaderboardAvatar: elements with classes, a
+// style, children, and listeners the test can fire.
+type FakeEl = {
+  tagName: string;
+  className: string;
+  textContent: string;
+  style: Record<string, string>;
+  children: FakeEl[];
+  classList: { add(c: string): void; remove(c: string): void; contains(c: string): boolean };
+  addEventListener(type: string, fn: () => void): void;
+  appendChild(child: FakeEl): FakeEl;
+  remove(): void;
+  fire(type: string): void;
+  [key: string]: unknown;
+};
+
+function fakeDocument(): { createElement(tag: string): FakeEl } {
+  return {
+    createElement(tag: string): FakeEl {
+      const classes = new Set<string>();
+      const listeners: Record<string, Array<() => void>> = {};
+      const node: FakeEl = {
+        tagName: tag.toUpperCase(),
+        get className() { return [...classes].join(' '); },
+        set className(v: string) { classes.clear(); v.split(/\s+/).filter(Boolean).forEach((c) => classes.add(c)); },
+        textContent: '',
+        style: {},
+        children: [],
+        classList: {
+          add: (c) => { classes.add(c); },
+          remove: (c) => { classes.delete(c); },
+          contains: (c) => classes.has(c),
+        },
+        addEventListener(type, fn) { (listeners[type] ||= []).push(fn); },
+        appendChild(child) { node.children.push(child); return child; },
+        remove() {},
+        fire(type) { (listeners[type] || []).forEach((fn) => fn()); },
+      };
+      return node;
+    },
+  };
+}
+
+test('an avatar photo that has loaded once shows at once when drawn again', () => {
+  const g = globalThis as { document?: unknown };
+  const saved = g.document;
+  g.document = fakeDocument();
+  try {
+    const url = 'https://cdn.example/avatars/redraw-test.png';
+    // First draw: the initial shows until the photo loads.
+    const first = leaderboardAvatar('@ana', url) as unknown as FakeEl;
+    assert.equal(first.classList.contains('lb-avatar-has-img'), false);
+    assert.equal(first.children[0]!.loading, 'lazy');
+    first.children[0]!.fire('load');
+    assert.equal(first.classList.contains('lb-avatar-has-img'), true);
+
+    // A redraw of the same list must not drop back to the initial.
+    const again = leaderboardAvatar('@ana', url) as unknown as FakeEl;
+    assert.equal(again.classList.contains('lb-avatar-has-img'), true);
+    assert.notEqual(again.children[0]!.loading, 'lazy');
+
+    // If the photo then fails, the initial comes back and the URL is forgotten.
+    again.children[0]!.fire('error');
+    assert.equal(again.classList.contains('lb-avatar-has-img'), false);
+    const after = leaderboardAvatar('@ana', url) as unknown as FakeEl;
+    assert.equal(after.classList.contains('lb-avatar-has-img'), false);
+  } finally {
+    g.document = saved;
+  }
 });

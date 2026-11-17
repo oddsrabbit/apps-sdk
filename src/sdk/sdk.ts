@@ -34,6 +34,19 @@ import {
   VisitSchema,
   VisitRecordResultSchema,
   VisitSeenResultSchema,
+  NotificationKindMutesSchema,
+  GalleryPostResultSchema,
+  GalleryDataSchema,
+  GalleryRemoveResultSchema,
+  GalleryReportResultSchema,
+  GalleryHiddenSchema,
+  GalleryCommentSchema,
+  GalleryCommentsPageSchema,
+  GalleryDeleteCommentResultSchema,
+  GalleryCommentCountsSchema,
+  type GalleryPostResult,
+  type GalleryComment,
+  type GalleryReportReason,
   type Visit,
   type VisitRecordResult,
   type VisitSeenResult,
@@ -62,6 +75,7 @@ import {
   type BridgeUser,
   type AppColorScheme,
   type AppHapticType,
+  type GameInfoSection,
   type AppLifecycleEvent,
   type FriendScore,
   type TopScoreEntry,
@@ -111,6 +125,9 @@ export type {
   Visit,
   VisitRecordResult,
   VisitSeenResult,
+  GalleryPostResult,
+  GalleryComment,
+  GalleryReportReason,
 } from '../schemas/messages';
 
 export {
@@ -124,6 +141,11 @@ export {
   SOCIAL_ERROR_CODES,
   GIFT_ERROR_CODES,
   VISIT_ERROR_CODES,
+  GALLERY_ERROR_CODES,
+  GALLERY_DATA_MAX_CHARS,
+  GALLERY_METADATA_MAX_BYTES,
+  GALLERY_COMMENT_MAX_CHARS,
+  GALLERY_REPORT_REASONS,
 } from '../schemas/messages';
 
 export interface ContentSubmitPayload {
@@ -142,6 +164,23 @@ export interface ChatSharePicturePayload {
   image: string;
   /** Sent with the picture, at most `CHAT_CAPTION_MAX` characters. */
   caption?: string;
+}
+
+export interface GalleryPostPayload {
+  /** The round it's posted to, e.g. `'draw-12'`. */
+  roundKey: string;
+  /** `data:image/png` or `data:image/jpeg` base64, at most `PICTURE_MAX_BYTES` decoded. */
+  image: string;
+  /** The game's own data behind the picture, at most `GALLERY_DATA_MAX_CHARS`. */
+  data?: string;
+  /** Small game fields shown with the post, at most `GALLERY_METADATA_MAX_BYTES` of JSON. */
+  metadata?: Record<string, unknown>;
+}
+
+export interface GalleryCommentsPage {
+  comments: GalleryComment[];
+  /** True when there are older comments: ask again with `before` set to the first id. */
+  more: boolean;
 }
 
 export interface GiftSendPayload {
@@ -871,6 +910,47 @@ export interface OddsRabbitGlobal {
      * on a host without the verb).
      */
     setMuted(muted: boolean): Promise<boolean>;
+    /**
+     * The kinds of this game's pushes the viewer has turned off on their own
+     * (Rabbit Draw: `'friends'`, `'comments'`), under the game's mute. Resolves
+     * `null` when it can't say, as `muted()` does.
+     */
+    mutedKinds(): Promise<string[] | null>;
+    /**
+     * Turn one kind of push off or on. Same rule as `setMuted`: only from the
+     * viewer's own tap. Gate on `capabilities.has('notifications.setKindMuted')`.
+     * Resolves with the muted kinds as they now stand; REJECTS on failure.
+     */
+    setKindMuted(kind: string, muted: boolean): Promise<string[]>;
+  };
+
+  /**
+   * Pictures players made, posted to a round (`bridge:gallery`). A post is
+   * also the player's score row in that round, so `scores.top`,
+   * `scores.friends` and `scores.like` list and heart it, with the picture's
+   * URL in `metadata.image`. An entry is named by its round and its owner's
+   * uuid. Writes are signed in and REJECT on failure (`GALLERY_ERROR_CODES`);
+   * gate each on `capabilities.has(verb)`.
+   */
+  readonly gallery: {
+    /** Post the player's picture; public at once. One per round; `gallery/already-posted` after that. */
+    post(payload: GalleryPostPayload): Promise<GalleryPostResult>;
+    /** The `data` behind an entry, or null when it has none. */
+    data(roundKey: string, uuid: string): Promise<string | null>;
+    /** Delete the viewer's own entry in a round, with its likes and comments. */
+    remove(roundKey: string): Promise<boolean>;
+    /** Report an entry; it's hidden from the viewer at once. */
+    report(roundKey: string, uuid: string, reason: GalleryReportReason): Promise<boolean>;
+    /** Owners of entries the viewer shouldn't see. Empty signed out or on failure. */
+    hidden(roundKey: string): Promise<string[]>;
+    /** A page of an entry's comments, oldest first. */
+    comments(roundKey: string, uuid: string, before?: string): Promise<GalleryCommentsPage>;
+    /** Comment on an entry. `gallery/comment-refused` carries a message to show. */
+    comment(payload: { roundKey: string; uuid: string; text: string; nonce?: string }): Promise<GalleryComment>;
+    deleteComment(id: string): Promise<boolean>;
+    reportComment(id: string, reason: GalleryReportReason): Promise<boolean>;
+    /** Comments per entry owner's uuid. Empty on a host without the verb. */
+    commentCounts(roundKey: string): Promise<Record<string, number>>;
   };
 
   /**
@@ -972,6 +1052,18 @@ export interface OddsRabbitGlobal {
      * boot. `reason` is shown to the user in the prompt; keep it short.
      */
     requestSignIn(reason?: string): Promise<void>;
+    /**
+     * Open the platform's info sheet for this game: its description and how to
+     * play, ratings and reviews, notification settings and Report. The sheet
+     * is the host's, so it looks the same in every game; you decide where the
+     * button that opens it goes (a header action, a pause or settings menu).
+     * `section` picks where it opens: 'about' (default) or 'rate'.
+     *
+     * Resolves once the sheet is shown. In the app the game gets a `pause`
+     * lifecycle event while it is up and `resume` when it closes. Gate the
+     * button on `capabilities.has('actions.showGameInfo')`: older hosts lack it.
+     */
+    showGameInfo(section?: GameInfoSection): Promise<void>;
   };
 
   readonly lifecycle: {
@@ -1570,6 +1662,69 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
         if (!parsed.success) throw new Error('notifications.setMuted: malformed result');
         return parsed.data.muted;
       }),
+    mutedKinds: (): Promise<string[] | null> => {
+      if (!this.user) return Promise.resolve(null);
+      return this.request<unknown>('notifications.mutedKinds')
+        .then((result) => {
+          const parsed = NotificationKindMutesSchema.safeParse(result);
+          return parsed.success ? parsed.data.kinds : null;
+        })
+        .catch(() => null);
+    },
+    setKindMuted: (kind: string, muted: boolean): Promise<string[]> =>
+      this.request<unknown>('notifications.setKindMuted', { kind, muted }).then((result) => {
+        const parsed = NotificationKindMutesSchema.safeParse(result);
+        if (!parsed.success) throw new Error('notifications.setKindMuted: malformed result');
+        return parsed.data.kinds;
+      }),
+  };
+
+  /** A request whose answer must match `schema`, else it rejects. */
+  private requestParsed<T>(
+    type: BridgeRequest['type'],
+    payload: unknown,
+    schema: { safeParse: (value: unknown) => { success: true; data: T } | { success: false } }
+  ): Promise<T> {
+    return this.request<unknown>(type, payload).then((result) => {
+      const parsed = schema.safeParse(result);
+      if (!parsed.success) throw new Error(`${type}: malformed result`);
+      return parsed.data;
+    });
+  }
+
+  readonly gallery = {
+    post: (payload: GalleryPostPayload): Promise<GalleryPostResult> =>
+      this.requestParsed('gallery.post', payload, GalleryPostResultSchema),
+    data: (roundKey: string, uuid: string): Promise<string | null> =>
+      this.requestParsed('gallery.data', { roundKey, uuid }, GalleryDataSchema).then((r) => r.data),
+    remove: (roundKey: string): Promise<boolean> =>
+      this.requestParsed('gallery.remove', { roundKey }, GalleryRemoveResultSchema).then((r) => r.removed),
+    report: (roundKey: string, uuid: string, reason: GalleryReportReason): Promise<boolean> =>
+      this.requestParsed('gallery.report', { roundKey, uuid, reason }, GalleryReportResultSchema).then((r) => r.reported),
+    // Filters a list the game already has, so every failure degrades to
+    // "nothing hidden" rather than an empty gallery.
+    hidden: (roundKey: string): Promise<string[]> => {
+      if (!this.user) return Promise.resolve([]);
+      return this.requestParsed('gallery.hidden', { roundKey }, GalleryHiddenSchema)
+        .then((r) => r.uuids)
+        .catch(() => []);
+    },
+    comments: (roundKey: string, uuid: string, before?: string): Promise<GalleryCommentsPage> =>
+      this.requestParsed('gallery.comments', { roundKey, uuid, ...(before ? { before } : {}) }, GalleryCommentsPageSchema)
+        .then((page) => ({ comments: parseRows<GalleryComment>(GalleryCommentSchema, page.comments), more: page.more })),
+    comment: (payload: { roundKey: string; uuid: string; text: string; nonce?: string }): Promise<GalleryComment> =>
+      this.requestParsed('gallery.comment', payload, GalleryCommentSchema),
+    deleteComment: (id: string): Promise<boolean> =>
+      this.requestParsed('gallery.deleteComment', { id }, GalleryDeleteCommentResultSchema).then((r) => r.deleted),
+    reportComment: (id: string, reason: GalleryReportReason): Promise<boolean> =>
+      this.requestParsed('gallery.reportComment', { id, reason }, GalleryReportResultSchema).then((r) => r.reported),
+    commentCounts: (roundKey: string): Promise<Record<string, number>> =>
+      this.requestParsed('gallery.commentCounts', { roundKey }, GalleryCommentCountsSchema)
+        .then((r) => r.counts)
+        .catch((error: unknown) => {
+          if (isUnsupportedError(error)) return {};
+          throw error;
+        }),
   };
 
   readonly showcase = {
@@ -1684,6 +1839,11 @@ class OddsRabbitSDK implements OddsRabbitGlobal {
         reason ? { reason } : undefined
       );
     },
+    showGameInfo: (section?: GameInfoSection): Promise<void> =>
+      this.request<void>(
+        'actions.showGameInfo',
+        section ? { section } : undefined
+      ),
   };
 
   readonly lifecycle = {

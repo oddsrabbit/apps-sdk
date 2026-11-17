@@ -10,6 +10,7 @@ export const BRIDGE_SCOPES = [
   'bridge:notifications',
   'bridge:social',
   'bridge:submit',
+  'bridge:gallery',
 ] as const;
 export const AppScopeSchema = z.enum(BRIDGE_SCOPES);
 export type AppScope = z.infer<typeof AppScopeSchema>;

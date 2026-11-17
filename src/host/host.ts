@@ -9,6 +9,13 @@ import {
   type BridgeUser,
   type AppColorScheme,
 } from '../schemas/messages';
+import {
+  carryOverGuestSaves,
+  carryOverMarkerKey,
+  isFreshCarryOverMarker,
+  readGuestEntries,
+  type CarryOverOutcome,
+} from './guest-carryover';
 
 const GUEST_STORAGE_PREFIX = 'oddsrabbit:apps';
 // Guest saves for a game loaded through `?gameUrl=` (the playground, local
@@ -16,6 +23,16 @@ const GUEST_STORAGE_PREFIX = 'oddsrabbit:apps';
 // gameUrl of their choosing, so without it a stranger's page could read and
 // overwrite a real game's guest saves on this origin by naming its slug.
 const DEV_GUEST_STORAGE_PREFIX = 'oddsrabbit:apps-dev';
+
+// The game's `init` is held for the whole carry-over (see carryOverGuestSaves),
+// so these bound how long a slow network can keep a signed-in player looking at
+// a blank game: the check and the copy share one budget, and undoing a failed
+// copy (its deletes run in parallel) gets its own short one on top.
+const CARRY_OVER_BUDGET_MS = 8000;
+const CARRY_OVER_UNDO_TIMEOUT_MS = 3000;
+// Only this host makes correlationIds with this prefix, so a response carrying
+// one is never the game's, even after its request has timed out here.
+const HOST_CORRELATION_PREFIX = 'host-carryover-';
 
 // Verbs this host answers itself when there's no signed-in user, without ever
 // forwarding them to the outer host (see handleGuestStorageRequest). They are
@@ -598,6 +615,138 @@ function setupBridge(iframe: HTMLIFrameElement, appSlug: string): void {
   // persistent user identity for the guest path to work.
   let currentUser: BridgeUser | null = null;
 
+  // Requests this host makes of the outer host itself (the guest save
+  // carry-over), keyed by correlationId. Their responses are answered here and
+  // never reach the game.
+  // Unique across page loads, not a counter: the server treats a storage
+  // write that repeats a key's last correlationId as a replay and skips it.
+  const nextHostCorrelationId = (): string =>
+    `${HOST_CORRELATION_PREFIX}${
+      typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+    }`;
+  const hostRequests = new Map<
+    string,
+    { resolve(result: unknown): void; reject(error: Error): void; timer: number }
+  >();
+  const hostRequest = (request: BridgeRequest, timeoutMs: number): Promise<unknown> =>
+    new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        hostRequests.delete(request.correlationId);
+        reject(new Error(`${request.type} timed out`));
+      }, Math.max(0, timeoutMs));
+      hostRequests.set(request.correlationId, { resolve, reject, timer });
+      forwardOutbound(request);
+    });
+
+  // Set while a carry-over runs. `init` and the game's requests wait on it, so
+  // the game never reads its save from an account that is about to receive it.
+  let carryingOver: Promise<void> | null = null;
+  let carryOverStarted = false;
+
+  const markerKey = carryOverMarkerKey(appSlug);
+  const clearMarker = (): void => {
+    try {
+      window.localStorage.removeItem(markerKey);
+    } catch {
+      // Storage blocked: the marker expires on its own.
+    }
+  };
+
+  // A guest asking to sign up is what makes a carry-over happen on the next
+  // signed-in load (see guest-carryover.ts). Not for a `?gameUrl=` game.
+  const noteSignUpIntent = (): void => {
+    if (devGameUrl) return;
+    try {
+      window.localStorage.setItem(markerKey, String(Date.now()));
+    } catch {
+      // Storage blocked: there are no guest saves to carry over either.
+    }
+  };
+
+  const startCarryOver = (): void => {
+    // Once per page: a carry-over that found a conflict or failed has nothing
+    // new to try until the next load. Never for a `?gameUrl=` game, whose
+    // guest saves are the playground's, not a real game's.
+    if (carryOverStarted || devGameUrl) return;
+    carryOverStarted = true;
+    const prefix = `${guestStoragePrefix}:${appSlug}:`;
+    let entries: Array<[string, string]>;
+    try {
+      // Only after this guest asked to sign up here: every other signed-in
+      // load (someone else on a shared browser, a sign-in from the site days
+      // later) reads nothing from the server and isn't held up.
+      const marker = window.localStorage.getItem(markerKey);
+      if (!isFreshCarryOverMarker(marker, Date.now())) {
+        if (marker !== null) clearMarker();
+        return;
+      }
+      entries = readGuestEntries(window.localStorage, prefix);
+    } catch {
+      return; // Storage blocked: there's nothing to carry over.
+    }
+    if (entries.length === 0) {
+      clearMarker();
+      return;
+    }
+
+    log('guest saves found for a signed-in player', entries.map(([key]) => key));
+    const deadline = Date.now() + CARRY_OVER_BUDGET_MS;
+    const budget = (): number => deadline - Date.now();
+    carryingOver = carryOverGuestSaves({
+      entries,
+      get: async (key) => {
+        const result = await hostRequest(
+          { type: 'storage.get', correlationId: nextHostCorrelationId(), payload: { key } },
+          budget()
+        );
+        return typeof result === 'string' ? result : null;
+      },
+      set: async (key, value) => {
+        await hostRequest(
+          { type: 'storage.set', correlationId: nextHostCorrelationId(), payload: { key, value } },
+          budget()
+        );
+      },
+      delete: async (key) => {
+        await hostRequest(
+          { type: 'storage.delete', correlationId: nextHostCorrelationId(), payload: { key } },
+          CARRY_OVER_UNDO_TIMEOUT_MS
+        );
+      },
+      clearLocal: (key) => window.localStorage.removeItem(`${prefix}${key}`),
+    })
+      .catch((): CarryOverOutcome => 'failed')
+      .then((outcome) => {
+        log('guest save carry-over', outcome);
+        // A failure keeps the marker, so a reload within the hour tries again
+        // from a clean account; a copy or a conflict is final.
+        if (outcome !== 'failed') clearMarker();
+        announceCarryOver(outcome);
+      })
+      .finally(() => {
+        carryingOver = null;
+      });
+  };
+
+  const routeGameRequest = (request: BridgeRequest): void => {
+    if (currentUser === null && request.type === 'actions.requestSignIn') {
+      noteSignUpIntent();
+    }
+    if (currentUser === null && isStorageRequest(request)) {
+      const response = handleGuestStorageRequest(request, appSlug);
+      gameWindow.postMessage(response, '*');
+      return;
+    }
+    forwardOutbound(request);
+  };
+
+  const deliverInit = (message: BridgeOutbound): void => {
+    if (carryingOver) carryingOver.then(() => forwardInit(message));
+    else forwardInit(message);
+  };
+
   // Game (child iframe) → host
   window.addEventListener('message', (event) => {
     if (event.source !== gameWindow) return;
@@ -645,13 +794,9 @@ function setupBridge(iframe: HTMLIFrameElement, appSlug: string): void {
     }
     log('msg from game ok', parsed.data.type);
 
-    if (currentUser === null && isStorageRequest(parsed.data)) {
-      const response = handleGuestStorageRequest(parsed.data, appSlug);
-      gameWindow.postMessage(response, '*');
-      return;
-    }
-
-    forwardOutbound(parsed.data);
+    const request = parsed.data;
+    if (carryingOver) carryingOver.then(() => routeGameRequest(request));
+    else routeGameRequest(request);
   });
 
   // Outer host → game: capture user state from `init`, then forward.
@@ -662,9 +807,22 @@ function setupBridge(iframe: HTMLIFrameElement, appSlug: string): void {
       return;
     }
     log(`msg from ${source} ok`, parsed.type);
+    if (parsed.type === 'response' && hostRequests.has(parsed.correlationId)) {
+      const pending = hostRequests.get(parsed.correlationId)!;
+      hostRequests.delete(parsed.correlationId);
+      window.clearTimeout(pending.timer);
+      if (parsed.ok) pending.resolve(parsed.result);
+      else pending.reject(new Error(parsed.error?.code ?? 'request failed'));
+      return;
+    }
+    if (parsed.type === 'response' && parsed.correlationId.startsWith(HOST_CORRELATION_PREFIX)) {
+      log('late answer to a carry-over request dropped', parsed.correlationId);
+      return;
+    }
     if (parsed.type === 'init') {
       currentUser = parsed.user;
       log('init received', currentUser ? `user:${currentUser.username}` : 'guest');
+      if (currentUser !== null) startCarryOver();
       // Forward the INTERSECTION of what the outer host declares and what this
       // host can actually relay. We sit in the middle and reject anything our
       // own BridgeRequestSchema doesn't model, so passing a verb straight
@@ -698,7 +856,7 @@ function setupBridge(iframe: HTMLIFrameElement, appSlug: string): void {
             declared
           );
           const { capabilities: _unrelayable, ...withoutCapabilities } = parsed;
-          forwardInit(withoutCapabilities);
+          deliverInit(withoutCapabilities);
           return;
         }
 
@@ -722,10 +880,10 @@ function setupBridge(iframe: HTMLIFrameElement, appSlug: string): void {
         if (forwarded.length !== relayable.length) {
           log('init capabilities extended with guest-served verbs', forwarded);
         }
-        forwardInit({ ...parsed, capabilities: forwarded });
+        deliverInit({ ...parsed, capabilities: forwarded });
         return;
       }
-      forwardInit(parsed);
+      deliverInit(parsed);
       return;
     }
     forwardInbound(gameWindow, parsed);
@@ -743,6 +901,19 @@ function setupBridge(iframe: HTMLIFrameElement, appSlug: string): void {
       handleOuter('parent', event.data);
     });
   }
+}
+
+/**
+ * Tell the outer host a guest's saves were carried over, so it can say so.
+ * Like `host-ready`, not a bridge message: outer hosts that predate it ignore
+ * it. Only a successful copy is announced; the other outcomes leave nothing
+ * for the player to notice.
+ */
+function announceCarryOver(outcome: CarryOverOutcome): void {
+  if (outcome !== 'copied') return;
+  const message = { type: 'host-guest-carryover', outcome };
+  if (isMobile) window.ReactNativeWebView!.postMessage(JSON.stringify(message));
+  else if (window.parent !== window) window.parent.postMessage(message, '*');
 }
 
 function handleGuestStorageRequest(

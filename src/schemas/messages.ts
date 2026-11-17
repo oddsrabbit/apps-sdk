@@ -16,6 +16,14 @@ export const HAPTIC_TYPES = ['light', 'medium', 'success', 'error'] as const;
 export const AppHapticTypeSchema = z.enum(HAPTIC_TYPES);
 export type AppHapticType = z.infer<typeof AppHapticTypeSchema>;
 
+/**
+ * Which part of the host's game info sheet `actions.showGameInfo` opens on:
+ * the game's description and how to play, or ratings and reviews.
+ */
+export const GAME_INFO_SECTIONS = ['about', 'rate'] as const;
+export const GameInfoSectionSchema = z.enum(GAME_INFO_SECTIONS);
+export type GameInfoSection = z.infer<typeof GameInfoSectionSchema>;
+
 export const LIFECYCLE_EVENTS = ['pause', 'resume', 'terminating'] as const;
 export const AppLifecycleEventSchema = z.enum(LIFECYCLE_EVENTS);
 export type AppLifecycleEvent = z.infer<typeof AppLifecycleEventSchema>;
@@ -291,6 +299,49 @@ export const VISIT_ERROR_CODES = {
   /** `record` or `seen` signed out. */
   unauthorized: 'visits/unauthorized',
 } as const;
+
+// ---- Galleries (`bridge:gallery`): pictures players made, posted to a round.
+// A post is also a score row in that round, so `scores.top/friends/like` list
+// and heart it; this family adds the picture, the game's own data behind it
+// (strokes for a replay), comments and reports.
+
+/** Longest `data` a `gallery.post` may carry: an opaque string, e.g. packed strokes. */
+export const GALLERY_DATA_MAX_CHARS = 48 * 1024;
+/** Most JSON bytes of `metadata` on `gallery.post`; the server adds `image` to it. */
+export const GALLERY_METADATA_MAX_BYTES = 1024;
+export const GALLERY_COMMENT_MAX_CHARS = 280;
+/** Comments per `gallery.comments` page. */
+export const GALLERY_COMMENTS_PAGE = 50;
+export const GALLERY_REPORT_REASONS = ['inappropriate', 'spam', 'other'] as const;
+export const GalleryReportReasonSchema = z.enum(GALLERY_REPORT_REASONS);
+export type GalleryReportReason = z.infer<typeof GalleryReportReasonSchema>;
+/** A kind of push one game sends, e.g. `friends`, muted on its own (`notifications.setKindMuted`). */
+export const NOTIFICATION_KIND_PATTERN = /^[a-z0-9-]{1,32}$/;
+
+/** Per-call outcomes of `gallery.*`. None of them retire a verb. */
+export const GALLERY_ERROR_CODES = {
+  /** A write signed out. */
+  unauthorized: 'gallery/unauthorized',
+  /** The app's manifest does not declare `bridge:gallery`. */
+  forbidden: 'gallery/forbidden',
+  /** A bad shape, or a round that isn't open for posts. */
+  invalid: 'gallery/invalid',
+  /** Not a PNG or JPEG, over `PICTURE_MAX_BYTES`, or undecodable. */
+  invalidImage: 'gallery/invalid-image',
+  /** The player already has a post in this round; `gallery.remove` it first. */
+  alreadyPosted: 'gallery/already-posted',
+  /** No such entry or comment for this viewer. */
+  notFound: 'gallery/not-found',
+  /**
+   * This one comment was refused: moderation, a block either way, or sending
+   * too fast. `message` says which, in words a player can read.
+   */
+  commentRefused: 'gallery/comment-refused',
+  /** Too many posts or reports in the last little while. */
+  rateLimited: 'gallery/rate-limited',
+} as const;
+
+const GalleryCommentId = z.string().regex(/^[0-9]{1,20}$/);
 
 const Uuid = z.string().uuid();
 
@@ -723,6 +774,21 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
     correlationId: CorrelationId,
     payload: z.object({ muted: z.boolean() }),
   }),
+  // One kind of this game's pushes muted on its own (Rabbit Draw: `friends`,
+  // `comments`), under the game's own mute. Separate verbs rather than a field
+  // on `setMuted`: an older host would drop the field and mute the whole game.
+  z.object({
+    type: z.literal('notifications.mutedKinds'),
+    correlationId: CorrelationId,
+  }),
+  z.object({
+    type: z.literal('notifications.setKindMuted'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      kind: z.string().regex(NOTIFICATION_KIND_PATTERN),
+      muted: z.boolean(),
+    }),
+  }),
   // ---- Friends: showcases and gifts (`bridge:social`). All authenticated.
   // "Friends" is the follow graph, either direction, with no block between
   // them. The server enforces the size cap, rate limits and gift limits.
@@ -815,6 +881,17 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
     correlationId: CorrelationId,
     payload: z.object({ type: AppHapticTypeSchema }),
   }),
+  // Open the host's own sheet about this game: description, how to play,
+  // ratings and reviews, notifications, report. The game only places the
+  // button; the host draws the sheet, so it is the same in every game.
+  // Resolves once the sheet is up, not when it closes.
+  z.object({
+    type: z.literal('actions.showGameInfo'),
+    correlationId: CorrelationId,
+    payload: z
+      .object({ section: GameInfoSectionSchema.optional() })
+      .optional(),
+  }),
   z.object({
     type: z.literal('actions.requestSignIn'),
     correlationId: CorrelationId,
@@ -831,6 +908,89 @@ export const BridgeRequestSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('ready'),
     correlationId: CorrelationId,
+  }),
+  // ---- Galleries (`bridge:gallery`). Writes are signed in; reads are public
+  // except `gallery.hidden`. An entry is named by its round and its owner's uuid.
+  //
+  // Post the player's picture to a round: one per (round, player). The server
+  // stores `image` on the CDN and writes the player's score row with
+  // `metadata.image` set to its URL. It shows to everyone at once.
+  z.object({
+    type: z.literal('gallery.post'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      roundKey: RoundKey,
+      image: PictureDataUrl,
+      data: z.string().max(GALLERY_DATA_MAX_CHARS).optional(),
+      metadata: z
+        .record(z.unknown())
+        .refine((m) => JSON.stringify(m).length <= GALLERY_METADATA_MAX_BYTES, {
+          message: `metadata exceeds ${GALLERY_METADATA_MAX_BYTES}-byte cap`,
+        })
+        .optional(),
+    }),
+  }),
+  // The `data` behind one entry, fetched when it's opened (a replay).
+  z.object({
+    type: z.literal('gallery.data'),
+    correlationId: CorrelationId,
+    payload: z.object({ roundKey: RoundKey, uuid: Uuid }),
+  }),
+  // Delete the viewer's own entry in a round, with its likes and comments.
+  z.object({
+    type: z.literal('gallery.remove'),
+    correlationId: CorrelationId,
+    payload: z.object({ roundKey: RoundKey }),
+  }),
+  // Report someone's entry. It's hidden from the reporter at once.
+  z.object({
+    type: z.literal('gallery.report'),
+    correlationId: CorrelationId,
+    payload: z.object({ roundKey: RoundKey, uuid: Uuid, reason: GalleryReportReasonSchema }),
+  }),
+  // Owners of entries this viewer shouldn't see: blocks either way and their
+  // own reports. `scores.top` stays public and viewer-free, so the game drops
+  // these itself.
+  z.object({
+    type: z.literal('gallery.hidden'),
+    correlationId: CorrelationId,
+    payload: z.object({ roundKey: RoundKey }),
+  }),
+  // One entry's comments, oldest first, a page at a time (`before` is the id
+  // of the oldest one already shown, for the page before it).
+  z.object({
+    type: z.literal('gallery.comments'),
+    correlationId: CorrelationId,
+    payload: z.object({ roundKey: RoundKey, uuid: Uuid, before: GalleryCommentId.optional() }),
+  }),
+  // Comment on an entry. `nonce` is the sender's id for this comment, so a
+  // retry after a dropped response is stored once.
+  z.object({
+    type: z.literal('gallery.comment'),
+    correlationId: CorrelationId,
+    payload: z.object({
+      roundKey: RoundKey,
+      uuid: Uuid,
+      text: z.string().trim().min(1).max(GALLERY_COMMENT_MAX_CHARS),
+      nonce: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/).optional(),
+    }),
+  }),
+  // Delete a comment: its author, or the owner of the entry it's on.
+  z.object({
+    type: z.literal('gallery.deleteComment'),
+    correlationId: CorrelationId,
+    payload: z.object({ id: GalleryCommentId }),
+  }),
+  z.object({
+    type: z.literal('gallery.reportComment'),
+    correlationId: CorrelationId,
+    payload: z.object({ id: GalleryCommentId, reason: GalleryReportReasonSchema }),
+  }),
+  // How many comments each entry in a round has, for the gallery's cards.
+  z.object({
+    type: z.literal('gallery.commentCounts'),
+    correlationId: CorrelationId,
+    payload: z.object({ roundKey: RoundKey }),
   }),
 ]);
 
@@ -1474,6 +1634,57 @@ export const VisitSeenResultSchema = z.object({
 });
 
 export type VisitSeenResult = z.infer<typeof VisitSeenResultSchema>;
+
+// Result of `notifications.mutedKinds` and `notifications.setKindMuted`: the
+// kinds of this game's pushes the viewer has turned off, as they now stand.
+export const NotificationKindMutesSchema = z.object({
+  kinds: z.array(z.string().regex(NOTIFICATION_KIND_PATTERN)),
+});
+
+// The answer to `gallery.post`: the entry (its owner's uuid), the picture's
+// public URL, and when it went in.
+export const GalleryPostResultSchema = z.object({
+  uuid: z.string().uuid(),
+  image: z.string().url(),
+  postedAt: z.string(),
+});
+
+export type GalleryPostResult = z.infer<typeof GalleryPostResultSchema>;
+
+export const GalleryDataSchema = z.object({ data: z.string().nullable() });
+
+export const GalleryRemoveResultSchema = z.object({ removed: z.boolean() });
+
+export const GalleryReportResultSchema = z.object({ reported: z.boolean() });
+
+export const GalleryHiddenSchema = z.object({ uuids: z.array(z.string().uuid()) });
+
+// One comment. The identity triple matches every other row. `canDelete` is
+// true for its author and for the owner of the entry it's on.
+export const GalleryCommentSchema = z.object({
+  id: GalleryCommentId,
+  uuid: z.string().uuid(),
+  username: z.string().min(1).max(64),
+  avatar: z.string().url().nullable().default(null),
+  text: z.string(),
+  createdAt: z.string(),
+  isSelf: z.boolean().default(false),
+  canDelete: z.boolean().default(false),
+});
+
+export type GalleryComment = z.infer<typeof GalleryCommentSchema>;
+
+// A page of `gallery.comments`. Rows are parsed one at a time by the SDK.
+export const GalleryCommentsPageSchema = z.object({
+  comments: z.array(z.unknown()),
+  more: z.boolean(),
+});
+
+export const GalleryDeleteCommentResultSchema = z.object({ deleted: z.boolean() });
+
+export const GalleryCommentCountsSchema = z.object({
+  counts: z.record(z.number().int().nonnegative()),
+});
 
 export const BridgeInitSchema = z.object({
   type: z.literal('init'),

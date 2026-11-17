@@ -158,6 +158,15 @@ the header under the button there.
     scrolling the document. If the document does scroll, content passes under
     the back button, which is acceptable but less tidy.
 
+13. **The game info button.** `OR.actions.showGameInfo()` opens the platform's
+    sheet about your game (description, how to play, ratings and reviews,
+    notifications, report). The host draws the sheet; you only place the
+    button, wherever suits the game: a header action next to your `?`, or an
+    item in your pause or settings menu. In the header, use an "i" icon button
+    the same size as your others (rule 4). Show it only when
+    `OR.capabilities.has('actions.showGameInfo')`. Players who never find it
+    can still rate from the app's prompt after a session.
+
 ## Checklist for a new game
 
 - [ ] `<meta name="oddsrabbit-chrome" content="edge">` in `<head>`, before the SDK script
@@ -166,3 +175,4 @@ the header under the button there.
 - [ ] backgrounds and overlays reach every edge; content padded by `--oddsrabbit-safe-*`
 - [ ] `--oddsrabbit-edge-top` set while a differently coloured layer covers the top
 - [ ] no `env(safe-area-inset-*)`, no top-left back button
+- [ ] a button for `OR.actions.showGameInfo()` somewhere sensible, gated on its capability

@@ -103,11 +103,11 @@
   //
   // Guests are excluded, and that exclusion is NOT deferred: the endpoint needs
   // a signed-in user, and while `user` is null the host serves storage.* from
-  // this origin's localStorage instead of the per-user server store. Nothing
-  // migrates one to the other, so a marker written as a guest sits in a
-  // namespace the signed-in session never reads. Writing one would be dead
-  // weight rather than a win credited later, so a guest's win is simply not
-  // recorded — same as before this marker existed.
+  // this origin's localStorage instead of the per-user server store. The host
+  // carries those saves over to the account a guest signs up with
+  // (src/host/guest-carryover.ts), so a marker written as a guest would be
+  // sent later as if they had been signed in to win. A guest's win is simply
+  // not recorded.
   //
   // The capability check reflects what this host has already proven: the SDK
   // retires a verb the host rejects as unknown, so after one such rejection we
